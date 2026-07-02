@@ -23,4 +23,8 @@ The current non-secret defaults are in `docs/config.js`.
 
 ## GitHub setting
 
-In the repository settings, set Pages to deploy with GitHub Actions. The workflow is in `.github/workflows/pages.yml`.
+In the repository settings, set Pages to deploy from a branch:
+
+- Source: `Deploy from a branch`
+- Branch: `main`
+- Folder: `/docs`
