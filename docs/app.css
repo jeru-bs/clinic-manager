@@ -372,6 +372,12 @@ th {
   padding: 16px;
 }
 
+.inline-form {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+  padding-top: 8px;
+}
+
 .wide {
   grid-column: span 3;
 }

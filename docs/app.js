@@ -355,8 +355,8 @@ function profilePage(patientId) {
         </article>
       </section>
       <section class="profile-grid">
-        ${sessionsPanel(sessions)}
-        ${paymentsPanel(payments)}
+        ${sessionsPanel(sessions, patient.id)}
+        ${paymentsPanel(payments, patient.id)}
         <article class="panel">
           <div class="panel-head"><h2>קבצים</h2><span>Google Drive</span></div>
           <div class="empty">${patient.drive_folder_id ? "תיקיית המטופל נוצרה בדרייב." : "טרם נוצרה תיקיית מטופל."}</div>
@@ -410,11 +410,93 @@ function detail(label, value) {
   return `<div class="detail"><span>${html(label)}</span><strong>${html(value || "-")}</strong></div>`;
 }
 
-function sessionsPanel(items = state.sessions) {
+function sessionForm(patientId) {
+  const today = new Date().toISOString().slice(0, 10);
+  return `
+    <form class="form-grid inline-form" data-form="session" data-patient-id="${html(patientId)}">
+      <div class="field">
+        <label for="session_date">תאריך מפגש</label>
+        <input id="session_date" name="session_date" required type="date" value="${today}" />
+      </div>
+      <div class="field">
+        <label for="start_time">שעת התחלה</label>
+        <input id="start_time" name="start_time" type="time" />
+      </div>
+      <div class="field">
+        <label for="end_time">שעת סיום</label>
+        <input id="end_time" name="end_time" type="time" />
+      </div>
+      <div class="field">
+        <label for="session_type">סוג מפגש</label>
+        <input id="session_type" name="session_type" placeholder="טיפול / הדרכה / שיחה" />
+      </div>
+      <div class="field wide">
+        <label for="location">מיקום</label>
+        <input id="location" name="location" placeholder="קליניקה / בית ספר / אונליין" />
+      </div>
+      <div class="field wide">
+        <label for="summary">סיכום קצר</label>
+        <textarea id="summary" name="summary" placeholder="מה היה במפגש"></textarea>
+      </div>
+      <div class="toolbar wide">
+        <button class="button" type="submit">שמירת מפגש</button>
+      </div>
+    </form>`;
+}
+
+function paymentForm(patientId) {
+  const today = new Date().toISOString().slice(0, 10);
+  return `
+    <form class="form-grid inline-form" data-form="payment" data-patient-id="${html(patientId)}">
+      <div class="field">
+        <label for="amount">סכום</label>
+        <input id="amount" name="amount" inputmode="decimal" required />
+      </div>
+      <div class="field">
+        <label for="paid_at">תאריך</label>
+        <input id="paid_at" name="paid_at" type="date" value="${today}" />
+      </div>
+      <div class="field">
+        <label for="payment_method">אמצעי תשלום</label>
+        <select id="payment_method" name="payment_method">
+          <option value="bank_transfer">העברה בנקאית</option>
+          <option value="cash">מזומן</option>
+          <option value="bit">ביט</option>
+          <option value="credit">אשראי</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="payment_status">סטטוס</label>
+        <select id="payment_status" name="payment_status">
+          <option value="paid">שולם</option>
+          <option value="unpaid">פתוח</option>
+          <option value="partial">חלקי</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="receipt_status">קבלה</label>
+        <select id="receipt_status" name="receipt_status">
+          <option value="needed">דרושה קבלה</option>
+          <option value="issued">הופקה קבלה</option>
+          <option value="not_needed">לא נדרש</option>
+        </select>
+      </div>
+      <div class="field wide">
+        <label for="payment_notes">הערות</label>
+        <textarea id="payment_notes" name="notes"></textarea>
+      </div>
+      <div class="toolbar wide">
+        <button class="button" type="submit">שמירת תשלום</button>
+      </div>
+    </form>`;
+}
+
+function sessionsPanel(items = state.sessions, patientId = "") {
   const rows = items.slice(0, 5);
   return `
     <article class="panel">
       <div class="panel-head"><h2>מפגשים קרובים</h2><span>היום והשבוע הקרוב</span></div>
+      ${patientId ? sessionForm(patientId) : ""}
       ${
         rows.length
           ? `<div class="item-list">${rows
@@ -432,11 +514,12 @@ function sessionsPanel(items = state.sessions) {
     </article>`;
 }
 
-function paymentsPanel(items = state.payments) {
+function paymentsPanel(items = state.payments, patientId = "") {
   const rows = items.slice(0, 5);
   return `
     <article class="panel">
       <div class="panel-head"><h2>תשלומים</h2><span>מעקב גבייה</span></div>
+      ${patientId ? paymentForm(patientId) : ""}
       ${
         rows.length
           ? `<div class="item-list">${rows
@@ -560,6 +643,43 @@ async function connectGoogle() {
   tokenClient.requestAccessToken({ prompt: "consent" });
 }
 
+function friendlyGoogleError(text, status) {
+  let message = text || "";
+
+  try {
+    const parsed = JSON.parse(text);
+    message = parsed?.error?.message || parsed?.message || message;
+  } catch {
+    // Google sometimes returns plain text or HTML. In that case use the raw text.
+  }
+
+  const combined = `${text || ""} ${message}`.toLowerCase();
+
+  if (combined.includes("sheets.googleapis.com") || combined.includes("google sheets api")) {
+    return "צריך להפעיל את Google Sheets API בפרויקט Google Cloud, להמתין דקה ואז לרענן את המערכת.";
+  }
+
+  if (combined.includes("drive.googleapis.com") || combined.includes("google drive api")) {
+    return "צריך להפעיל את Google Drive API בפרויקט Google Cloud, להמתין דקה ואז לרענן את המערכת.";
+  }
+
+  if (status === 401 || combined.includes("invalid credentials")) {
+    sessionStorage.removeItem("clinic-manager-google-token");
+    state.accessToken = "";
+    return "החיבור לגוגל פג תוקף. צריך להתחבר שוב.";
+  }
+
+  if (
+    status === 403 ||
+    combined.includes("insufficient") ||
+    combined.includes("access denied")
+  ) {
+    return "אין כרגע הרשאה מתאימה בגוגל. צריך להתחבר שוב ולאשר את ההרשאות המבוקשות.";
+  }
+
+  return message || "הקריאה לגוגל נכשלה.";
+}
+
 async function googleFetch(url, options = {}) {
   if (!state.accessToken) throw new Error("לא מחוברים לגוגל.");
   const response = await fetch(url, {
@@ -573,7 +693,7 @@ async function googleFetch(url, options = {}) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || "קריאה לגוגל נכשלה.");
+    throw new Error(friendlyGoogleError(text, response.status));
   }
 
   return response.status === 204 ? null : response.json();
@@ -666,6 +786,64 @@ async function savePatient(form) {
   );
 }
 
+async function saveSession(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || "";
+
+  if (!patientId) throw new Error("לא נמצא מטופל לשמירת המפגש.");
+  if (!data.session_date) throw new Error("תאריך מפגש הוא שדה חובה.");
+
+  const now = new Date().toISOString();
+  const session = {
+    id: id(),
+    patient_id: patientId,
+    session_date: data.session_date,
+    start_time: data.start_time || "",
+    end_time: data.end_time || "",
+    location: data.location || "",
+    session_type: data.session_type || "",
+    summary: data.summary || "",
+    sensitive_notes: "",
+    calendar_event_id: "",
+    created_at: now,
+    updated_at: now
+  };
+
+  await appendSheet("sessions", session);
+  state.sessions = [session, ...state.sessions].sort((a, b) =>
+    `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
+  );
+}
+
+async function savePayment(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || "";
+
+  if (!patientId) throw new Error("לא נמצא מטופל לשמירת התשלום.");
+  if (!data.amount) throw new Error("סכום התשלום הוא שדה חובה.");
+
+  const now = new Date().toISOString();
+  const payment = {
+    id: id(),
+    patient_id: patientId,
+    session_id: "",
+    amount: data.amount,
+    payment_method: data.payment_method || "bank_transfer",
+    payment_status: data.payment_status || "paid",
+    receipt_status: data.receipt_status || "needed",
+    paid_at: data.paid_at || new Date().toISOString().slice(0, 10),
+    receipt_file_id: "",
+    notes: data.notes || "",
+    created_at: now,
+    updated_at: now
+  };
+
+  await appendSheet("payments", payment);
+  state.payments = [payment, ...state.payments].sort((a, b) =>
+    `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`)
+  );
+}
+
 function bindEvents() {
   document.addEventListener("click", async (event) => {
     const target = event.target.closest("[data-action]");
@@ -707,6 +885,18 @@ function bindEvents() {
         if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
         await savePatient(form);
         state.message = "המטופל נשמר ב-Google Sheets ונוצרה תיקייה בדרייב.";
+      }
+
+      if (form.dataset.form === "session") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        await saveSession(form);
+        state.message = "המפגש נשמר ב-Google Sheets.";
+      }
+
+      if (form.dataset.form === "payment") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        await savePayment(form);
+        state.message = "התשלום נשמר ב-Google Sheets.";
       }
 
       render();
