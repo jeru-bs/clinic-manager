@@ -215,6 +215,12 @@ p {
   background: var(--danger);
 }
 
+.table-button {
+  min-height: 32px;
+  padding-inline: 10px;
+  font-size: 0.86rem;
+}
+
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -241,6 +247,30 @@ p {
   display: block;
   margin-top: 8px;
   opacity: 0.9;
+}
+
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.metric {
+  min-height: 92px;
+  border-radius: 4px;
+  color: #fff;
+  padding: 18px 20px;
+}
+
+.metric strong,
+.metric span {
+  display: block;
+}
+
+.metric strong {
+  margin-bottom: 8px;
+  font-size: 1.55rem;
 }
 
 .kpi-symbol {
@@ -564,6 +594,7 @@ th {
   }
 
   .kpi-grid,
+  .metric-row,
   .grid-two,
   .form-grid,
   .profile-grid {

@@ -537,6 +537,120 @@ function paymentsPanel(items = state.payments, patientId = "") {
     </article>`;
 }
 
+function calendarPage() {
+  const rows = [...state.sessions].sort((a, b) =>
+    `${a.session_date} ${a.start_time}`.localeCompare(`${b.session_date} ${b.start_time}`)
+  );
+
+  return shell(`
+    ${header(
+      "יומן",
+      "רשימת מפגשים מתוך Google Sheets, לפי תאריך ושעה.",
+      `<button class="button secondary" data-action="refresh" type="button">רענון</button>
+       <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
+    )}
+    ${connectionBanner()}
+    <section class="panel">
+      <div class="panel-head"><h2>מפגשים מתוכננים ומתועדים</h2><span>${rows.length} רשומות</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>תאריך</th>
+              <th>שעה</th>
+              <th>מטופל</th>
+              <th>סוג</th>
+              <th>מיקום</th>
+              <th>סיכום</th>
+              <th>פעולות</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (session) => `
+                <tr>
+                  <td><strong>${html(formatDate(session.session_date))}</strong></td>
+                  <td>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "-")}</td>
+                  <td>${html(patientName(session.patient_id))}</td>
+                  <td>${html(session.session_type || "מפגש")}</td>
+                  <td>${html(session.location || "-")}</td>
+                  <td>${html(session.summary || "-")}</td>
+                  <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(session.patient_id)}" type="button">כרטיס</button></td>
+                </tr>`
+              )
+              .join("") || `<tr><td colspan="7"><div class="empty">אין מפגשים להצגה. אפשר להוסיף מפגש מתוך כרטיס מטופל.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `);
+}
+
+function paymentsPage() {
+  const rows = [...state.payments].sort((a, b) =>
+    `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`)
+  );
+  const paidTotal = rows
+    .filter((payment) => payment.payment_status === "paid")
+    .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+  const openTotal = rows
+    .filter((payment) => payment.payment_status !== "paid")
+    .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+  const receiptNeeded = rows.filter((payment) => payment.receipt_status !== "issued").length;
+
+  return shell(`
+    ${header(
+      "תשלומים",
+      "מעקב גבייה מתוך Google Sheets, כולל סטטוס תשלום וקבלה.",
+      `<button class="button secondary" data-action="refresh" type="button">רענון</button>
+       <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
+    )}
+    ${connectionBanner()}
+    <section class="metric-row">
+      <article class="metric blue-card"><strong>${html(formatAmount(paidTotal))}</strong><span>שולם</span></article>
+      <article class="metric pink-card"><strong>${html(formatAmount(openTotal))}</strong><span>פתוח</span></article>
+      <article class="metric teal-card"><strong>${receiptNeeded}</strong><span>קבלות לבדיקה</span></article>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>רשימת תשלומים</h2><span>${rows.length} רשומות</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>תאריך</th>
+              <th>מטופל</th>
+              <th>סכום</th>
+              <th>אמצעי</th>
+              <th>תשלום</th>
+              <th>קבלה</th>
+              <th>הערות</th>
+              <th>פעולות</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (payment) => `
+                <tr>
+                  <td>${html(formatDate(payment.paid_at))}</td>
+                  <td><strong>${html(patientName(payment.patient_id))}</strong></td>
+                  <td>${html(formatAmount(payment.amount))}</td>
+                  <td>${html(paymentMethodLabel(payment.payment_method))}</td>
+                  <td><span class="status-pill">${html(paymentStatusLabel(payment.payment_status))}</span></td>
+                  <td>${html(receiptStatusLabel(payment.receipt_status))}</td>
+                  <td>${html(payment.notes || "-")}</td>
+                  <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button></td>
+                </tr>`
+              )
+              .join("") || `<tr><td colspan="8"><div class="empty">אין תשלומים להצגה. אפשר להוסיף תשלום מתוך כרטיס מטופל.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `);
+}
+
 function patientDrawer() {
   return `
     <section class="drawer" id="patientDrawer" hidden>
@@ -600,8 +714,18 @@ function paymentMethodLabel(value) {
   return {
     bank_transfer: "העברה",
     cash: "מזומן",
-    check: "צ'ק"
+    check: "צ'ק",
+    bit: "ביט",
+    credit: "אשראי"
   }[value] || "העברה";
+}
+
+function receiptStatusLabel(value) {
+  return {
+    issued: "הופקה קבלה",
+    needed: "דרושה קבלה",
+    not_needed: "לא נדרש"
+  }[value] || "דרושה קבלה";
 }
 
 async function connectGoogle() {
@@ -913,9 +1037,9 @@ function render() {
   const pages = {
     dashboard: dashboardPage,
     patients: () => (idPart ? profilePage(idPart) : patientsPage()),
-    calendar: () => placeholderPage("יומן"),
+    calendar: calendarPage,
     tasks: () => placeholderPage("משימות"),
-    payments: () => placeholderPage("תשלומים"),
+    payments: paymentsPage,
     files: () => placeholderPage("קבצים"),
     settings: settingsPage
   };
