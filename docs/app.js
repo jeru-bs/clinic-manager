@@ -47,6 +47,28 @@ const SHEETS = {
     "notes",
     "created_at",
     "updated_at"
+  ],
+  tasks: [
+    "id",
+    "patient_id",
+    "title",
+    "description",
+    "status",
+    "due_date",
+    "source",
+    "created_at",
+    "updated_at"
+  ],
+  files: [
+    "id",
+    "patient_id",
+    "drive_file_id",
+    "drive_folder_id",
+    "name",
+    "file_type",
+    "url",
+    "created_at",
+    "updated_at"
   ]
 };
 
@@ -60,6 +82,8 @@ const state = {
   patients: [],
   sessions: [],
   payments: [],
+  tasks: [],
+  files: [],
   route: getRoute()
 };
 
@@ -239,7 +263,7 @@ function header(title, subtitle, actions = "") {
 
 function dashboardPage() {
   const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid").length;
-  const openTasks = 0;
+  const openTasks = state.tasks.filter((task) => task.status !== "done").length;
   const today = new Date().toISOString().slice(0, 10);
   const todaySessions = state.sessions.filter((session) => session.session_date === today).length;
 
@@ -261,6 +285,7 @@ function dashboardPage() {
     <section class="grid-two">
       ${sessionsPanel()}
       ${paymentsPanel()}
+      ${tasksPanel()}
     </section>
     ${patientDrawer()}
   `);
@@ -328,6 +353,8 @@ function profilePage(patientId) {
 
   const sessions = state.sessions.filter((session) => session.patient_id === patient.id);
   const payments = state.payments.filter((payment) => payment.patient_id === patient.id);
+  const tasks = state.tasks.filter((task) => task.patient_id === patient.id);
+  const files = state.files.filter((file) => file.patient_id === patient.id);
 
   return shell(`
     ${header(
@@ -357,10 +384,8 @@ function profilePage(patientId) {
       <section class="profile-grid">
         ${sessionsPanel(sessions, patient.id)}
         ${paymentsPanel(payments, patient.id)}
-        <article class="panel">
-          <div class="panel-head"><h2>קבצים</h2><span>Google Drive</span></div>
-          <div class="empty">${patient.drive_folder_id ? "תיקיית המטופל נוצרה בדרייב." : "טרם נוצרה תיקיית מטופל."}</div>
-        </article>
+        ${tasksPanel(tasks, patient.id)}
+        ${filesPanel(files, patient)}
       </section>
     </section>
   `);
@@ -651,6 +676,284 @@ function paymentsPage() {
   `);
 }
 
+function patientOptions(selectedId = "") {
+  return state.patients
+    .map(
+      (patient) =>
+        `<option value="${html(patient.id)}" ${patient.id === selectedId ? "selected" : ""}>${html(patient.child_name)}</option>`
+    )
+    .join("");
+}
+
+function taskStatusLabel(value) {
+  return {
+    open: "פתוחה",
+    waiting: "בהמתנה",
+    done: "בוצעה"
+  }[value] || "פתוחה";
+}
+
+function taskForm(patientId = "") {
+  return `
+    <form class="form-grid inline-form" data-form="task" data-patient-id="${html(patientId)}">
+      ${
+        patientId
+          ? ""
+          : `<div class="field">
+              <label for="task_patient_id">מטופל</label>
+              <select id="task_patient_id" name="patient_id" required>
+                <option value="">בחירה</option>
+                ${patientOptions()}
+              </select>
+            </div>`
+      }
+      <div class="field">
+        <label for="task_title">משימה</label>
+        <input id="task_title" name="title" required placeholder="למשל: לשלוח סיכום להורה" />
+      </div>
+      <div class="field">
+        <label for="task_due_date">תאריך יעד</label>
+        <input id="task_due_date" name="due_date" type="date" />
+      </div>
+      <div class="field">
+        <label for="task_status">סטטוס</label>
+        <select id="task_status" name="status">
+          <option value="open">פתוחה</option>
+          <option value="waiting">בהמתנה</option>
+          <option value="done">בוצעה</option>
+        </select>
+      </div>
+      <div class="field wide">
+        <label for="task_description">פירוט</label>
+        <textarea id="task_description" name="description"></textarea>
+      </div>
+      <div class="toolbar wide">
+        <button class="button" type="submit">שמירת משימה</button>
+      </div>
+    </form>`;
+}
+
+function tasksTable(rows) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>יעד</th>
+            <th>מטופל</th>
+            <th>משימה</th>
+            <th>סטטוס</th>
+            <th>פירוט</th>
+            <th>פעולות</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (task) => `
+              <tr>
+                <td>${html(formatDate(task.due_date))}</td>
+                <td><strong>${html(patientName(task.patient_id))}</strong></td>
+                <td>${html(task.title || "-")}</td>
+                <td><span class="status-pill">${html(taskStatusLabel(task.status))}</span></td>
+                <td>${html(task.description || "-")}</td>
+                <td>
+                  <div class="actions">
+                    <button class="button secondary table-button" data-action="open-profile" data-id="${html(task.patient_id)}" type="button">כרטיס</button>
+                    ${
+                      task.status === "done"
+                        ? ""
+                        : `<button class="button table-button" data-action="complete-task" data-id="${html(task.id)}" type="button">בוצע</button>`
+                    }
+                  </div>
+                </td>
+              </tr>`
+            )
+            .join("") || `<tr><td colspan="6"><div class="empty">אין משימות להצגה.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function tasksPanel(items = state.tasks, patientId = "") {
+  const rows = items.slice(0, 6);
+  return `
+    <article class="panel">
+      <div class="panel-head"><h2>משימות</h2><span>${rows.length} לתצוגה</span></div>
+      ${patientId ? taskForm(patientId) : ""}
+      ${tasksTable(rows)}
+    </article>`;
+}
+
+function tasksPage() {
+  const rows = [...state.tasks].sort((a, b) =>
+    `${a.status === "done" ? "1" : "0"} ${a.due_date || "9999-99-99"}`.localeCompare(
+      `${b.status === "done" ? "1" : "0"} ${b.due_date || "9999-99-99"}`
+    )
+  );
+  const openCount = rows.filter((task) => task.status !== "done").length;
+  const dueToday = new Date().toISOString().slice(0, 10);
+  const dueCount = rows.filter((task) => task.status !== "done" && task.due_date && task.due_date <= dueToday).length;
+
+  return shell(`
+    ${header(
+      "משימות",
+      "ניהול מעקבים, תזכורות ופעולות המשך מתוך Google Sheets.",
+      `<button class="button secondary" data-action="refresh" type="button">רענון</button>
+       <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
+    )}
+    ${connectionBanner()}
+    <section class="metric-row">
+      <article class="metric blue-card"><strong>${openCount}</strong><span>משימות פתוחות</span></article>
+      <article class="metric pink-card"><strong>${dueCount}</strong><span>דורשות טיפול</span></article>
+      <article class="metric teal-card"><strong>${rows.length}</strong><span>סה"כ משימות</span></article>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>משימה חדשה</h2><span>נשמרת לגיליון tasks</span></div>
+      ${taskForm()}
+    </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>רשימת משימות</h2><span>${rows.length} רשומות</span></div>
+      ${tasksTable(rows)}
+    </section>
+  `);
+}
+
+function fileTypeLabel(value) {
+  return {
+    document: "מסמך",
+    summary: "סיכום",
+    receipt: "קבלה",
+    form: "טופס",
+    other: "אחר"
+  }[value] || "מסמך";
+}
+
+function fileForm(patientId = "") {
+  return `
+    <form class="form-grid inline-form" data-form="file" data-patient-id="${html(patientId)}">
+      ${
+        patientId
+          ? ""
+          : `<div class="field">
+              <label for="file_patient_id">מטופל</label>
+              <select id="file_patient_id" name="patient_id" required>
+                <option value="">בחירה</option>
+                ${patientOptions()}
+              </select>
+            </div>`
+      }
+      <div class="field">
+        <label for="file_name">שם קובץ</label>
+        <input id="file_name" name="name" required />
+      </div>
+      <div class="field">
+        <label for="file_type">סוג</label>
+        <select id="file_type" name="file_type">
+          <option value="document">מסמך</option>
+          <option value="summary">סיכום</option>
+          <option value="receipt">קבלה</option>
+          <option value="form">טופס</option>
+          <option value="other">אחר</option>
+        </select>
+      </div>
+      <div class="field wide">
+        <label for="file_url">קישור Google Drive</label>
+        <input id="file_url" name="url" placeholder="https://drive.google.com/..." />
+      </div>
+      <div class="toolbar wide">
+        <button class="button" type="submit">שמירת קובץ</button>
+      </div>
+    </form>`;
+}
+
+function filesTable(rows) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>שם</th>
+            <th>מטופל</th>
+            <th>סוג</th>
+            <th>נוצר</th>
+            <th>פעולות</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (file) => `
+              <tr>
+                <td><strong>${html(file.name || "-")}</strong></td>
+                <td>${html(patientName(file.patient_id))}</td>
+                <td>${html(fileTypeLabel(file.file_type))}</td>
+                <td>${html(formatDate((file.created_at || "").slice(0, 10)))}</td>
+                <td>
+                  <div class="actions">
+                    <button class="button secondary table-button" data-action="open-profile" data-id="${html(file.patient_id)}" type="button">כרטיס</button>
+                    ${
+                      file.url
+                        ? `<a class="button table-button" href="${html(file.url)}" target="_blank" rel="noopener">פתיחה</a>`
+                        : ""
+                    }
+                  </div>
+                </td>
+              </tr>`
+            )
+            .join("") || `<tr><td colspan="5"><div class="empty">אין קבצים להצגה.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function filesPanel(items = state.files, patient = null) {
+  const rows = items.slice(0, 6);
+  return `
+    <article class="panel">
+      <div class="panel-head"><h2>קבצים</h2><span>Google Drive</span></div>
+      ${patient ? fileForm(patient.id) : ""}
+      ${
+        patient?.drive_folder_id
+          ? `<div class="folder-link"><a class="button secondary" href="https://drive.google.com/drive/folders/${html(patient.drive_folder_id)}" target="_blank" rel="noopener">פתיחת תיקיית מטופל בדרייב</a></div>`
+          : ""
+      }
+      ${filesTable(rows)}
+    </article>`;
+}
+
+function filesPage() {
+  const rows = [...state.files].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+  const patientsWithFolders = state.patients.filter((patient) => patient.drive_folder_id).length;
+
+  return shell(`
+    ${header(
+      "קבצים",
+      "רישום קבצים וקישורי Google Drive לפי מטופל.",
+      `<button class="button secondary" data-action="refresh" type="button">רענון</button>
+       ${
+         state.config.googleDriveRootFolderId
+           ? `<a class="button yellow" href="https://drive.google.com/drive/folders/${html(state.config.googleDriveRootFolderId)}" target="_blank" rel="noopener">פתיחת תיקיית דרייב ראשית</a>`
+           : `<a class="button yellow" href="#/settings">הגדרת דרייב</a>`
+       }`
+    )}
+    ${connectionBanner()}
+    <section class="metric-row">
+      <article class="metric blue-card"><strong>${rows.length}</strong><span>קבצים רשומים</span></article>
+      <article class="metric teal-card"><strong>${patientsWithFolders}</strong><span>תיקיות מטופלים</span></article>
+      <article class="metric purple-card"><strong>${state.patients.length}</strong><span>מטופלים במערכת</span></article>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>קובץ חדש</h2><span>רישום קישור לקובץ בדרייב</span></div>
+      ${fileForm()}
+    </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>רשימת קבצים</h2><span>${rows.length} רשומות</span></div>
+      ${filesTable(rows)}
+    </section>
+  `);
+}
+
 function patientDrawer() {
   return `
     <section class="drawer" id="patientDrawer" hidden>
@@ -831,8 +1134,8 @@ async function readSheet(sheetName) {
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
   const result = await googleFetch(url);
   return (result.values || [])
-    .filter((row) => row.some(Boolean))
-    .map((row) => rowToRecord(columns, row));
+    .map((row, index) => ({ ...rowToRecord(columns, row), _rowNumber: String(index + 2) }))
+    .filter((record) => columns.some((column) => record[column]));
 }
 
 async function appendSheet(sheetName, record) {
@@ -844,8 +1147,27 @@ async function appendSheet(sheetName, record) {
   );
   url.searchParams.set("valueInputOption", "RAW");
   url.searchParams.set("insertDataOption", "INSERT_ROWS");
-  await googleFetch(url.toString(), {
+  return googleFetch(url.toString(), {
     method: "POST",
+    body: JSON.stringify({ values: [recordToRow(columns, record)] })
+  });
+}
+
+function appendedRowNumber(result) {
+  const range = result?.updates?.updatedRange || "";
+  return range.match(/![A-Z]+(\d+):/)?.[1] || "";
+}
+
+async function updateSheetRow(sheetName, rowNumber, record) {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  const columns = SHEETS[sheetName];
+  const range = `${sheetName}!A${rowNumber}:${String.fromCharCode(64 + columns.length)}${rowNumber}`;
+  const url = new URL(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`
+  );
+  url.searchParams.set("valueInputOption", "RAW");
+  await googleFetch(url.toString(), {
+    method: "PUT",
     body: JSON.stringify({ values: [recordToRow(columns, record)] })
   });
 }
@@ -866,14 +1188,18 @@ async function createPatientFolder(patientNameValue) {
 
 async function loadData() {
   if (!state.accessToken || !state.config.googleSpreadsheetId) return;
-  const [patients, sessions, payments] = await Promise.all([
+  const [patients, sessions, payments, tasks, files] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
-    readSheet("payments")
+    readSheet("payments"),
+    readSheet("tasks"),
+    readSheet("files")
   ]);
   state.patients = patients.sort((a, b) => (a.child_name || "").localeCompare(b.child_name || "", "he"));
   state.sessions = sessions.sort((a, b) => `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`));
   state.payments = payments.sort((a, b) => `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`));
+  state.tasks = tasks.sort((a, b) => `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`));
+  state.files = files.sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
 }
 
 async function savePatient(form) {
@@ -968,6 +1294,73 @@ async function savePayment(form) {
   );
 }
 
+async function saveTask(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || data.patient_id || "";
+
+  if (!patientId) throw new Error("צריך לבחור מטופל למשימה.");
+  if (!data.title) throw new Error("כותרת המשימה היא שדה חובה.");
+
+  const now = new Date().toISOString();
+  const task = {
+    id: id(),
+    patient_id: patientId,
+    title: data.title,
+    description: data.description || "",
+    status: data.status || "open",
+    due_date: data.due_date || "",
+    source: "manual",
+    created_at: now,
+    updated_at: now
+  };
+
+  const appendResult = await appendSheet("tasks", task);
+  task._rowNumber = appendedRowNumber(appendResult);
+  state.tasks = [task, ...state.tasks].sort((a, b) =>
+    `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`)
+  );
+}
+
+async function completeTask(taskId) {
+  const task = state.tasks.find((item) => item.id === taskId);
+  if (!task) throw new Error("המשימה לא נמצאה.");
+  if (!task._rowNumber) throw new Error("לא ניתן לעדכן את המשימה לפני רענון הנתונים.");
+
+  const updated = {
+    ...task,
+    status: "done",
+    updated_at: new Date().toISOString()
+  };
+
+  await updateSheetRow("tasks", task._rowNumber, updated);
+  state.tasks = state.tasks.map((item) => (item.id === taskId ? updated : item));
+}
+
+async function saveFile(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || data.patient_id || "";
+  const patient = state.patients.find((item) => item.id === patientId);
+
+  if (!patientId) throw new Error("צריך לבחור מטופל לקובץ.");
+  if (!data.name) throw new Error("שם הקובץ הוא שדה חובה.");
+
+  const now = new Date().toISOString();
+  const file = {
+    id: id(),
+    patient_id: patientId,
+    drive_file_id: "",
+    drive_folder_id: patient?.drive_folder_id || "",
+    name: data.name,
+    file_type: data.file_type || "document",
+    url: data.url || "",
+    created_at: now,
+    updated_at: now
+  };
+
+  await appendSheet("files", file);
+  state.files = [file, ...state.files].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+}
+
 function bindEvents() {
   document.addEventListener("click", async (event) => {
     const target = event.target.closest("[data-action]");
@@ -989,6 +1382,17 @@ function bindEvents() {
     }
     if (action === "open-profile") {
       navigate(`patients/${target.dataset.id}`);
+    }
+    if (action === "complete-task") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        await completeTask(target.dataset.id);
+        state.message = "המשימה סומנה כבוצעה.";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
+        render();
+      }
     }
   });
 
@@ -1023,6 +1427,18 @@ function bindEvents() {
         state.message = "התשלום נשמר ב-Google Sheets.";
       }
 
+      if (form.dataset.form === "task") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        await saveTask(form);
+        state.message = "המשימה נשמרה ב-Google Sheets.";
+      }
+
+      if (form.dataset.form === "file") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        await saveFile(form);
+        state.message = "הקובץ נשמר ב-Google Sheets.";
+      }
+
       render();
     } catch (error) {
       state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
@@ -1038,9 +1454,9 @@ function render() {
     dashboard: dashboardPage,
     patients: () => (idPart ? profilePage(idPart) : patientsPage()),
     calendar: calendarPage,
-    tasks: () => placeholderPage("משימות"),
+    tasks: tasksPage,
     payments: paymentsPage,
-    files: () => placeholderPage("קבצים"),
+    files: filesPage,
     settings: settingsPage
   };
   document.getElementById("app").innerHTML = (pages[route] || dashboardPage)();
