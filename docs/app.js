@@ -52,7 +52,7 @@ const SHEETS = {
 
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const state = {
-  accessToken: "",
+  accessToken: loadStoredGoogleToken(),
   config: loadConfig(),
   currentPatientId: "",
   message: "",
@@ -80,6 +80,35 @@ function loadConfig() {
 function saveConfig(nextConfig) {
   state.config = { ...state.config, ...nextConfig };
   localStorage.setItem("clinic-manager-config", JSON.stringify(state.config));
+}
+
+function loadStoredGoogleToken() {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem("clinic-manager-google-token") || "null");
+
+    if (!stored?.accessToken || !stored?.expiresAt || Date.now() > stored.expiresAt) {
+      sessionStorage.removeItem("clinic-manager-google-token");
+      return "";
+    }
+
+    return stored.accessToken;
+  } catch {
+    sessionStorage.removeItem("clinic-manager-google-token");
+    return "";
+  }
+}
+
+function saveGoogleToken(response) {
+  const expiresInSeconds = Number(response.expires_in || 3300);
+  const expiresAt = Date.now() + Math.max(60, expiresInSeconds - 60) * 1000;
+
+  sessionStorage.setItem(
+    "clinic-manager-google-token",
+    JSON.stringify({
+      accessToken: response.access_token,
+      expiresAt
+    })
+  );
 }
 
 function getRoute() {
@@ -521,6 +550,7 @@ async function connectGoogle() {
       }
 
       state.accessToken = response.access_token;
+      saveGoogleToken(response);
       state.message = "החיבור לגוגל הצליח.";
       await loadData();
       render();
@@ -705,3 +735,15 @@ function render() {
 window.addEventListener("hashchange", render);
 render();
 bindEvents();
+
+if (state.accessToken) {
+  loadData()
+    .then(render)
+    .catch((error) => {
+      sessionStorage.removeItem("clinic-manager-google-token");
+      state.accessToken = "";
+      state.error =
+        error instanceof Error ? error.message : "החיבור לגוגל פג תוקף.";
+      render();
+    });
+}
