@@ -84,6 +84,12 @@ const state = {
   payments: [],
   tasks: [],
   files: [],
+  patientFilter: {
+    name: "",
+    school: "",
+    treatment: "",
+    status: ""
+  },
   route: getRoute()
 };
 
@@ -292,6 +298,17 @@ function dashboardPage() {
 }
 
 function patientsPage() {
+  const filters = state.patientFilter;
+  const includes = (value, filter) =>
+    !filter || String(value || "").toLowerCase().includes(filter.toLowerCase());
+  const filteredPatients = state.patients.filter(
+    (patient) =>
+      includes(patient.child_name, filters.name) &&
+      includes(patient.school_name, filters.school) &&
+      includes(patient.treatment_type, filters.treatment) &&
+      includes(paymentStatusLabel(patient.payment_status), filters.status)
+  );
+
   return shell(`
     ${header(
       "מטופלים",
@@ -302,7 +319,7 @@ function patientsPage() {
     )}
     ${connectionBanner()}
     <section class="panel">
-      <div class="panel-head"><h2>מטופלים קיימים</h2><span>${state.patients.length} רשומות</span></div>
+      <div class="panel-head"><h2>מטופלים קיימים</h2><span>${filteredPatients.length} מתוך ${state.patients.length} רשומות</span></div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -314,15 +331,15 @@ function patientsPage() {
               <th>פעולות</th>
             </tr>
             <tr class="filters">
-              <td><input class="table-filter" placeholder="חיפוש שם" data-filter="name" /></td>
-              <td><input class="table-filter" placeholder="מוסד" /></td>
-              <td><input class="table-filter" placeholder="סוג טיפול" /></td>
-              <td><input class="table-filter" placeholder="סטטוס" /></td>
+              <td><input class="table-filter" placeholder="חיפוש שם" data-patient-filter="name" value="${html(filters.name)}" /></td>
+              <td><input class="table-filter" placeholder="מוסד" data-patient-filter="school" value="${html(filters.school)}" /></td>
+              <td><input class="table-filter" placeholder="סוג טיפול" data-patient-filter="treatment" value="${html(filters.treatment)}" /></td>
+              <td><input class="table-filter" placeholder="סטטוס" data-patient-filter="status" value="${html(filters.status)}" /></td>
               <td></td>
             </tr>
           </thead>
           <tbody>
-            ${state.patients
+            ${filteredPatients
               .map(
                 (patient) => `
                 <tr>
@@ -955,44 +972,50 @@ function filesPage() {
 }
 
 function patientDrawer() {
+  const patient = state.currentPatientId
+    ? state.patients.find((item) => item.id === state.currentPatientId)
+    : null;
+  const title = patient ? "עריכת מטופל" : "הוספת מטופל";
+  const submitLabel = patient ? "שמירת שינויים" : "שמירה ל-Google Sheets";
+
   return `
     <section class="drawer" id="patientDrawer" hidden>
       <div class="drawer-inner">
         <div class="panel-head">
-          <h2>הוספת מטופל</h2>
+          <h2>${title}</h2>
           <button class="button secondary" data-action="close-drawer" type="button">סגירה</button>
         </div>
-        <form class="form-grid" data-form="patient">
+        <form class="form-grid" data-form="patient" data-id="${html(patient?.id || "")}">
           <div class="field">
             <label for="child_name">שם</label>
-            <input id="child_name" name="child_name" required />
+            <input id="child_name" name="child_name" required value="${html(patient?.child_name || "")}" />
           </div>
           <div class="field">
             <label for="school_name">מוסד</label>
-            <input id="school_name" name="school_name" />
+            <input id="school_name" name="school_name" value="${html(patient?.school_name || "")}" />
           </div>
           <div class="field">
             <label for="treatment_type">סוג טיפול</label>
-            <input id="treatment_type" name="treatment_type" />
+            <input id="treatment_type" name="treatment_type" value="${html(patient?.treatment_type || "")}" />
           </div>
           <div class="field">
             <label for="fixed_price">מחיר קבוע</label>
-            <input id="fixed_price" name="fixed_price" inputmode="decimal" />
+            <input id="fixed_price" name="fixed_price" inputmode="decimal" value="${html(patient?.fixed_price || "")}" />
           </div>
           <div class="field">
             <label for="fixed_day">יום קבוע</label>
-            <input id="fixed_day" name="fixed_day" />
+            <input id="fixed_day" name="fixed_day" value="${html(patient?.fixed_day || "")}" />
           </div>
           <div class="field">
             <label for="fixed_time">שעה קבועה</label>
-            <input id="fixed_time" name="fixed_time" type="time" />
+            <input id="fixed_time" name="fixed_time" type="time" value="${html(patient?.fixed_time || "")}" />
           </div>
           <div class="field wide">
             <label for="general_notes">הערות</label>
-            <textarea id="general_notes" name="general_notes"></textarea>
+            <textarea id="general_notes" name="general_notes">${html(patient?.general_notes || "")}</textarea>
           </div>
           <div class="toolbar wide">
-            <button class="button" type="submit">שמירה ל-Google Sheets</button>
+            <button class="button" type="submit">${submitLabel}</button>
             <button class="button secondary" data-action="close-drawer" type="button">ביטול</button>
           </div>
         </form>
@@ -1204,34 +1227,48 @@ async function loadData() {
 
 async function savePatient(form) {
   const data = Object.fromEntries(new FormData(form).entries());
+  const existingId = form.dataset.id || "";
+  const existing = existingId ? state.patients.find((patient) => patient.id === existingId) : null;
   if (!data.child_name) throw new Error("שם המטופל הוא שדה חובה.");
 
   const now = new Date().toISOString();
-  const folder = await createPatientFolder(data.child_name);
+  const folder = existing
+    ? { id: existing.drive_folder_id || "", path: existing.drive_folder_path || "" }
+    : await createPatientFolder(data.child_name);
   const patient = {
-    id: id(),
+    ...(existing || {}),
+    id: existing?.id || id(),
     child_name: data.child_name,
-    address: "",
+    address: existing?.address || "",
     school_name: data.school_name || "",
     treatment_type: data.treatment_type || "",
     fixed_price: data.fixed_price || "",
     fixed_day: data.fixed_day || "",
     fixed_time: data.fixed_time || "",
-    treatment_goals: "",
-    sensitive_notes: "",
+    treatment_goals: existing?.treatment_goals || "",
+    sensitive_notes: existing?.sensitive_notes || "",
     general_notes: data.general_notes || "",
-    status: "active",
-    default_payment_method: "bank_transfer",
-    payment_status: "unpaid",
-    receipt_status: "needed",
+    status: existing?.status || "active",
+    default_payment_method: existing?.default_payment_method || "bank_transfer",
+    payment_status: existing?.payment_status || "unpaid",
+    receipt_status: existing?.receipt_status || "needed",
     drive_folder_id: folder.id,
     drive_folder_path: folder.path,
-    created_at: now,
+    created_at: existing?.created_at || now,
     updated_at: now
   };
 
-  await appendSheet("patients", patient);
-  state.patients = [patient, ...state.patients].sort((a, b) =>
+  if (existing) {
+    if (!existing._rowNumber) throw new Error("לא ניתן לעדכן את המטופל לפני רענון הנתונים.");
+    await updateSheetRow("patients", existing._rowNumber, patient);
+    state.patients = state.patients.map((item) => (item.id === patient.id ? patient : item));
+  } else {
+    const appendResult = await appendSheet("patients", patient);
+    patient._rowNumber = appendedRowNumber(appendResult);
+    state.patients = [patient, ...state.patients];
+  }
+
+  state.patients = state.patients.sort((a, b) =>
     (a.child_name || "").localeCompare(b.child_name || "", "he")
   );
 }
@@ -1375,9 +1412,12 @@ function bindEvents() {
       render();
     }
     if (action === "open-patient-drawer") {
+      state.currentPatientId = target.dataset.id || "";
+      render();
       document.getElementById("patientDrawer")?.removeAttribute("hidden");
     }
     if (action === "close-drawer") {
+      state.currentPatientId = "";
       document.getElementById("patientDrawer")?.setAttribute("hidden", "");
     }
     if (action === "open-profile") {
@@ -1393,6 +1433,21 @@ function bindEvents() {
         state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
         render();
       }
+    }
+  });
+
+  document.addEventListener("input", (event) => {
+    const target = event.target.closest("[data-patient-filter]");
+    if (!target) return;
+
+    state.patientFilter[target.dataset.patientFilter] = target.value;
+    if (state.route === "patients") {
+      const filterKey = target.dataset.patientFilter;
+      const cursor = target.selectionStart || target.value.length;
+      render();
+      const nextTarget = document.querySelector(`[data-patient-filter="${filterKey}"]`);
+      nextTarget?.focus();
+      nextTarget?.setSelectionRange?.(cursor, cursor);
     }
   });
 
@@ -1412,7 +1467,10 @@ function bindEvents() {
       if (form.dataset.form === "patient") {
         if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
         await savePatient(form);
-        state.message = "המטופל נשמר ב-Google Sheets ונוצרה תיקייה בדרייב.";
+        state.currentPatientId = "";
+        state.message = form.dataset.id
+          ? "פרטי המטופל עודכנו ב-Google Sheets."
+          : "המטופל נשמר ב-Google Sheets ונוצרה תיקייה בדרייב.";
       }
 
       if (form.dataset.form === "session") {
