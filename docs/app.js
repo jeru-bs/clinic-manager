@@ -1267,11 +1267,15 @@ function patientDrawer() {
           </div>
           <div class="field">
             <label for="fixed_day">יום קבוע</label>
-            <input id="fixed_day" name="fixed_day" value="${html(patient?.fixed_day || "")}" />
+            <select id="fixed_day" name="fixed_day">
+              ${fixedDayOptions(patient?.fixed_day || "")}
+            </select>
           </div>
           <div class="field">
             <label for="fixed_time">שעה קבועה</label>
-            <input id="fixed_time" name="fixed_time" type="time" value="${html(patient?.fixed_time || "")}" />
+            <select id="fixed_time" name="fixed_time">
+              ${fixedTimeOptions(patient?.fixed_time || "")}
+            </select>
           </div>
           <div class="field wide">
             <label for="general_notes">הערות</label>
@@ -1284,6 +1288,36 @@ function patientDrawer() {
         </form>
       </div>
     </section>`;
+}
+
+function fixedDayOptions(selectedValue = "") {
+  const days = ["ראשון", "שני", "שלישי", "רביעי", "חמישי"];
+  return [
+    `<option value="">בחירה</option>`,
+    ...days.map(
+      (day) => `<option value="${day}" ${day === selectedValue ? "selected" : ""}>${day}</option>`
+    )
+  ].join("");
+}
+
+function fixedTimeOptions(selectedValue = "") {
+  const options = [`<option value="">בחירה</option>`];
+
+  for (let hour = 7; hour <= 22; hour += 1) {
+    for (const minute of ["00", "15", "30", "45"]) {
+      if (hour === 22 && minute !== "00") continue;
+      const value = `${String(hour).padStart(2, "0")}:${minute}`;
+      options.push(
+        `<option value="${value}" ${value === selectedValue ? "selected" : ""}>${value}</option>`
+      );
+    }
+  }
+
+  if (selectedValue && !options.some((option) => option.includes(`value="${html(selectedValue)}"`))) {
+    options.push(`<option value="${html(selectedValue)}" selected>${html(selectedValue)}</option>`);
+  }
+
+  return options.join("");
 }
 
 function patientName(patientId) {
@@ -1591,19 +1625,6 @@ async function savePatient(form) {
   if (!data.child_name) throw new Error("שם המטופל הוא שדה חובה.");
 
   const now = new Date().toISOString();
-  let folder = existing
-    ? { id: existing.drive_folder_id || "", path: existing.drive_folder_path || "" }
-    : { id: "", path: "" };
-  let folderError = "";
-
-  if (!existing) {
-    try {
-      folder = await createPatientFolder(data.child_name);
-    } catch (error) {
-      folderError = error instanceof Error ? error.message : "יצירת תיקיית המטופל נכשלה.";
-    }
-  }
-
   const patient = {
     ...(existing || {}),
     id: existing?.id || id(),
@@ -1621,8 +1642,8 @@ async function savePatient(form) {
     default_payment_method: existing?.default_payment_method || "bank_transfer",
     payment_status: existing?.payment_status || "unpaid",
     receipt_status: existing?.receipt_status || "needed",
-    drive_folder_id: folder.id,
-    drive_folder_path: folder.path,
+    drive_folder_id: existing?.drive_folder_id || "",
+    drive_folder_path: existing?.drive_folder_path || "",
     created_at: existing?.created_at || now,
     updated_at: now
   };
@@ -1641,10 +1662,7 @@ async function savePatient(form) {
     (a.child_name || "").localeCompare(b.child_name || "", "he")
   );
 
-  return {
-    folderCreated: Boolean(folder.id),
-    folderError
-  };
+  return patient;
 }
 
 async function togglePatientArchive(patientId, shouldArchive) {
@@ -1966,17 +1984,11 @@ function bindEvents() {
 
       if (form.dataset.form === "patient") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const result = await savePatient(form);
+        await savePatient(form);
         state.currentPatientId = "";
-        if (form.dataset.id) {
-          state.message = "פרטי המטופל עודכנו במערכת.";
-        } else if (result.folderCreated) {
-          state.message = "המטופל נשמר במערכת ונוצרה לו תיקייה.";
-        } else {
-          state.message = result.folderError
-            ? "המטופל נשמר במערכת. את תיקיית המטופל אפשר ליצור בהמשך מכרטיס המטופל."
-            : "המטופל נשמר במערכת.";
-        }
+        state.message = form.dataset.id
+          ? "פרטי המטופל עודכנו במערכת."
+          : "המטופל נשמר במערכת. תיקיית מטופל אפשר ליצור בהמשך מכרטיס המטופל.";
       }
 
       if (form.dataset.form === "session") {
