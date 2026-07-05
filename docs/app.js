@@ -99,6 +99,9 @@ const state = {
   route: getRoute()
 };
 
+let messageDismissTimer = null;
+let messageDismissValue = "";
+
 function loadConfig() {
   const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
   return {
@@ -2116,6 +2119,28 @@ function render() {
     settings: settingsPage
   };
   document.getElementById("app").innerHTML = (pages[route] || dashboardPage)();
+  scheduleMessageDismiss();
+}
+
+function scheduleMessageDismiss() {
+  if (!state.message) {
+    if (messageDismissTimer) window.clearTimeout(messageDismissTimer);
+    messageDismissTimer = null;
+    messageDismissValue = "";
+    return;
+  }
+
+  if (messageDismissTimer && messageDismissValue === state.message) return;
+
+  if (messageDismissTimer) window.clearTimeout(messageDismissTimer);
+  messageDismissValue = state.message;
+  messageDismissTimer = window.setTimeout(() => {
+    if (state.message !== messageDismissValue) return;
+    state.message = "";
+    messageDismissTimer = null;
+    messageDismissValue = "";
+    render();
+  }, 4500);
 }
 
 window.addEventListener("hashchange", render);
