@@ -72,13 +72,29 @@ a {
 
 .side-brand {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   place-items: center;
-  min-height: 112px;
+  min-height: 132px;
   border-bottom: 1px solid var(--side-border);
-  padding: 14px 10px;
+  padding: 12px 8px;
   text-align: center;
   font-weight: 800;
+}
+
+.side-brand-logo {
+  width: 74px;
+  height: 74px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #f7f2ea;
+  object-fit: cover;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.side-brand small {
+  color: #9ba2bd;
+  font-size: 0.72rem;
+  font-weight: 700;
 }
 
 .side-brand-mark {
@@ -860,9 +876,18 @@ th {
   }
 
   .side-brand {
-    min-height: 78px;
+    min-height: 96px;
     padding: 10px 6px;
     font-size: 0.78rem;
+  }
+
+  .side-brand-logo {
+    width: 48px;
+    height: 48px;
+  }
+
+  .side-brand small {
+    font-size: 0.66rem;
   }
 
   .side-brand-mark {

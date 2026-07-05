@@ -307,8 +307,9 @@ function shell(content) {
     <div class="app-shell">
       <aside class="side-nav">
         <div class="side-brand">
-          <span class="side-brand-mark">קל</span>
-          <span>${html(state.config.appName)}</span>
+          <img class="side-brand-logo" src="./assets/malka-logo.png" alt="מלכה זיידמן" />
+          <span>מלכה זיידמן</span>
+          <small>ניהול קליניקה</small>
         </div>
         <nav class="side-menu">${nav}</nav>
       </aside>
