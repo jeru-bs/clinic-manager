@@ -414,6 +414,7 @@ th {
 .field select,
 .field textarea,
 .table-filter {
+  min-width: 0;
   width: 100%;
   border: 1px solid #cfd5e3;
   border-radius: 3px;
@@ -533,8 +534,24 @@ th {
 
 .profile-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+
+.profile-wide {
+  grid-column: 1 / -1;
+}
+
+.profile .inline-form {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+}
+
+.profile-wide .inline-form {
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+}
+
+.profile .inline-form .wide {
+  grid-column: 1 / -1;
 }
 
 .detail-list {
@@ -635,6 +652,18 @@ th {
   gap: 8px;
   border-bottom: 1px solid var(--table-border);
   padding: 12px 16px;
+}
+
+.recording-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+}
+
+.recording-box span {
+  color: var(--muted);
 }
 
 .report-table {
@@ -813,6 +842,15 @@ th {
 
   .wide {
     grid-column: auto;
+  }
+
+  .profile-wide {
+    grid-column: auto;
+  }
+
+  .profile .inline-form,
+  .profile-wide .inline-form {
+    grid-template-columns: 1fr;
   }
 }
 

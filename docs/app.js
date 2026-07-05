@@ -101,6 +101,10 @@ const state = {
 
 let messageDismissTimer = null;
 let messageDismissValue = "";
+let activeRecorder = null;
+let activeRecordingPatientId = "";
+let activeRecordingStream = null;
+let activeRecordingChunks = [];
 
 function loadConfig() {
   const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
@@ -473,6 +477,7 @@ function profilePage(patientId) {
         ${sessionsPanel(sessions, patient.id)}
         ${paymentsPanel(payments, patient.id)}
         ${tasksPanel(tasks, patient.id)}
+        ${recordingPanel(patient)}
         ${filesPanel(files, patient)}
       </section>
     </section>
@@ -617,9 +622,17 @@ function paymentForm(patientId) {
 
 function sessionsPanel(items = state.sessions, patientId = "") {
   const rows = items.slice(0, 5);
+  const patientMode = Boolean(patientId);
   return `
-    <article class="panel">
-      <div class="panel-head"><h2>מפגשים קרובים</h2><span>היום והשבוע הקרוב</span></div>
+    <article class="panel ${patientMode ? "profile-wide" : ""}">
+      <div class="panel-head"><h2>${patientMode ? "תיעוד מפגש" : "מפגשים קרובים"}</h2><span>${patientMode ? "טופס קצר ומסמך טיפול" : "היום והשבוע הקרוב"}</span></div>
+      ${
+        patientId
+          ? `<div class="folder-link">
+              <button class="button blue" data-action="create-treatment-doc" data-id="${html(patientId)}" type="button">מסמך תיעוד חדש</button>
+            </div>`
+          : ""
+      }
       ${patientId ? sessionForm(patientId) : ""}
       ${
         rows.length
@@ -633,7 +646,9 @@ function sessionsPanel(items = state.sessions, patientId = "") {
                   </article>`
               )
               .join("")}</div>`
-          : `<div class="empty">עדיין אין מפגשים להצגה.</div>`
+          : patientMode
+            ? ""
+            : `<div class="empty">עדיין אין מפגשים להצגה.</div>`
       }
     </article>`;
 }
@@ -1098,6 +1113,7 @@ function fileTypeLabel(value) {
     summary: "סיכום",
     receipt: "קבלה",
     form: "טופס",
+    recording: "הקלטה",
     other: "אחר"
   }[value] || "מסמך";
 }
@@ -1118,7 +1134,7 @@ function fileForm(patientId = "") {
       }
       <div class="field">
         <label for="file_name">שם קובץ</label>
-        <input id="file_name" name="name" required />
+        <input id="file_name" name="name" placeholder="אם ריק, יישמר בשם הקובץ המקורי" />
       </div>
       <div class="field">
         <label for="file_type">סוג</label>
@@ -1127,15 +1143,16 @@ function fileForm(patientId = "") {
           <option value="summary">סיכום</option>
           <option value="receipt">קבלה</option>
           <option value="form">טופס</option>
+          <option value="recording">הקלטה</option>
           <option value="other">אחר</option>
         </select>
       </div>
       <div class="field wide">
-        <label for="file_url">קישור לקובץ</label>
-        <input id="file_url" name="url" placeholder="https://drive.google.com/..." />
+        <label for="file_upload">קובץ להעלאה</label>
+        <input id="file_upload" name="upload" type="file" required />
       </div>
       <div class="toolbar wide">
-        <button class="button" type="submit">שמירת קובץ</button>
+        <button class="button" type="submit">העלאת קובץ</button>
       </div>
     </form>`;
 }
@@ -1204,6 +1221,22 @@ function filesTable(rows) {
     </div>`;
 }
 
+function recordingPanel(patient) {
+  const isRecording = activeRecordingPatientId === patient.id && activeRecorder?.state === "recording";
+  return `
+    <article class="panel">
+      <div class="panel-head"><h2>הקלטה</h2><span>${isRecording ? "מקליט עכשיו" : "שמירה לתיקיית המטופל"}</span></div>
+      <div class="recording-box">
+        <button class="button ${isRecording ? "danger" : "blue"}" data-action="${
+          isRecording ? "stop-recording" : "start-recording"
+        }" data-id="${html(patient.id)}" type="button">${
+          isRecording ? "עצירת הקלטה ושמירה" : "התחלת הקלטה"
+        }</button>
+        <span>העיבוד החכם יחובר בשלב הבא.</span>
+      </div>
+    </article>`;
+}
+
 function filesPanel(items = state.files, patient = null) {
   const rows = items.slice(0, 6);
   return `
@@ -1232,7 +1265,7 @@ function filesPage() {
   return shell(`
     ${header(
       "קבצים",
-      "רישום קבצים וקישורים לפי מטופל.",
+      "קבצים שמורים לפי מטופל.",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
        ${
          state.config.googleDriveRootFolderId
@@ -1247,7 +1280,7 @@ function filesPage() {
       <article class="metric purple-card"><strong>${state.patients.length}</strong><span>מטופלים במערכת</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>קובץ חדש</h2><span>רישום קישור לקובץ</span></div>
+      <div class="panel-head"><h2>קובץ חדש</h2><span>העלאה לתיקיית המטופל</span></div>
       ${fileForm()}
     </section>
     <section class="panel page-gap">
@@ -1563,11 +1596,85 @@ function driveFileUrl(fileId) {
 }
 
 function driveFileTypeLabel(mimeType = "") {
+  if (mimeType.includes("audio")) return "recording";
   if (mimeType.includes("spreadsheet")) return "document";
   if (mimeType.includes("document")) return "document";
   if (mimeType.includes("pdf")) return "document";
   if (mimeType.includes("image")) return "form";
   return "other";
+}
+
+function fileNameWithFallback(customName, selectedFile) {
+  return String(customName || selectedFile?.name || "").trim();
+}
+
+async function uploadDriveFile(folderId, selectedFile, fileName) {
+  const boundary = `clinic-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const metadata = {
+    name: fileName || selectedFile.name,
+    parents: [folderId]
+  };
+  const body = new Blob(
+    [
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(
+        metadata
+      )}\r\n`,
+      `--${boundary}\r\nContent-Type: ${
+        selectedFile.type || "application/octet-stream"
+      }\r\n\r\n`,
+      selectedFile,
+      `\r\n--${boundary}--`
+    ],
+    { type: `multipart/related; boundary=${boundary}` }
+  );
+  const response = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,createdTime",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${state.accessToken}`
+      },
+      body
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(friendlyGoogleError(text, response.status));
+  }
+
+  return response.json();
+}
+
+async function appendFileRecord(file) {
+  const appendResult = await appendSheet("files", file);
+  file._rowNumber = appendedRowNumber(appendResult);
+  state.files = [file, ...state.files].sort((a, b) =>
+    `${b.created_at}`.localeCompare(`${a.created_at}`)
+  );
+  return file;
+}
+
+async function uploadPatientFile(patientId, selectedFile, fileType = "document", customName = "") {
+  if (!selectedFile) throw new Error("צריך לבחור קובץ להעלאה.");
+  const patient = await ensurePatientDriveFolder(patientId);
+  const now = new Date().toISOString();
+  const result = await uploadDriveFile(
+    patient.drive_folder_id,
+    selectedFile,
+    fileNameWithFallback(customName, selectedFile)
+  );
+  return appendFileRecord({
+    id: id(),
+    patient_id: patientId,
+    drive_file_id: result.id || "",
+    drive_folder_id: patient.drive_folder_id || "",
+    name: result.name || selectedFile.name,
+    file_type: fileType || driveFileTypeLabel(result.mimeType || selectedFile.type),
+    url: result.webViewLink || driveFileUrl(result.id),
+    created_at: result.createdTime || now,
+    updated_at: now
+  });
 }
 
 async function ensurePatientDriveFolder(patientId) {
@@ -1842,26 +1949,13 @@ async function completeTask(taskId) {
 async function saveFile(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || data.patient_id || "";
-  const patient = state.patients.find((item) => item.id === patientId);
+  const selectedFile = form.elements.upload?.files?.[0];
+  const fileName = fileNameWithFallback(data.name, selectedFile);
 
   if (!patientId) throw new Error("צריך לבחור מטופל לקובץ.");
-  if (!data.name) throw new Error("שם הקובץ הוא שדה חובה.");
+  if (!selectedFile) throw new Error("צריך לבחור קובץ להעלאה.");
 
-  const now = new Date().toISOString();
-  const file = {
-    id: id(),
-    patient_id: patientId,
-    drive_file_id: "",
-    drive_folder_id: patient?.drive_folder_id || "",
-    name: data.name,
-    file_type: data.file_type || "document",
-    url: data.url || "",
-    created_at: now,
-    updated_at: now
-  };
-
-  await appendSheet("files", file);
-  state.files = [file, ...state.files].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+  await uploadPatientFile(patientId, selectedFile, data.file_type || "document", fileName);
 }
 
 async function createFileFromTemplate(form) {
@@ -1898,9 +1992,88 @@ async function createFileFromTemplate(form) {
     updated_at: now
   };
 
-  const appendResult = await appendSheet("files", file);
-  file._rowNumber = appendedRowNumber(appendResult);
-  state.files = [file, ...state.files].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+  await appendFileRecord(file);
+}
+
+async function createTreatmentDocument(patientId) {
+  const patient = await ensurePatientDriveFolder(patientId);
+  const name = `תיעוד טיפול - ${patient.child_name || "מטופל"} - ${isoDate(new Date())}`;
+  const result = await googleFetch(
+    "https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,createdTime",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        mimeType: "application/vnd.google-apps.document",
+        parents: [patient.drive_folder_id]
+      })
+    }
+  );
+  const now = new Date().toISOString();
+  return appendFileRecord({
+    id: id(),
+    patient_id: patientId,
+    drive_file_id: result.id || "",
+    drive_folder_id: patient.drive_folder_id || "",
+    name: result.name || name,
+    file_type: "summary",
+    url: result.webViewLink || driveFileUrl(result.id),
+    created_at: result.createdTime || now,
+    updated_at: now
+  });
+}
+
+async function startRecording(patientId) {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    throw new Error("הדפדפן לא תומך בהקלטה ישירה.");
+  }
+  if (activeRecorder?.state === "recording") throw new Error("כבר מתבצעת הקלטה.");
+  if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני הקלטה.");
+
+  activeRecordingPatientId = patientId;
+  activeRecordingChunks = [];
+  activeRecordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  activeRecorder = new MediaRecorder(activeRecordingStream);
+  activeRecorder.addEventListener("dataavailable", (event) => {
+    if (event.data?.size) activeRecordingChunks.push(event.data);
+  });
+  activeRecorder.addEventListener("stop", async () => {
+    const patientIdForUpload = activeRecordingPatientId;
+    const patientNameValue = patientName(patientIdForUpload);
+    const mimeType = activeRecorder?.mimeType || "audio/webm";
+    const blob = new Blob(activeRecordingChunks, { type: mimeType });
+    activeRecordingStream?.getTracks().forEach((track) => track.stop());
+    activeRecorder = null;
+    activeRecordingStream = null;
+    activeRecordingPatientId = "";
+    activeRecordingChunks = [];
+
+    try {
+      const file = new File(
+        [blob],
+        `הקלטה - ${patientNameValue} - ${new Date()
+          .toISOString()
+          .slice(0, 19)
+          .replaceAll(":", "-")}.webm`,
+        { type: mimeType }
+      );
+      await uploadPatientFile(patientIdForUpload, file, "recording", file.name);
+      state.message = "ההקלטה נשמרה בתיקיית המטופל.";
+      state.error = "";
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "שמירת ההקלטה נכשלה.";
+      state.message = "";
+    }
+    render();
+  });
+  activeRecorder.start();
+}
+
+function stopRecording() {
+  if (!activeRecorder || activeRecorder.state !== "recording") {
+    throw new Error("אין הקלטה פעילה לעצירה.");
+  }
+  activeRecorder.stop();
 }
 
 function bindEvents() {
@@ -1988,6 +2161,44 @@ function bindEvents() {
     if (action === "reports-current") {
       state.reportMonth = isoDate(new Date()).slice(0, 7);
       render();
+    }
+    if (action === "create-treatment-doc") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת מסמך.");
+        const file = await createTreatmentDocument(target.dataset.id);
+        state.message = "מסמך התיעוד נוצר בתיקיית המטופל.";
+        state.error = "";
+        render();
+        if (file.url) window.open(file.url, "_blank", "noopener");
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "יצירת מסמך התיעוד נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "start-recording") {
+      try {
+        await startRecording(target.dataset.id);
+        state.message = "ההקלטה התחילה.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "התחלת ההקלטה נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "stop-recording") {
+      try {
+        stopRecording();
+        state.message = "שומר את ההקלטה...";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "עצירת ההקלטה נכשלה.";
+        state.message = "";
+        render();
+      }
     }
     if (action === "create-drive-folder") {
       try {
@@ -2088,7 +2299,7 @@ function bindEvents() {
       if (form.dataset.form === "file") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await saveFile(form);
-        state.message = "הקובץ נשמר במערכת.";
+        state.message = "הקובץ הועלה ונרשם בכרטיס המטופל.";
       }
 
       if (form.dataset.form === "template-copy") {
