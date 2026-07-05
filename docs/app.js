@@ -94,6 +94,7 @@ const state = {
   },
   calendarMonth: isoDate(new Date()).slice(0, 7),
   selectedCalendarDate: isoDate(new Date()),
+  reportMonth: isoDate(new Date()).slice(0, 7),
   route: getRoute()
 };
 
@@ -243,6 +244,7 @@ function icon(name) {
     calendar: `<svg ${common}><rect height="16" rx="2" width="18" x="3" y="5"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M3 10h18"/></svg>`,
     tasks: `<svg ${common}><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6l1 1 2-2"/><path d="M4 12l1 1 2-2"/><path d="M4 18l1 1 2-2"/></svg>`,
     payments: `<svg ${common}><rect height="14" rx="2" width="18" x="3" y="5"/><path d="M3 10h18"/><path d="M7 15h4"/></svg>`,
+    reports: `<svg ${common}><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16V9"/><path d="M13 16V7"/><path d="M18 16v-5"/></svg>`,
     files: `<svg ${common}><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg>`,
     settings: `<svg ${common}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.8 1.8 0 0 0 .4 2l.1.1-2 3.4-.2-.1a1.8 1.8 0 0 0-2.1.4l-.1.1h-4l-.1-.1a1.8 1.8 0 0 0-2.1-.4l-.2.1-2-3.4.1-.1a1.8 1.8 0 0 0 .4-2"/></svg>`
   };
@@ -262,6 +264,7 @@ function shell(content) {
     ["calendar", "calendar", "יומן"],
     ["tasks", "tasks", "משימות"],
     ["payments", "payments", "תשלומים"],
+    ["reports", "reports", "דוחות"],
     ["files", "files", "קבצים"],
     ["settings", "settings", "הגדרות"]
   ]
@@ -765,6 +768,146 @@ function paymentsPage() {
                 </tr>`
               )
               .join("") || `<tr><td colspan="8"><div class="empty">אין תשלומים להצגה. אפשר להוסיף תשלום מתוך כרטיס מטופל.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `);
+}
+
+function reportsPage() {
+  const month = state.reportMonth;
+  const monthSessions = state.sessions.filter((session) => session.session_date?.startsWith(month));
+  const monthPayments = state.payments.filter((payment) => payment.paid_at?.startsWith(month));
+  const paidTotal = monthPayments
+    .filter((payment) => payment.payment_status === "paid")
+    .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+  const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid");
+  const openTotal = openPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+  const missingReceipts = state.payments.filter(
+    (payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued"
+  );
+
+  const patientRows = state.patients
+    .map((patient) => {
+      const sessions = monthSessions.filter((session) => session.patient_id === patient.id);
+      const payments = monthPayments.filter((payment) => payment.patient_id === patient.id);
+      const paid = payments
+        .filter((payment) => payment.payment_status === "paid")
+        .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+      const open = state.payments
+        .filter((payment) => payment.patient_id === patient.id && payment.payment_status !== "paid")
+        .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+      const receipts = payments.filter(
+        (payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued"
+      ).length;
+
+      return {
+        id: patient.id,
+        name: patient.child_name,
+        open,
+        paid,
+        receipts,
+        sessions: sessions.length
+      };
+    })
+    .filter((row) => row.sessions || row.paid || row.open || row.receipts)
+    .sort((a, b) => b.paid - a.paid || b.sessions - a.sessions);
+
+  return shell(`
+    ${header(
+      "דוחות",
+      `סיכום עבודה לחודש ${monthLabel(month)} מתוך Google Sheets.`,
+      `<button class="button secondary" data-action="reports-prev" type="button">חודש קודם</button>
+       <button class="button blue" data-action="reports-current" type="button">החודש</button>
+       <button class="button secondary" data-action="reports-next" type="button">חודש הבא</button>
+       <button class="button secondary" data-action="refresh" type="button">רענון</button>`
+    )}
+    ${connectionBanner()}
+    <section class="metric-row reports-metrics">
+      <article class="metric blue-card"><strong>${html(formatAmount(paidTotal))}</strong><span>הכנסות בחודש</span></article>
+      <article class="metric pink-card"><strong>${html(formatAmount(openTotal))}</strong><span>תשלומים פתוחים</span></article>
+      <article class="metric teal-card"><strong>${monthSessions.length}</strong><span>מפגשים בחודש</span></article>
+      <article class="metric purple-card"><strong>${missingReceipts.length}</strong><span>קבלות חסרות</span></article>
+    </section>
+    <section class="grid-two">
+      <article class="panel">
+        <div class="panel-head"><h2>מפגשים לפי מטופל</h2><span>${patientRows.length} מטופלים</span></div>
+        <div class="table-wrap">
+          <table class="report-table">
+            <thead>
+              <tr>
+                <th>מטופל</th>
+                <th>מפגשים</th>
+                <th>שולם</th>
+                <th>פתוח</th>
+                <th>קבלות</th>
+                <th>פעולות</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${patientRows
+                .map(
+                  (row) => `
+                  <tr>
+                    <td><strong>${html(row.name || "-")}</strong></td>
+                    <td>${row.sessions}</td>
+                    <td>${html(formatAmount(row.paid))}</td>
+                    <td>${html(formatAmount(row.open))}</td>
+                    <td>${row.receipts ? `${row.receipts} חסרות` : "תקין"}</td>
+                    <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(row.id)}" type="button">כרטיס</button></td>
+                  </tr>`
+                )
+                .join("") || `<tr><td colspan="6"><div class="empty">אין נתונים לחודש הזה.</div></td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>תשלומים פתוחים</h2><span>${openPayments.length} רשומות</span></div>
+        <div class="report-list">
+          ${openPayments
+            .slice(0, 10)
+            .map(
+              (payment) => `
+              <article class="report-item">
+                <strong>${html(patientName(payment.patient_id))}</strong>
+                <span>${html(formatAmount(payment.amount))} | ${html(paymentStatusLabel(payment.payment_status))}</span>
+                <button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button>
+              </article>`
+            )
+            .join("") || `<div class="empty">אין תשלומים פתוחים.</div>`}
+        </div>
+      </article>
+    </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>קבלות חסרות</h2><span>${missingReceipts.length} רשומות</span></div>
+      <div class="table-wrap">
+        <table class="report-table">
+          <thead>
+            <tr>
+              <th>תאריך</th>
+              <th>מטופל</th>
+              <th>סכום</th>
+              <th>אמצעי</th>
+              <th>סטטוס קבלה</th>
+              <th>פעולות</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${missingReceipts
+              .map(
+                (payment) => `
+                <tr>
+                  <td>${html(formatDate(payment.paid_at))}</td>
+                  <td><strong>${html(patientName(payment.patient_id))}</strong></td>
+                  <td>${html(formatAmount(payment.amount))}</td>
+                  <td>${html(paymentMethodLabel(payment.payment_method))}</td>
+                  <td>${html(receiptStatusLabel(payment.receipt_status))}</td>
+                  <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button></td>
+                </tr>`
+              )
+              .join("") || `<tr><td colspan="6"><div class="empty">אין קבלות חסרות.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1523,6 +1666,18 @@ function bindEvents() {
       state.calendarMonth = state.selectedCalendarDate.slice(0, 7);
       render();
     }
+    if (action === "reports-prev") {
+      state.reportMonth = shiftMonth(state.reportMonth, -1);
+      render();
+    }
+    if (action === "reports-next") {
+      state.reportMonth = shiftMonth(state.reportMonth, 1);
+      render();
+    }
+    if (action === "reports-current") {
+      state.reportMonth = isoDate(new Date()).slice(0, 7);
+      render();
+    }
     if (action === "complete-task") {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
@@ -1614,6 +1769,7 @@ function render() {
     calendar: calendarPage,
     tasks: tasksPage,
     payments: paymentsPage,
+    reports: reportsPage,
     files: filesPage,
     settings: settingsPage
   };
