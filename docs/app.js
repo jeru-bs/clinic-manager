@@ -140,9 +140,10 @@ function loadStoredGoogleToken() {
   }
 }
 
-function clearStoredGoogleToken() {
+function clearStoredGoogleToken(resetConsent = false) {
   localStorage.removeItem(GOOGLE_TOKEN_KEY);
   sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
+  if (resetConsent) localStorage.removeItem(GOOGLE_CONSENT_KEY);
 }
 
 function saveGoogleToken(response) {
@@ -497,6 +498,7 @@ function settingsPage() {
           <p><strong>קוד:</strong> נטען מהאתר.</p>
           <p><strong>נתונים:</strong> נשמרים באחסון המחובר.</p>
           <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר כרגע." : "לא מחובר כרגע."}</p>
+          <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
         </div>
       </article>
     </section>
@@ -1420,9 +1422,12 @@ function friendlyGoogleError(text, status) {
   if (
     status === 403 ||
     combined.includes("insufficient") ||
-    combined.includes("access denied")
+    combined.includes("access denied") ||
+    combined.includes("insufficient authentication scopes")
   ) {
-    return "אין כרגע הרשאה מתאימה. צריך להתחבר שוב ולאשר את ההרשאות המבוקשות.";
+    clearStoredGoogleToken(true);
+    state.accessToken = "";
+    return "חסרה הרשאה לאחסון קבצים. צריך להתחבר שוב ולאשר את כל ההרשאות המבוקשות.";
   }
 
   return message || "הקריאה לאחסון נכשלה.";
@@ -1491,6 +1496,27 @@ async function updateSheetRow(sheetName, rowNumber, record) {
     method: "PUT",
     body: JSON.stringify({ values: [recordToRow(columns, record)] })
   });
+}
+
+async function checkStorageConnection() {
+  if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני בדיקה.");
+  if (!state.config.googleSpreadsheetId) throw new Error("לא הוגדר מזהה מאגר נתונים.");
+  if (!state.config.googleDriveRootFolderId) throw new Error("לא הוגדרה תיקיית אחסון ראשית.");
+
+  await readSheet("patients");
+
+  const rootFolder = await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      state.config.googleDriveRootFolderId
+    )}?fields=id,name,mimeType`,
+    { headers: {} }
+  );
+
+  if (rootFolder.mimeType !== "application/vnd.google-apps.folder") {
+    throw new Error("תיקיית האחסון הראשית אינה מזוהה כתיקייה.");
+  }
+
+  return rootFolder.name || "תיקיית האחסון";
 }
 
 async function createPatientFolder(patientNameValue) {
@@ -1625,6 +1651,11 @@ async function savePatient(form) {
   if (!data.child_name) throw new Error("שם המטופל הוא שדה חובה.");
 
   const now = new Date().toISOString();
+  const folder = existing?.drive_folder_id
+    ? { id: existing.drive_folder_id || "", path: existing.drive_folder_path || "" }
+    : await createPatientFolder(data.child_name);
+  if (!folder.id) throw new Error("לא הוגדרה תיקיית אחסון ראשית במסך ההגדרות.");
+
   const patient = {
     ...(existing || {}),
     id: existing?.id || id(),
@@ -1642,8 +1673,8 @@ async function savePatient(form) {
     default_payment_method: existing?.default_payment_method || "bank_transfer",
     payment_status: existing?.payment_status || "unpaid",
     receipt_status: existing?.receipt_status || "needed",
-    drive_folder_id: existing?.drive_folder_id || "",
-    drive_folder_path: existing?.drive_folder_path || "",
+    drive_folder_id: folder.id,
+    drive_folder_path: folder.path,
     created_at: existing?.created_at || now,
     updated_at: now
   };
@@ -1662,7 +1693,10 @@ async function savePatient(form) {
     (a.child_name || "").localeCompare(b.child_name || "", "he")
   );
 
-  return patient;
+  return {
+    ...patient,
+    folderCreated: !existing?.drive_folder_id
+  };
 }
 
 async function togglePatientArchive(patientId, shouldArchive) {
@@ -1857,6 +1891,18 @@ function bindEvents() {
       });
       render();
     }
+    if (action === "check-storage") {
+      try {
+        const folderName = await checkStorageConnection();
+        state.message = `החיבור תקין. תיקיית אחסון ראשית: ${folderName}`;
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "בדיקת החיבור נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
     if (action === "open-patient-drawer") {
       state.currentPatientId = target.dataset.id || "";
       render();
@@ -1984,11 +2030,15 @@ function bindEvents() {
 
       if (form.dataset.form === "patient") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await savePatient(form);
+        const patient = await savePatient(form);
         state.currentPatientId = "";
-        state.message = form.dataset.id
-          ? "פרטי המטופל עודכנו במערכת."
-          : "המטופל נשמר במערכת. תיקיית מטופל אפשר ליצור בהמשך מכרטיס המטופל.";
+        if (form.dataset.id) {
+          state.message = patient.folderCreated
+            ? "פרטי המטופל עודכנו ונוצרה לו תיקייה."
+            : "פרטי המטופל עודכנו במערכת.";
+        } else {
+          state.message = "המטופל נשמר במערכת ונוצרה לו תיקייה.";
+        }
       }
 
       if (form.dataset.form === "session") {
