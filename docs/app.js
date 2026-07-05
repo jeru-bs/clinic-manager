@@ -86,6 +86,7 @@ const state = {
   payments: [],
   tasks: [],
   files: [],
+  templates: [],
   patientFilter: {
     name: "",
     school: "",
@@ -106,6 +107,10 @@ function loadConfig() {
     googleDriveRootFolderId:
       saved.googleDriveRootFolderId ||
       configDefaults.googleDriveRootFolderId ||
+      "",
+    googleTemplatesFolderId:
+      saved.googleTemplatesFolderId ||
+      configDefaults.googleTemplatesFolderId ||
       "",
     googleSpreadsheetId:
       saved.googleSpreadsheetId || configDefaults.googleSpreadsheetId || ""
@@ -474,6 +479,10 @@ function settingsPage() {
           <div class="field wide">
             <label for="googleDriveRootFolderId">תיקיית Drive ראשית</label>
             <input id="googleDriveRootFolderId" name="googleDriveRootFolderId" value="${html(state.config.googleDriveRootFolderId)}" />
+          </div>
+          <div class="field wide">
+            <label for="googleTemplatesFolderId">תיקיית תבניות Drive</label>
+            <input id="googleTemplatesFolderId" name="googleTemplatesFolderId" value="${html(state.config.googleTemplatesFolderId)}" />
           </div>
           <div class="toolbar wide">
             <button class="button" type="submit">שמירת הגדרות</button>
@@ -1106,6 +1115,30 @@ function fileForm(patientId = "") {
     </form>`;
 }
 
+function templateForm(patientId) {
+  const options = state.templates
+    .map((template) => `<option value="${html(template.id)}">${html(template.name)}</option>`)
+    .join("");
+
+  return `
+    <form class="form-grid inline-form" data-form="template-copy" data-patient-id="${html(patientId)}">
+      <div class="field">
+        <label for="template_id">תבנית</label>
+        <select id="template_id" name="template_id" required>
+          <option value="">בחירה</option>
+          ${options}
+        </select>
+      </div>
+      <div class="field wide">
+        <label for="template_name">שם המסמך החדש</label>
+        <input id="template_name" name="name" placeholder="למשל: סיכום טיפול - ${html(patientName(patientId))}" />
+      </div>
+      <div class="toolbar wide">
+        <button class="button blue" type="submit" ${state.templates.length ? "" : "disabled"}>יצירת מסמך מתבנית</button>
+      </div>
+    </form>`;
+}
+
 function filesTable(rows) {
   return `
     <div class="table-wrap">
@@ -1152,6 +1185,7 @@ function filesPanel(items = state.files, patient = null) {
     <article class="panel">
       <div class="panel-head"><h2>קבצים</h2><span>Google Drive</span></div>
       ${patient ? fileForm(patient.id) : ""}
+      ${patient ? templateForm(patient.id) : ""}
       ${
         patient?.drive_folder_id
           ? `<div class="folder-link">
@@ -1483,6 +1517,19 @@ async function listDriveFolderFiles(folderId) {
   return result.files || [];
 }
 
+async function loadDriveTemplates() {
+  if (!state.config.googleTemplatesFolderId) return [];
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set(
+    "q",
+    `'${state.config.googleTemplatesFolderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`
+  );
+  url.searchParams.set("fields", "files(id,name,mimeType,webViewLink,createdTime)");
+  url.searchParams.set("pageSize", "50");
+  const result = await googleFetch(url.toString(), { headers: {} });
+  return result.files || [];
+}
+
 async function syncPatientDriveFiles(patientId) {
   const patient = await ensurePatientDriveFolder(patientId);
   const driveFiles = await listDriveFolderFiles(patient.drive_folder_id);
@@ -1520,18 +1567,20 @@ async function syncPatientDriveFiles(patientId) {
 
 async function loadData() {
   if (!state.accessToken || !state.config.googleSpreadsheetId) return;
-  const [patients, sessions, payments, tasks, files] = await Promise.all([
+  const [patients, sessions, payments, tasks, files, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
     readSheet("payments"),
     readSheet("tasks"),
-    readSheet("files")
+    readSheet("files"),
+    loadDriveTemplates().catch(() => [])
   ]);
   state.patients = patients.sort((a, b) => (a.child_name || "").localeCompare(b.child_name || "", "he"));
   state.sessions = sessions.sort((a, b) => `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`));
   state.payments = payments.sort((a, b) => `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`));
   state.tasks = tasks.sort((a, b) => `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`));
   state.files = files.sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+  state.templates = templates.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
 }
 
 async function savePatient(form) {
@@ -1707,6 +1756,45 @@ async function saveFile(form) {
   state.files = [file, ...state.files].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
 }
 
+async function createFileFromTemplate(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || "";
+  const patient = await ensurePatientDriveFolder(patientId);
+  const template = state.templates.find((item) => item.id === data.template_id);
+
+  if (!template) throw new Error("צריך לבחור תבנית.");
+
+  const fileName =
+    data.name ||
+    `${template.name || "מסמך"} - ${patient.child_name || "מטופל"} - ${isoDate(new Date())}`;
+  const result = await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(template.id)}/copy?fields=id,name,mimeType,webViewLink,createdTime`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: fileName,
+        parents: [patient.drive_folder_id]
+      })
+    }
+  );
+  const now = new Date().toISOString();
+  const file = {
+    id: id(),
+    patient_id: patientId,
+    drive_file_id: result.id || "",
+    drive_folder_id: patient.drive_folder_id || "",
+    name: result.name || fileName,
+    file_type: driveFileTypeLabel(result.mimeType || template.mimeType),
+    url: result.webViewLink || driveFileUrl(result.id),
+    created_at: result.createdTime || now,
+    updated_at: now
+  };
+
+  const appendResult = await appendSheet("files", file);
+  file._rowNumber = appendedRowNumber(appendResult);
+  state.files = [file, ...state.files].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+}
+
 function bindEvents() {
   document.addEventListener("click", async (event) => {
     const target = event.target.closest("[data-action]");
@@ -1859,6 +1947,12 @@ function bindEvents() {
         if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
         await saveFile(form);
         state.message = "הקובץ נשמר ב-Google Sheets.";
+      }
+
+      if (form.dataset.form === "template-copy") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        await createFileFromTemplate(form);
+        state.message = "המסמך נוצר מתבנית, נשמר בתיקיית המטופל ונרשם בקבצים.";
       }
 
       render();
