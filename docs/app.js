@@ -90,6 +90,8 @@ const state = {
     treatment: "",
     status: ""
   },
+  calendarMonth: isoDate(new Date()).slice(0, 7),
+  selectedCalendarDate: isoDate(new Date()),
   route: getRoute()
 };
 
@@ -177,6 +179,40 @@ function formatDate(value) {
   return new Intl.DateTimeFormat("he-IL", { dateStyle: "short" }).format(
     new Date(`${value}T00:00:00`)
   );
+}
+
+function isoDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
+}
+
+function monthLabel(monthValue) {
+  return new Intl.DateTimeFormat("he-IL", { month: "long", year: "numeric" }).format(
+    new Date(`${monthValue}-01T00:00:00`)
+  );
+}
+
+function shiftMonth(monthValue, offset) {
+  const [year, month] = monthValue.split("-").map(Number);
+  const date = new Date(year, month - 1 + offset, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function calendarDays(monthValue) {
+  const [year, month] = monthValue.split("-").map(Number);
+  const firstDay = new Date(year, month - 1, 1);
+  const visibleStart = new Date(firstDay);
+  visibleStart.setDate(firstDay.getDate() - firstDay.getDay());
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(visibleStart);
+    date.setDate(visibleStart.getDate() + index);
+    return {
+      date: isoDate(date),
+      inMonth: date.getMonth() === month - 1
+    };
+  });
 }
 
 function formatAmount(value) {
@@ -270,7 +306,7 @@ function header(title, subtitle, actions = "") {
 function dashboardPage() {
   const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid").length;
   const openTasks = state.tasks.filter((task) => task.status !== "done").length;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = isoDate(new Date());
   const todaySessions = state.sessions.filter((session) => session.session_date === today).length;
 
   return shell(`
@@ -453,7 +489,7 @@ function detail(label, value) {
 }
 
 function sessionForm(patientId) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = isoDate(new Date());
   return `
     <form class="form-grid inline-form" data-form="session" data-patient-id="${html(patientId)}">
       <div class="field">
@@ -487,7 +523,7 @@ function sessionForm(patientId) {
 }
 
 function paymentForm(patientId) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = isoDate(new Date());
   return `
     <form class="form-grid inline-form" data-form="payment" data-patient-id="${html(patientId)}">
       <div class="field">
@@ -583,48 +619,82 @@ function calendarPage() {
   const rows = [...state.sessions].sort((a, b) =>
     `${a.session_date} ${a.start_time}`.localeCompare(`${b.session_date} ${b.start_time}`)
   );
+  const today = isoDate(new Date());
+  const days = calendarDays(state.calendarMonth);
+  const selectedSessions = rows.filter((session) => session.session_date === state.selectedCalendarDate);
+  const sessionsByDate = rows.reduce((acc, session) => {
+    if (!session.session_date) return acc;
+    acc[session.session_date] = [...(acc[session.session_date] || []), session];
+    return acc;
+  }, {});
+  const weekDays = ["א", "ב", "ג", "ד", "ה", "ו", "ש"];
 
   return shell(`
     ${header(
       "יומן",
-      "רשימת מפגשים מתוך Google Sheets, לפי תאריך ושעה.",
-      `<button class="button secondary" data-action="refresh" type="button">רענון</button>
-       <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
+      "לוח שנה פעיל של מפגשים מתוך Google Sheets.",
+      `<button class="button secondary" data-action="calendar-prev" type="button">חודש קודם</button>
+       <button class="button blue" data-action="calendar-today" type="button">היום</button>
+       <button class="button secondary" data-action="calendar-next" type="button">חודש הבא</button>
+       <button class="button secondary" data-action="refresh" type="button">רענון</button>`
     )}
     ${connectionBanner()}
-    <section class="panel">
-      <div class="panel-head"><h2>מפגשים מתוכננים ומתועדים</h2><span>${rows.length} רשומות</span></div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>תאריך</th>
-              <th>שעה</th>
-              <th>מטופל</th>
-              <th>סוג</th>
-              <th>מיקום</th>
-              <th>סיכום</th>
-              <th>פעולות</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows
-              .map(
-                (session) => `
-                <tr>
-                  <td><strong>${html(formatDate(session.session_date))}</strong></td>
-                  <td>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "-")}</td>
-                  <td>${html(patientName(session.patient_id))}</td>
-                  <td>${html(session.session_type || "מפגש")}</td>
-                  <td>${html(session.location || "-")}</td>
-                  <td>${html(session.summary || "-")}</td>
-                  <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(session.patient_id)}" type="button">כרטיס</button></td>
-                </tr>`
-              )
-              .join("") || `<tr><td colspan="7"><div class="empty">אין מפגשים להצגה. אפשר להוסיף מפגש מתוך כרטיס מטופל.</div></td></tr>`}
-          </tbody>
-        </table>
-      </div>
+    <section class="calendar-layout">
+      <article class="panel calendar-panel">
+        <div class="panel-head">
+          <h2>${html(monthLabel(state.calendarMonth))}</h2>
+          <span>${rows.length} מפגשים במערכת</span>
+        </div>
+        <div class="calendar-weekdays">
+          ${weekDays.map((day) => `<span>${day}</span>`).join("")}
+        </div>
+        <div class="calendar-grid">
+          ${days
+            .map((day) => {
+              const daySessions = sessionsByDate[day.date] || [];
+              return `
+                <button class="calendar-day ${day.inMonth ? "" : "muted"} ${day.date === today ? "today" : ""} ${day.date === state.selectedCalendarDate ? "selected" : ""}" data-action="select-calendar-date" data-date="${html(day.date)}" type="button">
+                  <span class="day-number">${Number(day.date.slice(8, 10))}</span>
+                  <span class="day-events">
+                    ${daySessions
+                      .slice(0, 3)
+                      .map(
+                        (session) =>
+                          `<span class="calendar-event">${html(session.start_time || "")} ${html(patientName(session.patient_id))}</span>`
+                      )
+                      .join("")}
+                    ${
+                      daySessions.length > 3
+                        ? `<span class="calendar-more">+${daySessions.length - 3}</span>`
+                        : ""
+                    }
+                  </span>
+                </button>`;
+            })
+            .join("")}
+        </div>
+      </article>
+      <aside class="panel day-panel">
+        <div class="panel-head">
+          <h2>${html(formatDate(state.selectedCalendarDate))}</h2>
+          <span>${selectedSessions.length} מפגשים</span>
+        </div>
+        ${
+          selectedSessions.length
+            ? `<div class="item-list">${selectedSessions
+                .map(
+                  (session) => `
+                  <article class="list-item calendar-list-item">
+                    <div><strong>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "ללא שעה")}</strong><span>${html(session.location || "-")}</span></div>
+                    <div><strong>${html(patientName(session.patient_id))}</strong><span>${html(session.session_type || "מפגש")}</span></div>
+                    <p>${html(session.summary || "לא נכתב סיכום.")}</p>
+                    <button class="button secondary table-button" data-action="open-profile" data-id="${html(session.patient_id)}" type="button">כרטיס</button>
+                  </article>`
+                )
+                .join("")}</div>`
+            : `<div class="empty">אין מפגשים ביום הזה. אפשר להוסיף מפגש מתוך כרטיס מטופל.</div>`
+        }
+      </aside>
     </section>
   `);
 }
@@ -809,7 +879,7 @@ function tasksPage() {
     )
   );
   const openCount = rows.filter((task) => task.status !== "done").length;
-  const dueToday = new Date().toISOString().slice(0, 10);
+  const dueToday = isoDate(new Date());
   const dueCount = rows.filter((task) => task.status !== "done" && task.due_date && task.due_date <= dueToday).length;
 
   return shell(`
@@ -1197,7 +1267,7 @@ async function updateSheetRow(sheetName, rowNumber, record) {
 
 async function createPatientFolder(patientNameValue) {
   if (!state.config.googleDriveRootFolderId) return { id: "", path: "" };
-  const folderName = `${patientNameValue} - ${new Date().toISOString().slice(0, 10)}`;
+  const folderName = `${patientNameValue} - ${isoDate(new Date())}`;
   const result = await googleFetch("https://www.googleapis.com/drive/v3/files?fields=id,name", {
     method: "POST",
     body: JSON.stringify({
@@ -1318,7 +1388,7 @@ async function savePayment(form) {
     payment_method: data.payment_method || "bank_transfer",
     payment_status: data.payment_status || "paid",
     receipt_status: data.receipt_status || "needed",
-    paid_at: data.paid_at || new Date().toISOString().slice(0, 10),
+    paid_at: data.paid_at || isoDate(new Date()),
     receipt_file_id: "",
     notes: data.notes || "",
     created_at: now,
@@ -1422,6 +1492,25 @@ function bindEvents() {
     }
     if (action === "open-profile") {
       navigate(`patients/${target.dataset.id}`);
+    }
+    if (action === "calendar-prev") {
+      state.calendarMonth = shiftMonth(state.calendarMonth, -1);
+      render();
+    }
+    if (action === "calendar-next") {
+      state.calendarMonth = shiftMonth(state.calendarMonth, 1);
+      render();
+    }
+    if (action === "calendar-today") {
+      const today = isoDate(new Date());
+      state.calendarMonth = today.slice(0, 7);
+      state.selectedCalendarDate = today;
+      render();
+    }
+    if (action === "select-calendar-date") {
+      state.selectedCalendarDate = target.dataset.date || state.selectedCalendarDate;
+      state.calendarMonth = state.selectedCalendarDate.slice(0, 7);
+      render();
     }
     if (action === "complete-task") {
       try {
