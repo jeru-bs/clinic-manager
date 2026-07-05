@@ -287,6 +287,11 @@ p {
   font-weight: 900;
 }
 
+.kpi-symbol svg {
+  width: 21px;
+  height: 21px;
+}
+
 .blue-card {
   background: var(--primary);
 }
