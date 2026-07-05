@@ -312,9 +312,8 @@ function header(title, subtitle, actions = "") {
   return `
     <section class="header">
       <div>
-        <p class="eyebrow">מערכת דפדפן</p>
         <h1>${html(title)}</h1>
-        <p>${html(subtitle)}</p>
+        ${subtitle ? `<p>${html(subtitle)}</p>` : ""}
       </div>
       <div class="toolbar">${actions}</div>
     </section>`;
@@ -329,11 +328,9 @@ function dashboardPage() {
 
   return shell(`
     ${header(
-      "דשבורד",
-      "סקירה מהירה של היום, משימות פתוחות ותשלומים לטיפול.",
-      `<button class="button" data-action="open-patient-drawer" type="button">מטופל חדש +</button>
-       <button class="button secondary" data-action="refresh" type="button">רענון</button>
-       <a class="button yellow" href="#/settings">הגדרות אחסון</a>`
+      "תמונת מצב יומית",
+      "מפגשים, משימות ותשלומים לטיפול.",
+      `<button class="button" data-action="open-patient-drawer" type="button">מטופל חדש +</button>`
     )}
     ${connectionBanner()}
     <section class="kpi-grid">
@@ -342,10 +339,10 @@ function dashboardPage() {
       <article class="kpi-card pink-card"><div><strong>${openPayments}</strong><span>תשלומים פתוחים</span></div><span class="kpi-symbol">ת</span></article>
       <article class="kpi-card purple-card"><div><strong>${activePatients}</strong><span>מטופלים פעילים</span></div><span class="kpi-symbol">פ</span></article>
     </section>
-    <section class="grid-two">
+    <section class="dashboard-grid">
       ${sessionsPanel()}
       ${paymentsPanel()}
-      ${tasksPanel()}
+      <div class="dashboard-full">${tasksPanel()}</div>
     </section>
     ${patientDrawer()}
   `);
@@ -1350,7 +1347,6 @@ async function connectGoogle() {
 
       state.accessToken = response.access_token;
       saveGoogleToken(response);
-      state.message = "החיבור לאחסון הצליח.";
       await loadData();
       render();
     }
