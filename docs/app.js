@@ -73,6 +73,8 @@ const SHEETS = {
 };
 
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
+const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
+const GOOGLE_CONSENT_KEY = "clinic-manager-google-consent";
 const state = {
   accessToken: loadStoredGoogleToken(),
   config: loadConfig(),
@@ -116,31 +118,38 @@ function saveConfig(nextConfig) {
 
 function loadStoredGoogleToken() {
   try {
-    const stored = JSON.parse(sessionStorage.getItem("clinic-manager-google-token") || "null");
+    const stored = JSON.parse(
+      localStorage.getItem(GOOGLE_TOKEN_KEY) || sessionStorage.getItem(GOOGLE_TOKEN_KEY) || "null"
+    );
 
     if (!stored?.accessToken || !stored?.expiresAt || Date.now() > stored.expiresAt) {
-      sessionStorage.removeItem("clinic-manager-google-token");
+      clearStoredGoogleToken();
       return "";
     }
 
     return stored.accessToken;
   } catch {
-    sessionStorage.removeItem("clinic-manager-google-token");
+    clearStoredGoogleToken();
     return "";
   }
+}
+
+function clearStoredGoogleToken() {
+  localStorage.removeItem(GOOGLE_TOKEN_KEY);
+  sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
 }
 
 function saveGoogleToken(response) {
   const expiresInSeconds = Number(response.expires_in || 3300);
   const expiresAt = Date.now() + Math.max(60, expiresInSeconds - 60) * 1000;
+  const payload = JSON.stringify({
+    accessToken: response.access_token,
+    expiresAt
+  });
 
-  sessionStorage.setItem(
-    "clinic-manager-google-token",
-    JSON.stringify({
-      accessToken: response.access_token,
-      expiresAt
-    })
-  );
+  localStorage.setItem(GOOGLE_TOKEN_KEY, payload);
+  sessionStorage.setItem(GOOGLE_TOKEN_KEY, payload);
+  localStorage.setItem(GOOGLE_CONSENT_KEY, "yes");
 }
 
 function getRoute() {
@@ -657,7 +666,7 @@ function calendarPage() {
                   <span class="day-number">${Number(day.date.slice(8, 10))}</span>
                   <span class="day-events">
                     ${daySessions
-                      .slice(0, 2)
+                      .slice(0, 1)
                       .map(
                         (session) =>
                           `<span class="calendar-event">${html(session.start_time || "")} ${html(patientName(session.patient_id))}</span>`
@@ -665,7 +674,7 @@ function calendarPage() {
                       .join("")}
                     ${
                       daySessions.length > 3
-                        ? `<span class="calendar-more">+${daySessions.length - 2}</span>`
+                        ? `<span class="calendar-more">+${daySessions.length - 1}</span>`
                         : ""
                     }
                   </span>
@@ -1160,7 +1169,9 @@ async function connectGoogle() {
     }
   });
 
-  tokenClient.requestAccessToken({ prompt: "consent" });
+  tokenClient.requestAccessToken({
+    prompt: localStorage.getItem(GOOGLE_CONSENT_KEY) === "yes" ? "" : "consent"
+  });
 }
 
 function friendlyGoogleError(text, status) {
@@ -1184,7 +1195,7 @@ function friendlyGoogleError(text, status) {
   }
 
   if (status === 401 || combined.includes("invalid credentials")) {
-    sessionStorage.removeItem("clinic-manager-google-token");
+    clearStoredGoogleToken();
     state.accessToken = "";
     return "החיבור לגוגל פג תוקף. צריך להתחבר שוב.";
   }
@@ -1617,10 +1628,8 @@ if (state.accessToken) {
   loadData()
     .then(render)
     .catch((error) => {
-      sessionStorage.removeItem("clinic-manager-google-token");
-      state.accessToken = "";
       state.error =
-        error instanceof Error ? error.message : "החיבור לגוגל פג תוקף.";
+        error instanceof Error ? error.message : "טעינת הנתונים מגוגל נכשלה.";
       render();
     });
 }

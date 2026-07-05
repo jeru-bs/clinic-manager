@@ -573,12 +573,18 @@ th {
 
 .calendar-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 12px;
 }
 
 .calendar-panel {
   overflow: hidden;
+}
+
+.calendar-panel .panel-head,
+.day-panel .panel-head {
+  min-height: 44px;
+  padding: 8px 12px;
 }
 
 .calendar-weekdays,
@@ -596,19 +602,19 @@ th {
 }
 
 .calendar-weekdays span {
-  padding: 7px 4px;
+  padding: 5px 4px;
 }
 
 .calendar-day {
   display: grid;
-  grid-template-rows: auto minmax(42px, 1fr);
-  min-height: 82px;
+  grid-template-rows: auto minmax(30px, 1fr);
+  min-height: 68px;
   border: 0;
   border-inline-end: 1px solid var(--table-border);
   border-bottom: 1px solid var(--table-border);
   background: #fff;
   color: var(--text);
-  padding: 6px;
+  padding: 5px;
   text-align: start;
 }
 
@@ -632,8 +638,8 @@ th {
 
 .day-number {
   display: grid;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   place-items: center;
   border-radius: 50%;
   font-weight: 900;
@@ -642,8 +648,8 @@ th {
 .day-events {
   display: grid;
   align-content: start;
-  gap: 3px;
-  margin-top: 5px;
+  gap: 2px;
+  margin-top: 3px;
 }
 
 .calendar-event,
@@ -652,9 +658,9 @@ th {
   border-radius: 4px;
   background: #eef3ff;
   color: var(--primary-strong);
-  font-size: 0.7rem;
+  font-size: 0.66rem;
   font-weight: 800;
-  padding: 3px 5px;
+  padding: 2px 4px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
