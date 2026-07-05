@@ -93,6 +93,7 @@ const state = {
     treatment: "",
     status: ""
   },
+  profileTab: "overview",
   calendarMonth: isoDate(new Date()).slice(0, 7),
   selectedCalendarDate: isoDate(new Date()),
   reportMonth: isoDate(new Date()).slice(0, 7),
@@ -447,6 +448,7 @@ function profilePage(patientId) {
   const payments = state.payments.filter((payment) => payment.patient_id === patient.id);
   const tasks = state.tasks.filter((task) => task.patient_id === patient.id);
   const files = state.files.filter((file) => file.patient_id === patient.id);
+  const tab = profileTabKey();
 
   return shell(`
     ${header(
@@ -455,33 +457,57 @@ function profilePage(patientId) {
       `<a class="button secondary" href="#/patients">חזרה לרשימה</a>`
     )}
     <section class="profile">
-      <section class="grid-two">
-        <article class="panel">
-          <div class="panel-head"><h2>פרטים כלליים</h2><span>נתוני מטופל</span></div>
-          <div class="detail-list">
-            ${detail("שם", patient.child_name)}
-            ${detail("מוסד לימודים", patient.school_name)}
-            ${detail("סוג טיפול", patient.treatment_type)}
-            ${detail("מחיר קבוע", patient.fixed_price)}
-          </div>
-        </article>
-        <article class="panel">
-          <div class="panel-head"><h2>תיעוד והערות</h2><span>מידע פנימי</span></div>
-          <div class="detail-list">
-            ${detail("מטרות טיפול", patient.treatment_goals)}
-            ${detail("הערות כלליות", patient.general_notes)}
-          </div>
-        </article>
-      </section>
-      <section class="profile-grid">
-        ${sessionsPanel(sessions, patient.id)}
-        ${paymentsPanel(payments, patient.id)}
-        ${tasksPanel(tasks, patient.id)}
-        ${recordingPanel(patient)}
-        ${filesPanel(files, patient)}
+      ${profileTabs(tab)}
+      <section class="profile-tab-body">
+        ${tab === "overview" ? profileOverviewPanel(patient) : ""}
+        ${tab === "documentation" ? sessionsPanel(sessions, patient.id) : ""}
+        ${tab === "payments" ? paymentsPanel(payments, patient.id) : ""}
+        ${tab === "tasks" ? tasksPanel(tasks, patient.id) : ""}
+        ${tab === "files" ? filesPanel(files, patient) : ""}
       </section>
     </section>
   `);
+}
+
+function profileTabKey() {
+  const allowedTabs = ["overview", "documentation", "payments", "tasks", "files"];
+  return allowedTabs.includes(state.profileTab) ? state.profileTab : "overview";
+}
+
+function profileTabs(activeTab) {
+  const tabs = [
+    ["overview", "פרטים"],
+    ["documentation", "תיעוד מפגש"],
+    ["payments", "תשלומים"],
+    ["tasks", "משימות"],
+    ["files", "קבצים"]
+  ];
+  return `
+    <nav class="profile-tabs" aria-label="ניווט בכרטיס מטופל">
+      ${tabs
+        .map(
+          ([key, label]) => `
+            <button class="profile-tab ${activeTab === key ? "active" : ""}" data-action="profile-tab" data-tab="${key}" type="button">
+              ${label}
+            </button>`
+        )
+        .join("")}
+    </nav>`;
+}
+
+function profileOverviewPanel(patient) {
+  return `
+    <article class="panel compact-panel">
+      <div class="panel-head"><h2>פרטים כלליים</h2><span>נתוני מטופל</span></div>
+      <div class="detail-list detail-grid">
+        ${detail("שם", patient.child_name)}
+        ${detail("מוסד לימודים", patient.school_name)}
+        ${detail("סוג טיפול", patient.treatment_type)}
+        ${detail("יום קבוע", patient.fixed_day)}
+        ${detail("שעה קבועה", patient.fixed_time)}
+        ${detail("מחיר קבוע", patient.fixed_price)}
+      </div>
+    </article>`;
 }
 
 function settingsPage() {
@@ -564,8 +590,12 @@ function sessionForm(patientId) {
         <input id="location" name="location" placeholder="קליניקה / בית ספר / אונליין" />
       </div>
       <div class="field wide">
-        <label for="summary">סיכום קצר</label>
-        <textarea id="summary" name="summary" placeholder="מה היה במפגש"></textarea>
+        <label for="summary">תיעוד טיפול</label>
+        <textarea class="treatment-textarea" id="summary" name="summary" placeholder="כתיבה חופשית של תיעוד המפגש"></textarea>
+      </div>
+      <div class="field wide">
+        <label for="sensitive_notes">הערות פנימיות</label>
+        <textarea id="sensitive_notes" name="sensitive_notes" placeholder="מידע פנימי שאינו מיועד לשיתוף"></textarea>
       </div>
       <div class="toolbar wide">
         <button class="button" type="submit">שמירת מפגש</button>
@@ -625,14 +655,8 @@ function sessionsPanel(items = state.sessions, patientId = "") {
   const patientMode = Boolean(patientId);
   return `
     <article class="panel ${patientMode ? "profile-wide" : ""}">
-      <div class="panel-head"><h2>${patientMode ? "תיעוד מפגש" : "מפגשים קרובים"}</h2><span>${patientMode ? "טופס קצר ומסמך טיפול" : "היום והשבוע הקרוב"}</span></div>
-      ${
-        patientId
-          ? `<div class="folder-link">
-              <button class="button blue" data-action="create-treatment-doc" data-id="${html(patientId)}" type="button">מסמך תיעוד חדש</button>
-            </div>`
-          : ""
-      }
+      <div class="panel-head"><h2>${patientMode ? "תיעוד מפגש" : "מפגשים קרובים"}</h2><span>${patientMode ? "כתיבה והקלטה בתוך הכרטיס" : "היום והשבוע הקרוב"}</span></div>
+      ${patientMode ? recordingPanel(state.patients.find((patient) => patient.id === patientId) || { id: patientId }) : ""}
       ${patientId ? sessionForm(patientId) : ""}
       ${
         rows.length
@@ -1224,17 +1248,15 @@ function filesTable(rows) {
 function recordingPanel(patient) {
   const isRecording = activeRecordingPatientId === patient.id && activeRecorder?.state === "recording";
   return `
-    <article class="panel">
-      <div class="panel-head"><h2>הקלטה</h2><span>${isRecording ? "מקליט עכשיו" : "שמירה לתיקיית המטופל"}</span></div>
-      <div class="recording-box">
-        <button class="button ${isRecording ? "danger" : "blue"}" data-action="${
-          isRecording ? "stop-recording" : "start-recording"
-        }" data-id="${html(patient.id)}" type="button">${
-          isRecording ? "עצירת הקלטה ושמירה" : "התחלת הקלטה"
-        }</button>
-        <span>העיבוד החכם יחובר בשלב הבא.</span>
-      </div>
-    </article>`;
+    <div class="recording-box">
+      <strong>${isRecording ? "מקליט עכשיו" : "הקלטה"}</strong>
+      <button class="button ${isRecording ? "danger" : "blue"}" data-action="${
+        isRecording ? "stop-recording" : "start-recording"
+      }" data-id="${html(patient.id)}" type="button">${
+        isRecording ? "עצירת הקלטה ושמירה" : "התחלת הקלטה"
+      }</button>
+      <span>הקובץ יישמר בתיקיית המטופל.</span>
+    </div>`;
 }
 
 function filesPanel(items = state.files, patient = null) {
@@ -1863,7 +1885,7 @@ async function saveSession(form) {
     location: data.location || "",
     session_type: data.session_type || "",
     summary: data.summary || "",
-    sensitive_notes: "",
+    sensitive_notes: data.sensitive_notes || "",
     calendar_event_id: "",
     created_at: now,
     updated_at: now
@@ -1995,34 +2017,6 @@ async function createFileFromTemplate(form) {
   await appendFileRecord(file);
 }
 
-async function createTreatmentDocument(patientId) {
-  const patient = await ensurePatientDriveFolder(patientId);
-  const name = `תיעוד טיפול - ${patient.child_name || "מטופל"} - ${isoDate(new Date())}`;
-  const result = await googleFetch(
-    "https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,createdTime",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        name,
-        mimeType: "application/vnd.google-apps.document",
-        parents: [patient.drive_folder_id]
-      })
-    }
-  );
-  const now = new Date().toISOString();
-  return appendFileRecord({
-    id: id(),
-    patient_id: patientId,
-    drive_file_id: result.id || "",
-    drive_folder_id: patient.drive_folder_id || "",
-    name: result.name || name,
-    file_type: "summary",
-    url: result.webViewLink || driveFileUrl(result.id),
-    created_at: result.createdTime || now,
-    updated_at: now
-  });
-}
-
 async function startRecording(patientId) {
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     throw new Error("הדפדפן לא תומך בהקלטה ישירה.");
@@ -2112,7 +2106,12 @@ function bindEvents() {
       document.getElementById("patientDrawer")?.setAttribute("hidden", "");
     }
     if (action === "open-profile") {
+      state.profileTab = "overview";
       navigate(`patients/${target.dataset.id}`);
+    }
+    if (action === "profile-tab") {
+      state.profileTab = target.dataset.tab || "overview";
+      render();
     }
     if (action === "toggle-patient-archive") {
       const shouldArchive = target.dataset.archive !== "restore";
@@ -2161,20 +2160,6 @@ function bindEvents() {
     if (action === "reports-current") {
       state.reportMonth = isoDate(new Date()).slice(0, 7);
       render();
-    }
-    if (action === "create-treatment-doc") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת מסמך.");
-        const file = await createTreatmentDocument(target.dataset.id);
-        state.message = "מסמך התיעוד נוצר בתיקיית המטופל.";
-        state.error = "";
-        render();
-        if (file.url) window.open(file.url, "_blank", "noopener");
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "יצירת מסמך התיעוד נכשלה.";
-        state.message = "";
-        render();
-      }
     }
     if (action === "start-recording") {
       try {
