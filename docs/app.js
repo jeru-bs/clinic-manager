@@ -303,8 +303,8 @@ function connectionBanner() {
   if (state.accessToken) return "";
   return `
     <div class="message">
-      יש להתחבר לגוגל כדי לקרוא ולשמור נתונים ב-Google Sheets.
-      <button class="button blue" data-action="connect-google" type="button">התחברות לגוגל</button>
+      יש להתחבר לאחסון כדי לקרוא ולשמור נתונים.
+      <button class="button blue" data-action="connect-google" type="button">התחברות לאחסון</button>
     </div>`;
 }
 
@@ -323,6 +323,7 @@ function header(title, subtitle, actions = "") {
 function dashboardPage() {
   const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid").length;
   const openTasks = state.tasks.filter((task) => task.status !== "done").length;
+  const activePatients = state.patients.filter((patient) => patient.status !== "archived").length;
   const today = isoDate(new Date());
   const todaySessions = state.sessions.filter((session) => session.session_date === today).length;
 
@@ -332,14 +333,14 @@ function dashboardPage() {
       "סקירה מהירה של היום, משימות פתוחות ותשלומים לטיפול.",
       `<button class="button" data-action="open-patient-drawer" type="button">מטופל חדש +</button>
        <button class="button secondary" data-action="refresh" type="button">רענון</button>
-       <a class="button yellow" href="#/settings">הגדרות גוגל</a>`
+       <a class="button yellow" href="#/settings">הגדרות אחסון</a>`
     )}
     ${connectionBanner()}
     <section class="kpi-grid">
       <article class="kpi-card blue-card"><div><strong>${todaySessions}</strong><span>מפגשים היום</span></div><span class="kpi-symbol">מ</span></article>
       <article class="kpi-card teal-card"><div><strong>${openTasks}</strong><span>משימות פתוחות</span></div><span class="kpi-symbol">ש</span></article>
       <article class="kpi-card pink-card"><div><strong>${openPayments}</strong><span>תשלומים פתוחים</span></div><span class="kpi-symbol">ת</span></article>
-      <article class="kpi-card purple-card"><div><strong>${state.patients.length}</strong><span>מטופלים פעילים</span></div><span class="kpi-symbol">פ</span></article>
+      <article class="kpi-card purple-card"><div><strong>${activePatients}</strong><span>מטופלים פעילים</span></div><span class="kpi-symbol">פ</span></article>
     </section>
     <section class="grid-two">
       ${sessionsPanel()}
@@ -365,7 +366,7 @@ function patientsPage() {
   return shell(`
     ${header(
       "מטופלים",
-      "רשימת מטופלים קיימים מתוך Google Sheets.",
+      "רשימת מטופלים קיימים.",
       `<button class="button" data-action="open-patient-drawer" type="button">הוסף מטופל +</button>
        <button class="button secondary" data-action="refresh" type="button">רענון</button>
        <a class="button yellow" href="#/settings">הגדרות</a>`
@@ -396,7 +397,10 @@ function patientsPage() {
               .map(
                 (patient) => `
                 <tr>
-                  <td><strong>${html(patient.child_name)}</strong></td>
+                  <td>
+                    <strong>${html(patient.child_name)}</strong>
+                    ${patient.status === "archived" ? `<span class="status-pill muted">ארכיון</span>` : ""}
+                  </td>
                   <td>${html(patient.school_name || "-")}</td>
                   <td>${html(patient.treatment_type || "-")}</td>
                   <td><span class="status-pill">${html(paymentStatusLabel(patient.payment_status))}</span></td>
@@ -404,6 +408,7 @@ function patientsPage() {
                     <div class="actions">
                       <button class="small-action" data-action="open-profile" data-id="${html(patient.id)}" type="button">↗</button>
                       <button class="small-action edit" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button">✎</button>
+                      <button class="small-action danger" data-action="toggle-patient-archive" data-id="${html(patient.id)}" data-archive="${patient.status === "archived" ? "restore" : "archive"}" type="button" aria-label="${patient.status === "archived" ? "החזרה מארכיון" : "ארכוב"}">${patient.status === "archived" ? "↩" : "↓"}</button>
                     </div>
                   </td>
                 </tr>`
@@ -435,7 +440,7 @@ function profilePage(patientId) {
     <section class="profile">
       <section class="grid-two">
         <article class="panel">
-          <div class="panel-head"><h2>פרטים כלליים</h2><span>מתוך Google Sheets</span></div>
+          <div class="panel-head"><h2>פרטים כלליים</h2><span>נתוני מטופל</span></div>
           <div class="detail-list">
             ${detail("שם", patient.child_name)}
             ${detail("מוסד לימודים", patient.school_name)}
@@ -463,25 +468,25 @@ function profilePage(patientId) {
 
 function settingsPage() {
   return shell(`
-    ${header("הגדרות", "חיבור הדפדפן לגוגל. אין כאן סוד שרת, רק Client ID ציבורי של Google OAuth.", `<button class="button blue" data-action="connect-google" type="button">התחברות לגוגל</button>`)}
+    ${header("הגדרות", "חיבור הדפדפן לאחסון. פרטי החיבור נשמרים בדפדפן שלך.", `<button class="button blue" data-action="connect-google" type="button">התחברות לאחסון</button>`)}
     <section class="grid-two">
       <article class="panel">
         <div class="panel-head"><h2>פרטי חיבור</h2><span>נשמר בדפדפן שלך</span></div>
         <form class="form-grid" data-form="settings">
           <div class="field wide">
-            <label for="googleClientId">Google Client ID</label>
+            <label for="googleClientId">מזהה התחברות</label>
             <input id="googleClientId" name="googleClientId" value="${html(state.config.googleClientId)}" placeholder="xxxx.apps.googleusercontent.com" />
           </div>
           <div class="field wide">
-            <label for="googleSpreadsheetId">Google Sheets ID</label>
+            <label for="googleSpreadsheetId">מזהה מאגר נתונים</label>
             <input id="googleSpreadsheetId" name="googleSpreadsheetId" value="${html(state.config.googleSpreadsheetId)}" />
           </div>
           <div class="field wide">
-            <label for="googleDriveRootFolderId">תיקיית Drive ראשית</label>
+            <label for="googleDriveRootFolderId">תיקיית אחסון ראשית</label>
             <input id="googleDriveRootFolderId" name="googleDriveRootFolderId" value="${html(state.config.googleDriveRootFolderId)}" />
           </div>
           <div class="field wide">
-            <label for="googleTemplatesFolderId">תיקיית תבניות Drive</label>
+            <label for="googleTemplatesFolderId">תיקיית תבניות</label>
             <input id="googleTemplatesFolderId" name="googleTemplatesFolderId" value="${html(state.config.googleTemplatesFolderId)}" />
           </div>
           <div class="toolbar wide">
@@ -490,11 +495,11 @@ function settingsPage() {
         </form>
       </article>
       <article class="panel">
-        <div class="panel-head"><h2>מצב</h2><span>GitHub Pages</span></div>
+        <div class="panel-head"><h2>מצב</h2><span>מערכת</span></div>
         <div class="settings-card">
-          <p><strong>קוד:</strong> נטען מגיטהאב.</p>
-          <p><strong>נתונים:</strong> Google Sheets ו-Google Drive.</p>
-          <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר לגוגל כרגע." : "לא מחובר כרגע."}</p>
+          <p><strong>קוד:</strong> נטען מהאתר.</p>
+          <p><strong>נתונים:</strong> נשמרים באחסון המחובר.</p>
+          <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר כרגע." : "לא מחובר כרגע."}</p>
         </div>
       </article>
     </section>
@@ -502,7 +507,7 @@ function settingsPage() {
 }
 
 function placeholderPage(title) {
-  return shell(`${header(title, "המסך הזה יתחבר לשיטס בשלב הבא.", `<button class="button secondary" data-action="refresh" type="button">רענון</button>`)}<section class="panel"><div class="empty">בקרוב.</div></section>`);
+  return shell(`${header(title, "המסך הזה יתחבר לנתוני המערכת בשלב הבא.", `<button class="button secondary" data-action="refresh" type="button">רענון</button>`)}<section class="panel"><div class="empty">בקרוב.</div></section>`);
 }
 
 function detail(label, value) {
@@ -653,7 +658,7 @@ function calendarPage() {
   return shell(`
     ${header(
       "יומן",
-      "לוח שנה פעיל של מפגשים מתוך Google Sheets.",
+      "לוח שנה פעיל של מפגשים.",
       `<button class="button secondary" data-action="calendar-prev" type="button">חודש קודם</button>
        <button class="button blue" data-action="calendar-today" type="button">היום</button>
        <button class="button secondary" data-action="calendar-next" type="button">חודש הבא</button>
@@ -735,7 +740,7 @@ function paymentsPage() {
   return shell(`
     ${header(
       "תשלומים",
-      "מעקב גבייה מתוך Google Sheets, כולל סטטוס תשלום וקבלה.",
+      "מעקב גבייה, תשלומים וקבלות.",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
        <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
     )}
@@ -826,7 +831,7 @@ function reportsPage() {
   return shell(`
     ${header(
       "דוחות",
-      `סיכום עבודה לחודש ${monthLabel(month)} מתוך Google Sheets.`,
+      `סיכום עבודה לחודש ${monthLabel(month)} מתוך נתוני המערכת.`,
       `<button class="button secondary" data-action="reports-prev" type="button">חודש קודם</button>
        <button class="button blue" data-action="reports-current" type="button">החודש</button>
        <button class="button secondary" data-action="reports-next" type="button">חודש הבא</button>
@@ -1046,7 +1051,7 @@ function tasksPage() {
   return shell(`
     ${header(
       "משימות",
-      "ניהול מעקבים, תזכורות ופעולות המשך מתוך Google Sheets.",
+      "ניהול מעקבים, תזכורות ופעולות המשך.",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
        <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
     )}
@@ -1057,7 +1062,7 @@ function tasksPage() {
       <article class="metric teal-card"><strong>${rows.length}</strong><span>סה"כ משימות</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>משימה חדשה</h2><span>נשמרת לגיליון tasks</span></div>
+      <div class="panel-head"><h2>משימה חדשה</h2><span>נשמרת במערכת</span></div>
       ${taskForm()}
     </section>
     <section class="panel page-gap">
@@ -1106,7 +1111,7 @@ function fileForm(patientId = "") {
         </select>
       </div>
       <div class="field wide">
-        <label for="file_url">קישור Google Drive</label>
+        <label for="file_url">קישור לקובץ</label>
         <input id="file_url" name="url" placeholder="https://drive.google.com/..." />
       </div>
       <div class="toolbar wide">
@@ -1183,17 +1188,17 @@ function filesPanel(items = state.files, patient = null) {
   const rows = items.slice(0, 6);
   return `
     <article class="panel">
-      <div class="panel-head"><h2>קבצים</h2><span>Google Drive</span></div>
+      <div class="panel-head"><h2>קבצים</h2><span>אחסון</span></div>
       ${patient ? fileForm(patient.id) : ""}
       ${patient ? templateForm(patient.id) : ""}
       ${
         patient?.drive_folder_id
           ? `<div class="folder-link">
-              <a class="button secondary" href="https://drive.google.com/drive/folders/${html(patient.drive_folder_id)}" target="_blank" rel="noopener">פתיחת תיקיית מטופל בדרייב</a>
+              <a class="button secondary" href="https://drive.google.com/drive/folders/${html(patient.drive_folder_id)}" target="_blank" rel="noopener">פתיחת תיקיית מטופל</a>
               <button class="button blue" data-action="sync-drive-files" data-id="${html(patient.id)}" type="button">ייבוא קבצים מהתיקייה</button>
             </div>`
           : `<div class="folder-link">
-              <button class="button blue" data-action="create-drive-folder" data-id="${html(patient?.id || "")}" type="button">יצירת תיקיית מטופל בדרייב</button>
+              <button class="button blue" data-action="create-drive-folder" data-id="${html(patient?.id || "")}" type="button">יצירת תיקיית מטופל</button>
             </div>`
       }
       ${filesTable(rows)}
@@ -1207,12 +1212,12 @@ function filesPage() {
   return shell(`
     ${header(
       "קבצים",
-      "רישום קבצים וקישורי Google Drive לפי מטופל.",
+      "רישום קבצים וקישורים לפי מטופל.",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
        ${
          state.config.googleDriveRootFolderId
-           ? `<a class="button yellow" href="https://drive.google.com/drive/folders/${html(state.config.googleDriveRootFolderId)}" target="_blank" rel="noopener">פתיחת תיקיית דרייב ראשית</a>`
-           : `<a class="button yellow" href="#/settings">הגדרת דרייב</a>`
+           ? `<a class="button yellow" href="https://drive.google.com/drive/folders/${html(state.config.googleDriveRootFolderId)}" target="_blank" rel="noopener">פתיחת תיקיית אחסון ראשית</a>`
+           : `<a class="button yellow" href="#/settings">הגדרת אחסון</a>`
        }`
     )}
     ${connectionBanner()}
@@ -1222,7 +1227,7 @@ function filesPage() {
       <article class="metric purple-card"><strong>${state.patients.length}</strong><span>מטופלים במערכת</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>קובץ חדש</h2><span>רישום קישור לקובץ בדרייב</span></div>
+      <div class="panel-head"><h2>קובץ חדש</h2><span>רישום קישור לקובץ</span></div>
       ${fileForm()}
     </section>
     <section class="panel page-gap">
@@ -1237,7 +1242,7 @@ function patientDrawer() {
     ? state.patients.find((item) => item.id === state.currentPatientId)
     : null;
   const title = patient ? "עריכת מטופל" : "הוספת מטופל";
-  const submitLabel = patient ? "שמירת שינויים" : "שמירה ל-Google Sheets";
+  const submitLabel = patient ? "שמירת שינויים" : "שמירה";
 
   return `
     <section class="drawer" id="patientDrawer" hidden>
@@ -1320,14 +1325,14 @@ async function connectGoogle() {
   state.message = "";
 
   if (!state.config.googleClientId) {
-    state.error = "צריך להכניס Google Client ID במסך ההגדרות.";
+    state.error = "צריך להכניס מזהה התחברות במסך ההגדרות.";
     navigate("settings");
     render();
     return;
   }
 
   if (!window.google?.accounts?.oauth2) {
-    state.error = "רכיב ההתחברות של Google עדיין לא נטען. נסו שוב בעוד רגע.";
+    state.error = "רכיב ההתחברות עדיין לא נטען. נסו שוב בעוד רגע.";
     render();
     return;
   }
@@ -1338,14 +1343,14 @@ async function connectGoogle() {
       "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive",
     callback: async (response) => {
       if (response.error) {
-        state.error = "ההתחברות לגוגל נכשלה.";
+        state.error = "ההתחברות לאחסון נכשלה.";
         render();
         return;
       }
 
       state.accessToken = response.access_token;
       saveGoogleToken(response);
-      state.message = "החיבור לגוגל הצליח.";
+      state.message = "החיבור לאחסון הצליח.";
       await loadData();
       render();
     }
@@ -1369,17 +1374,17 @@ function friendlyGoogleError(text, status) {
   const combined = `${text || ""} ${message}`.toLowerCase();
 
   if (combined.includes("sheets.googleapis.com") || combined.includes("google sheets api")) {
-    return "צריך להפעיל את Google Sheets API בפרויקט Google Cloud, להמתין דקה ואז לרענן את המערכת.";
+    return "צריך להפעיל את רכיב מאגר הנתונים בפרויקט החיבור, להמתין דקה ואז לרענן את המערכת.";
   }
 
   if (combined.includes("drive.googleapis.com") || combined.includes("google drive api")) {
-    return "צריך להפעיל את Google Drive API בפרויקט Google Cloud, להמתין דקה ואז לרענן את המערכת.";
+    return "צריך להפעיל את רכיב האחסון בפרויקט החיבור, להמתין דקה ואז לרענן את המערכת.";
   }
 
   if (status === 401 || combined.includes("invalid credentials")) {
     clearStoredGoogleToken();
     state.accessToken = "";
-    return "החיבור לגוגל פג תוקף. צריך להתחבר שוב.";
+    return "החיבור פג תוקף. צריך להתחבר שוב.";
   }
 
   if (
@@ -1387,14 +1392,14 @@ function friendlyGoogleError(text, status) {
     combined.includes("insufficient") ||
     combined.includes("access denied")
   ) {
-    return "אין כרגע הרשאה מתאימה בגוגל. צריך להתחבר שוב ולאשר את ההרשאות המבוקשות.";
+    return "אין כרגע הרשאה מתאימה. צריך להתחבר שוב ולאשר את ההרשאות המבוקשות.";
   }
 
-  return message || "הקריאה לגוגל נכשלה.";
+  return message || "הקריאה לאחסון נכשלה.";
 }
 
 async function googleFetch(url, options = {}) {
-  if (!state.accessToken) throw new Error("לא מחוברים לגוגל.");
+  if (!state.accessToken) throw new Error("לא מחוברים לאחסון.");
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -1491,7 +1496,7 @@ async function ensurePatientDriveFolder(patientId) {
   if (!patient._rowNumber) throw new Error("צריך לרענן נתונים לפני יצירת תיקייה למטופל הזה.");
 
   const folder = await createPatientFolder(patient.child_name);
-  if (!folder.id) throw new Error("לא הוגדרה תיקיית Drive ראשית במסך ההגדרות.");
+  if (!folder.id) throw new Error("לא הוגדרה תיקיית אחסון ראשית במסך ההגדרות.");
 
   const updated = {
     ...patient,
@@ -1629,6 +1634,21 @@ async function savePatient(form) {
   state.patients = state.patients.sort((a, b) =>
     (a.child_name || "").localeCompare(b.child_name || "", "he")
   );
+}
+
+async function togglePatientArchive(patientId, shouldArchive) {
+  const patient = state.patients.find((item) => item.id === patientId);
+  if (!patient) throw new Error("המטופל לא נמצא.");
+  if (!patient._rowNumber) throw new Error("לא ניתן לעדכן את המטופל לפני רענון הנתונים.");
+
+  const updated = {
+    ...patient,
+    status: shouldArchive ? "archived" : "active",
+    updated_at: new Date().toISOString()
+  };
+
+  await updateSheetRow("patients", patient._rowNumber, updated);
+  state.patients = state.patients.map((item) => (item.id === patientId ? updated : item));
 }
 
 async function saveSession(form) {
@@ -1820,6 +1840,23 @@ function bindEvents() {
     if (action === "open-profile") {
       navigate(`patients/${target.dataset.id}`);
     }
+    if (action === "toggle-patient-archive") {
+      const shouldArchive = target.dataset.archive !== "restore";
+      const prompt = shouldArchive
+        ? "להעביר את המטופל לארכיון? המידע יישמר ותמיד אפשר להחזיר."
+        : "להחזיר את המטופל מרשימת הארכיון?";
+      if (!window.confirm(prompt)) return;
+
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        await togglePatientArchive(target.dataset.id, shouldArchive);
+        state.message = shouldArchive ? "המטופל הועבר לארכיון." : "המטופל הוחזר לפעילות.";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
+        render();
+      }
+    }
     if (action === "calendar-prev") {
       state.calendarMonth = shiftMonth(state.calendarMonth, -1);
       render();
@@ -1853,9 +1890,9 @@ function bindEvents() {
     }
     if (action === "create-drive-folder") {
       try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await ensurePatientDriveFolder(target.dataset.id);
-        state.message = "תיקיית המטופל נוצרה בדרייב ונשמרה ב-Google Sheets.";
+        state.message = "תיקיית המטופל נוצרה ונשמרה במערכת.";
         render();
       } catch (error) {
         state.error = error instanceof Error ? error.message : "יצירת התיקייה נכשלה.";
@@ -1864,20 +1901,20 @@ function bindEvents() {
     }
     if (action === "sync-drive-files") {
       try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         const count = await syncPatientDriveFiles(target.dataset.id);
         state.message = count
-          ? `${count} קבצים חדשים נרשמו מתוך תיקיית הדרייב.`
+          ? `${count} קבצים חדשים נרשמו מתוך תיקיית המטופל.`
           : "לא נמצאו קבצים חדשים לייבוא מהתיקייה.";
         render();
       } catch (error) {
-        state.error = error instanceof Error ? error.message : "ייבוא הקבצים מדרייב נכשל.";
+        state.error = error instanceof Error ? error.message : "ייבוא הקבצים נכשל.";
         render();
       }
     }
     if (action === "complete-task") {
       try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await completeTask(target.dataset.id);
         state.message = "המשימה סומנה כבוצעה.";
         render();
@@ -1917,40 +1954,40 @@ function bindEvents() {
       }
 
       if (form.dataset.form === "patient") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await savePatient(form);
         state.currentPatientId = "";
         state.message = form.dataset.id
-          ? "פרטי המטופל עודכנו ב-Google Sheets."
-          : "המטופל נשמר ב-Google Sheets ונוצרה תיקייה בדרייב.";
+          ? "פרטי המטופל עודכנו במערכת."
+          : "המטופל נשמר במערכת ונוצרה לו תיקייה.";
       }
 
       if (form.dataset.form === "session") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await saveSession(form);
-        state.message = "המפגש נשמר ב-Google Sheets.";
+        state.message = "המפגש נשמר במערכת.";
       }
 
       if (form.dataset.form === "payment") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await savePayment(form);
-        state.message = "התשלום נשמר ב-Google Sheets.";
+        state.message = "התשלום נשמר במערכת.";
       }
 
       if (form.dataset.form === "task") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await saveTask(form);
-        state.message = "המשימה נשמרה ב-Google Sheets.";
+        state.message = "המשימה נשמרה במערכת.";
       }
 
       if (form.dataset.form === "file") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await saveFile(form);
-        state.message = "הקובץ נשמר ב-Google Sheets.";
+        state.message = "הקובץ נשמר במערכת.";
       }
 
       if (form.dataset.form === "template-copy") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await createFileFromTemplate(form);
         state.message = "המסמך נוצר מתבנית, נשמר בתיקיית המטופל ונרשם בקבצים.";
       }
@@ -1988,7 +2025,7 @@ if (state.accessToken) {
     .then(render)
     .catch((error) => {
       state.error =
-        error instanceof Error ? error.message : "טעינת הנתונים מגוגל נכשלה.";
+        error instanceof Error ? error.message : "טעינת הנתונים נכשלה.";
       render();
     });
 }
