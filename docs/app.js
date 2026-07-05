@@ -657,7 +657,7 @@ function calendarPage() {
                   <span class="day-number">${Number(day.date.slice(8, 10))}</span>
                   <span class="day-events">
                     ${daySessions
-                      .slice(0, 3)
+                      .slice(0, 2)
                       .map(
                         (session) =>
                           `<span class="calendar-event">${html(session.start_time || "")} ${html(patientName(session.patient_id))}</span>`
@@ -665,7 +665,7 @@ function calendarPage() {
                       .join("")}
                     ${
                       daySessions.length > 3
-                        ? `<span class="calendar-more">+${daySessions.length - 3}</span>`
+                        ? `<span class="calendar-more">+${daySessions.length - 2}</span>`
                         : ""
                     }
                   </span>
