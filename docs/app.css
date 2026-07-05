@@ -571,6 +571,9 @@ th {
 }
 
 .folder-link {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   border-bottom: 1px solid var(--table-border);
   padding: 12px 16px;
 }

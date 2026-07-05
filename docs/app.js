@@ -1154,8 +1154,13 @@ function filesPanel(items = state.files, patient = null) {
       ${patient ? fileForm(patient.id) : ""}
       ${
         patient?.drive_folder_id
-          ? `<div class="folder-link"><a class="button secondary" href="https://drive.google.com/drive/folders/${html(patient.drive_folder_id)}" target="_blank" rel="noopener">פתיחת תיקיית מטופל בדרייב</a></div>`
-          : ""
+          ? `<div class="folder-link">
+              <a class="button secondary" href="https://drive.google.com/drive/folders/${html(patient.drive_folder_id)}" target="_blank" rel="noopener">פתיחת תיקיית מטופל בדרייב</a>
+              <button class="button blue" data-action="sync-drive-files" data-id="${html(patient.id)}" type="button">ייבוא קבצים מהתיקייה</button>
+            </div>`
+          : `<div class="folder-link">
+              <button class="button blue" data-action="create-drive-folder" data-id="${html(patient?.id || "")}" type="button">יצירת תיקיית מטופל בדרייב</button>
+            </div>`
       }
       ${filesTable(rows)}
     </article>`;
@@ -1433,6 +1438,86 @@ async function createPatientFolder(patientNameValue) {
   return { id: result.id || "", path: folderName };
 }
 
+function driveFileUrl(fileId) {
+  return `https://drive.google.com/file/d/${fileId}/view`;
+}
+
+function driveFileTypeLabel(mimeType = "") {
+  if (mimeType.includes("spreadsheet")) return "document";
+  if (mimeType.includes("document")) return "document";
+  if (mimeType.includes("pdf")) return "document";
+  if (mimeType.includes("image")) return "form";
+  return "other";
+}
+
+async function ensurePatientDriveFolder(patientId) {
+  const patient = state.patients.find((item) => item.id === patientId);
+  if (!patient) throw new Error("המטופל לא נמצא.");
+  if (patient.drive_folder_id) return patient;
+  if (!patient._rowNumber) throw new Error("צריך לרענן נתונים לפני יצירת תיקייה למטופל הזה.");
+
+  const folder = await createPatientFolder(patient.child_name);
+  if (!folder.id) throw new Error("לא הוגדרה תיקיית Drive ראשית במסך ההגדרות.");
+
+  const updated = {
+    ...patient,
+    drive_folder_id: folder.id,
+    drive_folder_path: folder.path,
+    updated_at: new Date().toISOString()
+  };
+
+  await updateSheetRow("patients", patient._rowNumber, updated);
+  state.patients = state.patients.map((item) => (item.id === patientId ? updated : item));
+  return updated;
+}
+
+async function listDriveFolderFiles(folderId) {
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set(
+    "q",
+    `'${folderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`
+  );
+  url.searchParams.set("fields", "files(id,name,mimeType,webViewLink,createdTime)");
+  url.searchParams.set("pageSize", "100");
+  const result = await googleFetch(url.toString(), { headers: {} });
+  return result.files || [];
+}
+
+async function syncPatientDriveFiles(patientId) {
+  const patient = await ensurePatientDriveFolder(patientId);
+  const driveFiles = await listDriveFolderFiles(patient.drive_folder_id);
+  const existingIds = new Set(
+    state.files
+      .filter((file) => file.patient_id === patientId)
+      .map((file) => file.drive_file_id)
+      .filter(Boolean)
+  );
+  const now = new Date().toISOString();
+  const newFiles = driveFiles
+    .filter((file) => !existingIds.has(file.id))
+    .map((file) => ({
+      id: id(),
+      patient_id: patientId,
+      drive_file_id: file.id,
+      drive_folder_id: patient.drive_folder_id,
+      name: file.name || "קובץ ללא שם",
+      file_type: driveFileTypeLabel(file.mimeType),
+      url: file.webViewLink || driveFileUrl(file.id),
+      created_at: file.createdTime || now,
+      updated_at: now
+    }));
+
+  for (const file of newFiles) {
+    const appendResult = await appendSheet("files", file);
+    file._rowNumber = appendedRowNumber(appendResult);
+  }
+
+  state.files = [...newFiles, ...state.files].sort((a, b) =>
+    `${b.created_at}`.localeCompare(`${a.created_at}`)
+  );
+  return newFiles.length;
+}
+
 async function loadData() {
   if (!state.accessToken || !state.config.googleSpreadsheetId) return;
   const [patients, sessions, payments, tasks, files] = await Promise.all([
@@ -1677,6 +1762,30 @@ function bindEvents() {
     if (action === "reports-current") {
       state.reportMonth = isoDate(new Date()).slice(0, 7);
       render();
+    }
+    if (action === "create-drive-folder") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        await ensurePatientDriveFolder(target.dataset.id);
+        state.message = "תיקיית המטופל נוצרה בדרייב ונשמרה ב-Google Sheets.";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "יצירת התיקייה נכשלה.";
+        render();
+      }
+    }
+    if (action === "sync-drive-files") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לגוגל לפני שמירה.");
+        const count = await syncPatientDriveFiles(target.dataset.id);
+        state.message = count
+          ? `${count} קבצים חדשים נרשמו מתוך תיקיית הדרייב.`
+          : "לא נמצאו קבצים חדשים לייבוא מהתיקייה.";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "ייבוא הקבצים מדרייב נכשל.";
+        render();
+      }
     }
     if (action === "complete-task") {
       try {
