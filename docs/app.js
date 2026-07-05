@@ -159,6 +159,18 @@ function saveGoogleToken(response) {
   localStorage.setItem(GOOGLE_CONSENT_KEY, "yes");
 }
 
+function googleCloudProjectNumber() {
+  return (state.config.googleClientId || "").match(/^(\d+)-/)?.[1] || "";
+}
+
+function googleApiActivationUrl(serviceName) {
+  const projectNumber = googleCloudProjectNumber();
+  const service = encodeURIComponent(serviceName);
+  return projectNumber
+    ? `https://console.developers.google.com/apis/api/${service}/overview?project=${projectNumber}`
+    : `https://console.cloud.google.com/apis/library/${service}`;
+}
+
 function getRoute() {
   return location.hash.replace(/^#\/?/, "") || "dashboard";
 }
@@ -499,6 +511,12 @@ function settingsPage() {
           <p><strong>נתונים:</strong> נשמרים באחסון המחובר.</p>
           <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר כרגע." : "לא מחובר כרגע."}</p>
           <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
+          <button class="button secondary" data-action="force-connect-google" type="button">התחברות מחדש עם הרשאות</button>
+          <div class="diagnostic-actions">
+            <a class="button yellow" href="${html(googleApiActivationUrl("sheets.googleapis.com"))}" target="_blank" rel="noopener">הפעלת מאגר נתונים</a>
+            <a class="button yellow" href="${html(googleApiActivationUrl("drive.googleapis.com"))}" target="_blank" rel="noopener">הפעלת אחסון קבצים</a>
+          </div>
+          <p class="settings-hint">אם בדיקת החיבור נכשלת, מפעילים את שני הרכיבים, חוזרים לכאן ולוחצים התחברות מחדש עם הרשאות.</p>
         </div>
       </article>
     </section>
@@ -1353,9 +1371,13 @@ function receiptStatusLabel(value) {
   }[value] || "דרושה קבלה";
 }
 
-async function connectGoogle() {
+async function connectGoogle(forceConsent = false) {
   state.error = "";
   state.message = "";
+  if (forceConsent) {
+    clearStoredGoogleToken(true);
+    state.accessToken = "";
+  }
 
   if (!state.config.googleClientId) {
     state.error = "צריך להכניס מזהה התחברות במסך ההגדרות.";
@@ -1389,7 +1411,7 @@ async function connectGoogle() {
   });
 
   tokenClient.requestAccessToken({
-    prompt: localStorage.getItem(GOOGLE_CONSENT_KEY) === "yes" ? "" : "consent"
+    prompt: forceConsent || localStorage.getItem(GOOGLE_CONSENT_KEY) !== "yes" ? "consent" : ""
   });
 }
 
@@ -1406,11 +1428,11 @@ function friendlyGoogleError(text, status) {
   const combined = `${text || ""} ${message}`.toLowerCase();
 
   if (combined.includes("sheets.googleapis.com") || combined.includes("google sheets api")) {
-    return "צריך להפעיל את רכיב מאגר הנתונים בפרויקט החיבור, להמתין דקה ואז לרענן את המערכת.";
+    return "רכיב מאגר הנתונים לא פעיל בפרויקט החיבור. במסך ההגדרות לחץ על הפעלת מאגר נתונים, המתן דקה ואז לחץ בדיקת חיבור.";
   }
 
   if (combined.includes("drive.googleapis.com") || combined.includes("google drive api")) {
-    return "צריך להפעיל את רכיב האחסון בפרויקט החיבור, להמתין דקה ואז לרענן את המערכת.";
+    return "רכיב אחסון הקבצים לא פעיל בפרויקט החיבור. במסך ההגדרות לחץ על הפעלת אחסון קבצים, המתן דקה ואז לחץ בדיקת חיבור.";
   }
 
   if (status === 401 || combined.includes("invalid credentials")) {
@@ -1885,6 +1907,7 @@ function bindEvents() {
 
     const action = target.dataset.action;
     if (action === "connect-google") await connectGoogle();
+    if (action === "force-connect-google") await connectGoogle(true);
     if (action === "refresh") {
       await loadData().catch((error) => {
         state.error = error.message;

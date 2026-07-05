@@ -614,6 +614,17 @@ th {
   margin-bottom: 0;
 }
 
+.diagnostic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-hint {
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
 .page-gap {
   margin-top: 18px;
 }
