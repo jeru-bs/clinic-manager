@@ -1591,9 +1591,19 @@ async function savePatient(form) {
   if (!data.child_name) throw new Error("שם המטופל הוא שדה חובה.");
 
   const now = new Date().toISOString();
-  const folder = existing
+  let folder = existing
     ? { id: existing.drive_folder_id || "", path: existing.drive_folder_path || "" }
-    : await createPatientFolder(data.child_name);
+    : { id: "", path: "" };
+  let folderError = "";
+
+  if (!existing) {
+    try {
+      folder = await createPatientFolder(data.child_name);
+    } catch (error) {
+      folderError = error instanceof Error ? error.message : "יצירת תיקיית המטופל נכשלה.";
+    }
+  }
+
   const patient = {
     ...(existing || {}),
     id: existing?.id || id(),
@@ -1630,6 +1640,11 @@ async function savePatient(form) {
   state.patients = state.patients.sort((a, b) =>
     (a.child_name || "").localeCompare(b.child_name || "", "he")
   );
+
+  return {
+    folderCreated: Boolean(folder.id),
+    folderError
+  };
 }
 
 async function togglePatientArchive(patientId, shouldArchive) {
@@ -1951,11 +1966,17 @@ function bindEvents() {
 
       if (form.dataset.form === "patient") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await savePatient(form);
+        const result = await savePatient(form);
         state.currentPatientId = "";
-        state.message = form.dataset.id
-          ? "פרטי המטופל עודכנו במערכת."
-          : "המטופל נשמר במערכת ונוצרה לו תיקייה.";
+        if (form.dataset.id) {
+          state.message = "פרטי המטופל עודכנו במערכת.";
+        } else if (result.folderCreated) {
+          state.message = "המטופל נשמר במערכת ונוצרה לו תיקייה.";
+        } else {
+          state.message = result.folderError
+            ? "המטופל נשמר במערכת. את תיקיית המטופל אפשר ליצור בהמשך מכרטיס המטופל."
+            : "המטופל נשמר במערכת.";
+        }
       }
 
       if (form.dataset.form === "session") {
