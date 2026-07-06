@@ -97,6 +97,7 @@ const state = {
   tasks: [],
   files: [],
   templates: [],
+  dataHealth: null,
   patientFilter: {
     name: "",
     school: "",
@@ -854,7 +855,51 @@ function settingsPage() {
         ${detail("תאריך גיבוי", formatDate(isoDate(new Date())))}
       </div>
     </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>בדיקת תקינות נתונים</h2><span>גיליונות ועמודות</span></div>
+      <div class="toolbar">
+        <button class="button blue" data-action="check-data-health" type="button">בדיקת תקינות</button>
+        <button class="button yellow" data-action="repair-data-health" type="button">תיקון מבנה</button>
+      </div>
+      ${dataHealthView()}
+    </section>
   `);
+}
+
+function dataHealthView() {
+  if (!state.dataHealth) {
+    return `<div class="empty">עדיין לא בוצעה בדיקת תקינות.</div>`;
+  }
+
+  const rows = state.dataHealth.results || [];
+  return `
+    <div class="health-summary ${state.dataHealth.ok ? "ok" : "warn"}">
+      ${state.dataHealth.ok ? "מבנה הנתונים תקין." : "נמצאו נקודות שדורשות תיקון."}
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>גיליון</th>
+            <th>מצב</th>
+            <th>פירוט</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+                <tr>
+                  <td>${html(row.sheet)}</td>
+                  <td><span class="status-pill ${row.ok ? "done" : "open"}">${row.ok ? "תקין" : "דורש תיקון"}</span></td>
+                  <td>${html(row.message)}</td>
+                </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function detail(label, value) {
@@ -1136,9 +1181,16 @@ function calendarPage() {
                   (session) => `
                   <article class="list-item calendar-list-item">
                     <div><strong>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "ללא שעה")}</strong><span>${html(session.location || "-")}</span></div>
-                    <div><strong>${html(patientName(session.patient_id))}</strong><span>${html(session.session_type || "מפגש")}</span></div>
+                    <div><strong>${html(patientName(session.patient_id))}</strong><span>${html(session.session_type || "מפגש")}${session.is_recurring ? ` <span class="status-pill muted">קבוע</span>` : ""}</span></div>
                     <p>${html(session.summary || "לא נכתב סיכום.")}</p>
-                    <button class="button secondary table-button" data-action="open-profile" data-id="${html(session.patient_id)}" type="button">כרטיס</button>
+                    <div class="row-actions">
+                      ${
+                        session.is_recurring
+                          ? `<button class="button blue table-button" data-action="materialize-recurring" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" type="button">שמירה</button>`
+                          : ""
+                      }
+                      <button class="button secondary table-button" data-action="open-profile" data-id="${html(session.patient_id)}" type="button">כרטיס</button>
+                    </div>
                   </article>`
                 )
                 .join("")}</div>`
@@ -1973,8 +2025,65 @@ function recurringSessionForDate(patient, dateValue) {
     calendar_event_id: "",
     created_at: "",
     updated_at: "",
+    document_file_id: "",
     is_recurring: true
   };
+}
+
+async function materializeRecurringSession(patientId, dateValue) {
+  const existing = state.sessions.find(
+    (session) => session.patient_id === patientId && session.session_date === dateValue
+  );
+  if (existing) return existing;
+
+  const patient = state.patients.find((item) => item.id === patientId);
+  const recurring = recurringSessionForDate(patient, dateValue);
+  if (!recurring) throw new Error("לא נמצא מפגש קבוע לשמירה.");
+
+  const now = new Date().toISOString();
+  const session = {
+    id: id(),
+    patient_id: patientId,
+    session_date: recurring.session_date,
+    start_time: recurring.start_time,
+    end_time: recurring.end_time || addMinutes(recurring.start_time, 50),
+    location: recurring.location,
+    session_type: recurring.session_type,
+    summary: recurring.summary,
+    sensitive_notes: "",
+    calendar_event_id: "",
+    created_at: now,
+    updated_at: now,
+    document_file_id: ""
+  };
+
+  lastCalendarSyncError = "";
+  lastDocumentSyncError = "";
+  try {
+    session.calendar_event_id = await createCalendarEvent(session);
+  } catch (error) {
+    lastCalendarSyncError = error instanceof Error ? error.message : "סנכרון היומן נכשל.";
+  }
+
+  const appendResult = await appendSheet("sessions", session);
+  session._rowNumber = appendedRowNumber(appendResult);
+  state.sessions = [session, ...state.sessions];
+
+  try {
+    const documentFileId = await updateSessionDocument(patientId, session);
+    if (documentFileId) {
+      session.document_file_id = documentFileId;
+      if (session._rowNumber) await updateSheetRow("sessions", session._rowNumber, session);
+      state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
+    }
+  } catch (error) {
+    lastDocumentSyncError = error instanceof Error ? error.message : "יצירת מסמך התיעוד נכשל.";
+  }
+
+  state.sessions = state.sessions.sort((a, b) =>
+    `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
+  );
+  return session;
 }
 
 function dateRange(startDateValue, numberOfDays) {
@@ -2204,6 +2313,106 @@ async function readSheet(sheetName) {
   return (result.values || [])
     .map((row, index) => ({ ...rowToRecord(columns, row), _rowNumber: String(index + 2) }))
     .filter((record) => columns.some((column) => record[column]));
+}
+
+async function getSpreadsheetSheetNames() {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  if (!spreadsheetId) throw new Error("לא הוגדר מזהה מאגר נתונים.");
+  const result = await googleFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`
+  );
+  return (result.sheets || []).map((sheet) => sheet.properties?.title).filter(Boolean);
+}
+
+async function readSheetHeader(sheetName) {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  const range = `${sheetName}!1:1`;
+  const result = await googleFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`
+  );
+  return result.values?.[0] || [];
+}
+
+async function writeSheetHeader(sheetName) {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  const columns = SHEETS[sheetName];
+  const range = `${sheetName}!A1:${String.fromCharCode(64 + columns.length)}1`;
+  const url = new URL(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`
+  );
+  url.searchParams.set("valueInputOption", "RAW");
+  await googleFetch(url.toString(), {
+    method: "PUT",
+    body: JSON.stringify({ values: [columns] })
+  });
+}
+
+async function addMissingSheets(sheetNames) {
+  if (!sheetNames.length) return;
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+    method: "POST",
+    body: JSON.stringify({
+      requests: sheetNames.map((title) => ({
+        addSheet: {
+          properties: { title }
+        }
+      }))
+    })
+  });
+}
+
+function healthRow(sheet, existingSheets, header) {
+  if (!existingSheets.includes(sheet)) {
+    return { sheet, ok: false, message: "הגיליון חסר." };
+  }
+  const expected = SHEETS[sheet];
+  const missing = expected.filter((column, index) => header[index] !== column);
+  if (missing.length) {
+    return {
+      sheet,
+      ok: false,
+      message: `שורת הכותרות לא תואמת. חסר/שונה: ${missing.join(", ")}`
+    };
+  }
+  return { sheet, ok: true, message: "תקין." };
+}
+
+async function runDataHealthCheck({ repair = false } = {}) {
+  if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני בדיקת תקינות.");
+  const sheetNames = Object.keys(SHEETS);
+  let existingSheets = await getSpreadsheetSheetNames();
+  const missingSheets = sheetNames.filter((sheet) => !existingSheets.includes(sheet));
+
+  if (repair && missingSheets.length) {
+    await addMissingSheets(missingSheets);
+    existingSheets = await getSpreadsheetSheetNames();
+  }
+
+  const results = [];
+  for (const sheet of sheetNames) {
+    if (!existingSheets.includes(sheet)) {
+      results.push(healthRow(sheet, existingSheets, []));
+      continue;
+    }
+    let header = await readSheetHeader(sheet).catch(() => []);
+    let row = healthRow(sheet, existingSheets, header);
+    if (repair && !row.ok) {
+      await writeSheetHeader(sheet);
+      header = await readSheetHeader(sheet).catch(() => []);
+      row = healthRow(sheet, existingSheets, header);
+    }
+    results.push(row);
+  }
+
+  const report = {
+    checked_at: new Date().toISOString(),
+    repaired: repair,
+    ok: results.every((row) => row.ok),
+    results
+  };
+  state.dataHealth = report;
+  return report;
 }
 
 async function appendSheet(sheetName, record) {
@@ -3748,6 +3957,31 @@ function bindEvents() {
         render();
       }
     }
+    if (action === "check-data-health") {
+      try {
+        const report = await runDataHealthCheck();
+        state.message = report.ok ? "מבנה הנתונים תקין." : "נמצאו בעיות במבנה הנתונים. אפשר ללחוץ תיקון מבנה.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "בדיקת תקינות הנתונים נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "repair-data-health") {
+      if (!window.confirm("תיקון מבנה יעדכן את שורת הכותרות ויצור גיליונות חסרים. להמשיך?")) return;
+      try {
+        const report = await runDataHealthCheck({ repair: true });
+        state.message = report.ok ? "מבנה הנתונים תוקן ונבדק." : "נשארו נקודות שדורשות בדיקה ידנית.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "תיקון מבנה הנתונים נכשל.";
+        state.message = "";
+        render();
+      }
+    }
     if (action === "download-backup") {
       downloadBackup();
       state.message = "גיבוי מלא ירד למחשב.";
@@ -3993,6 +4227,22 @@ function bindEvents() {
       state.selectedCalendarDate = target.dataset.date || state.selectedCalendarDate;
       state.calendarMonth = state.selectedCalendarDate.slice(0, 7);
       render();
+    }
+    if (action === "materialize-recurring") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירת מפגש.");
+        await materializeRecurringSession(target.dataset.patientId, target.dataset.date);
+        const syncMessages = [lastCalendarSyncError, lastDocumentSyncError].filter(Boolean);
+        state.message = syncMessages.length
+          ? `המפגש הקבוע נשמר במערכת. ${syncMessages.join(" ")}`
+          : "המפגש הקבוע נשמר כמפגש רגיל, סונכרן ליומן ונוצר לו מסמך תיעוד.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "שמירת המפגש הקבוע נכשלה.";
+        state.message = "";
+        render();
+      }
     }
     if (action === "reports-prev") {
       state.reportMonth = shiftMonth(state.reportMonth, -1);
@@ -4276,6 +4526,7 @@ function busyActionKey(target) {
   const parts = [
     target.dataset.action || "",
     target.dataset.id || "",
+    target.dataset.patientId || "",
     target.dataset.table || "",
     target.dataset.status || "",
     target.dataset.tab || "",

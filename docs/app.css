@@ -688,6 +688,12 @@ th {
   gap: 6px;
 }
 
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .small-action {
   display: grid;
   width: 34px;
@@ -852,6 +858,33 @@ th {
   margin-inline-start: 8px;
   background: #f1f3f7;
   color: var(--muted);
+}
+
+.status-pill.done {
+  background: #e7fbf5;
+  color: #047857;
+}
+
+.status-pill.open {
+  background: #fff4d7;
+  color: #7a5400;
+}
+
+.health-summary {
+  margin: 14px 0;
+  border-radius: 4px;
+  padding: 12px 14px;
+  font-weight: 800;
+}
+
+.health-summary.ok {
+  background: #e7fbf5;
+  color: #047857;
+}
+
+.health-summary.warn {
+  background: #fff4d7;
+  color: #7a5400;
 }
 
 .settings-card {
