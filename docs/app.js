@@ -75,6 +75,7 @@ const SHEETS = {
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
 const GOOGLE_CONSENT_KEY = "clinic-manager-google-consent";
+const SETTINGS_FILE_NAME = "clinic-manager-settings.json";
 const DEFAULT_SESSION_TYPES = ["טיפול", "הדרכת הורים", "שיחה", "אבחון"];
 const DEFAULT_SESSION_LOCATIONS = ["קליניקה", "בית ספר", "אונליין", "בית"];
 const state = {
@@ -109,6 +110,8 @@ let activeRecordingPatientId = "";
 let activeRecordingStream = null;
 let activeRecordingChunks = [];
 let activePickerElement = null;
+let lastCalendarSyncError = "";
+let lastDocumentSyncError = "";
 
 function loadConfig() {
   const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
@@ -123,6 +126,8 @@ function loadConfig() {
       saved.googleTemplatesFolderId ||
       configDefaults.googleTemplatesFolderId ||
       "",
+    googleCalendarId:
+      saved.googleCalendarId || configDefaults.googleCalendarId || "primary",
     googleSpreadsheetId:
       saved.googleSpreadsheetId || configDefaults.googleSpreadsheetId || "",
     sessionTypes: listText(saved.sessionTypes, configDefaults.sessionTypes, DEFAULT_SESSION_TYPES),
@@ -720,6 +725,10 @@ function settingsPage() {
             <input id="googleTemplatesFolderId" name="googleTemplatesFolderId" value="${html(state.config.googleTemplatesFolderId)}" />
           </div>
           <div class="field wide">
+            <label for="googleCalendarId">יומן לסנכרון מפגשים</label>
+            <input id="googleCalendarId" name="googleCalendarId" value="${html(state.config.googleCalendarId)}" placeholder="primary" />
+          </div>
+          <div class="field wide">
             <label for="sessionTypes">סוגי מפגש</label>
             <textarea id="sessionTypes" name="sessionTypes" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionTypes)}</textarea>
           </div>
@@ -743,6 +752,8 @@ function settingsPage() {
           <div class="diagnostic-actions">
             <a class="button yellow" href="${html(googleApiActivationUrl("sheets.googleapis.com"))}" target="_blank" rel="noopener">הפעלת מאגר נתונים</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("drive.googleapis.com"))}" target="_blank" rel="noopener">הפעלת אחסון קבצים</a>
+            <a class="button yellow" href="${html(googleApiActivationUrl("calendar.googleapis.com"))}" target="_blank" rel="noopener">הפעלת יומן</a>
+            <a class="button yellow" href="${html(googleApiActivationUrl("docs.googleapis.com"))}" target="_blank" rel="noopener">הפעלת מסמכים</a>
           </div>
           <p class="settings-hint">אם בדיקת החיבור נכשלת, מפעילים את שני הרכיבים, חוזרים לכאן ולוחצים התחברות מחדש עם הרשאות.</p>
         </div>
@@ -803,8 +814,25 @@ function sessionForm(patientId) {
 
 function paymentForm(patientId) {
   const today = isoDate(new Date());
+  const sessionOptions = state.sessions
+    .filter((session) => session.patient_id === patientId)
+    .sort((a, b) =>
+      `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
+    )
+    .map(
+      (session) =>
+        `<option value="${html(session.id)}">${html(sessionLabel(session))}</option>`
+    )
+    .join("");
   return `
     <form class="form-grid inline-form" data-form="payment" data-patient-id="${html(patientId)}">
+      <div class="field wide">
+        <label for="payment_session_id">מפגש קשור</label>
+        <select id="payment_session_id" name="session_id">
+          <option value="">ללא שיוך למפגש</option>
+          ${sessionOptions}
+        </select>
+      </div>
       <div class="field">
         <label for="amount">סכום</label>
         <input id="amount" name="amount" inputmode="decimal" required />
@@ -841,6 +869,10 @@ function paymentForm(patientId) {
       <div class="field wide">
         <label for="payment_notes">הערות</label>
         <textarea id="payment_notes" name="notes"></textarea>
+      </div>
+      <div class="field wide">
+        <label for="receipt_upload">קובץ קבלה</label>
+        <input id="receipt_upload" name="receipt_upload" type="file" />
       </div>
       <div class="toolbar wide">
         <button class="button" type="submit">שמירת תשלום</button>
@@ -889,6 +921,7 @@ function paymentsPanel(items = state.payments, patientId = "") {
                   <article class="list-item">
                     <div><strong>${html(formatAmount(payment.amount))}</strong><span>${html(formatDate(payment.paid_at))}</span></div>
                     <div><strong>${html(paymentMethodLabel(payment.payment_method))}</strong><span>${html(patientName(payment.patient_id))}</span></div>
+                    ${payment.session_id ? `<p>${html(sessionLabelById(payment.session_id))}</p>` : ""}
                     <p>${html(payment.notes || paymentStatusLabel(payment.payment_status))}</p>
                   </article>`
               )
@@ -1013,6 +1046,7 @@ function paymentsPage() {
             <tr>
               <th>תאריך</th>
               <th>מטופל</th>
+              <th>מפגש</th>
               <th>סכום</th>
               <th>אמצעי</th>
               <th>תשלום</th>
@@ -1028,15 +1062,20 @@ function paymentsPage() {
                 <tr>
                   <td>${html(formatDate(payment.paid_at))}</td>
                   <td><strong>${html(patientName(payment.patient_id))}</strong></td>
+                  <td>${html(payment.session_id ? sessionLabelById(payment.session_id) : "-")}</td>
                   <td>${html(formatAmount(payment.amount))}</td>
                   <td>${html(paymentMethodLabel(payment.payment_method))}</td>
                   <td><span class="status-pill">${html(paymentStatusLabel(payment.payment_status))}</span></td>
-                  <td>${html(receiptStatusLabel(payment.receipt_status))}</td>
+                  <td>${
+                    payment.receipt_file_id
+                      ? `<a href="${html(driveFileUrl(payment.receipt_file_id))}" target="_blank" rel="noopener">${html(receiptStatusLabel(payment.receipt_status))}</a>`
+                      : html(receiptStatusLabel(payment.receipt_status))
+                  }</td>
                   <td>${html(payment.notes || "-")}</td>
                   <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button></td>
                 </tr>`
               )
-              .join("") || `<tr><td colspan="8"><div class="empty">אין תשלומים להצגה. אפשר להוסיף תשלום מתוך כרטיס מטופל.</div></td></tr>`}
+              .join("") || `<tr><td colspan="9"><div class="empty">אין תשלומים להצגה. אפשר להוסיף תשלום מתוך כרטיס מטופל.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1662,6 +1701,19 @@ function patientName(patientId) {
   return state.patients.find((patient) => patient.id === patientId)?.child_name || "ללא מטופל";
 }
 
+function sessionLabel(session) {
+  if (!session) return "מפגש";
+  const date = formatDate(session.session_date);
+  const time = [session.start_time, session.end_time].filter(Boolean).join("-");
+  const type = session.session_type || "מפגש";
+  return [date, time, type].filter(Boolean).join(" | ");
+}
+
+function sessionLabelById(sessionId) {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  return session ? sessionLabel(session) : "מפגש משויך";
+}
+
 function paymentStatusLabel(value) {
   return {
     paid: "שולם",
@@ -1713,7 +1765,7 @@ async function connectGoogle(forceConsent = false) {
   const tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: state.config.googleClientId,
     scope:
-      "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/documents",
     callback: async (response) => {
       if (response.error) {
         state.error = "ההתחברות לאחסון נכשלה.";
@@ -1751,6 +1803,14 @@ function friendlyGoogleError(text, status) {
 
   if (combined.includes("drive.googleapis.com") || combined.includes("google drive api")) {
     return "רכיב אחסון הקבצים לא פעיל בפרויקט החיבור. במסך ההגדרות לחץ על הפעלת אחסון קבצים, המתן דקה ואז לחץ בדיקת חיבור.";
+  }
+
+  if (combined.includes("calendar.googleapis.com") || combined.includes("google calendar api")) {
+    return "רכיב היומן לא פעיל בפרויקט החיבור. צריך להפעיל את Google Calendar API ואז להתחבר מחדש עם הרשאות.";
+  }
+
+  if (combined.includes("docs.googleapis.com") || combined.includes("google docs api")) {
+    return "רכיב המסמכים לא פעיל בפרויקט החיבור. צריך להפעיל את Google Docs API ואז להתחבר מחדש עם הרשאות.";
   }
 
   if (status === 401 || combined.includes("invalid credentials")) {
@@ -1868,6 +1928,107 @@ async function checkStorageConnection() {
   }
 
   return rootFolder.name || "תיקיית האחסון";
+}
+
+function calendarDateTime(dateValue, timeValue) {
+  if (!dateValue || !timeValue) return null;
+  return `${dateValue}T${timeValue}:00`;
+}
+
+function addMinutes(timeValue, minutes) {
+  const [hours = "0", mins = "0"] = String(timeValue || "00:00").split(":");
+  const date = new Date(2000, 0, 1, Number(hours), Number(mins) + minutes);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+async function createCalendarEvent(session) {
+  if (!session.session_date || !session.start_time) return "";
+  const calendarId = state.config.googleCalendarId || "primary";
+  const endTime = session.end_time || addMinutes(session.start_time, 50);
+  const patient = patientName(session.patient_id);
+  const body = {
+    summary: `${session.session_type || "מפגש"} - ${patient}`,
+    location: session.location || "",
+    description: session.summary || "",
+    start: {
+      dateTime: calendarDateTime(session.session_date, session.start_time),
+      timeZone: "Asia/Jerusalem"
+    },
+    end: {
+      dateTime: calendarDateTime(session.session_date, endTime),
+      timeZone: "Asia/Jerusalem"
+    }
+  };
+  const result = await googleFetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    }
+  );
+  return result.id || "";
+}
+
+function sessionDocumentText(patient, session) {
+  return [
+    `תיעוד מפגש - ${patient.child_name || patientName(session.patient_id)}`,
+    "",
+    `תאריך: ${formatDate(session.session_date)}`,
+    `שעה: ${[session.start_time, session.end_time].filter(Boolean).join("-") || "-"}`,
+    `סוג מפגש: ${session.session_type || "-"}`,
+    `מיקום: ${session.location || "-"}`,
+    "",
+    "תיעוד טיפול:",
+    session.summary || "",
+    "",
+    "הערות פנימיות:",
+    session.sensitive_notes || ""
+  ].join("\n");
+}
+
+async function createSessionDocument(patientId, session) {
+  const patient = await ensurePatientDriveFolder(patientId);
+  const title = `תיעוד מפגש - ${patient.child_name || "מטופל"} - ${session.session_date}`;
+  const documentFile = await googleFetch(
+    "https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,createdTime",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: title,
+        mimeType: "application/vnd.google-apps.document",
+        parents: [patient.drive_folder_id]
+      })
+    }
+  );
+
+  await googleFetch(
+    `https://docs.googleapis.com/v1/documents/${encodeURIComponent(documentFile.id)}:batchUpdate`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        requests: [
+          {
+            insertText: {
+              location: { index: 1 },
+              text: sessionDocumentText(patient, session)
+            }
+          }
+        ]
+      })
+    }
+  );
+
+  return appendFileRecord({
+    id: id(),
+    patient_id: patientId,
+    drive_file_id: documentFile.id || "",
+    drive_folder_id: patient.drive_folder_id || "",
+    name: documentFile.name || title,
+    file_type: "summary",
+    url: documentFile.webViewLink || driveFileUrl(documentFile.id),
+    created_at: documentFile.createdTime || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  });
 }
 
 async function createPatientFolder(patientNameValue) {
@@ -2037,6 +2198,94 @@ async function loadDriveTemplates() {
   return result.files || [];
 }
 
+async function findSettingsFile() {
+  if (!state.config.googleDriveRootFolderId) return null;
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set(
+    "q",
+    `'${state.config.googleDriveRootFolderId}' in parents and trashed = false and name='${SETTINGS_FILE_NAME}'`
+  );
+  url.searchParams.set("fields", "files(id,name,createdTime,modifiedTime)");
+  url.searchParams.set("pageSize", "1");
+  const result = await googleFetch(url.toString(), { headers: {} });
+  return result.files?.[0] || null;
+}
+
+async function loadRemoteSettings() {
+  const settingsFile = await findSettingsFile();
+  if (!settingsFile?.id) return;
+  const remoteConfig = await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(settingsFile.id)}?alt=media`,
+    { headers: {} }
+  );
+  if (!remoteConfig || typeof remoteConfig !== "object") return;
+  saveConfig({
+    ...state.config,
+    ...remoteConfig,
+    sessionTypes: listText(remoteConfig.sessionTypes, state.config.sessionTypes, DEFAULT_SESSION_TYPES),
+    sessionLocations: listText(
+      remoteConfig.sessionLocations,
+      state.config.sessionLocations,
+      DEFAULT_SESSION_LOCATIONS
+    )
+  });
+}
+
+async function saveRemoteSettings() {
+  if (!state.accessToken || !state.config.googleDriveRootFolderId) return;
+  const payload = JSON.stringify(
+    {
+      googleClientId: state.config.googleClientId || "",
+      googleDriveRootFolderId: state.config.googleDriveRootFolderId || "",
+      googleTemplatesFolderId: state.config.googleTemplatesFolderId || "",
+      googleCalendarId: state.config.googleCalendarId || "primary",
+      googleSpreadsheetId: state.config.googleSpreadsheetId || "",
+      sessionTypes: state.config.sessionTypes || "",
+      sessionLocations: state.config.sessionLocations || "",
+      updated_at: new Date().toISOString()
+    },
+    null,
+    2
+  );
+  const existing = await findSettingsFile();
+  if (existing?.id) {
+    await googleFetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existing.id)}?uploadType=media`,
+      {
+        method: "PATCH",
+        body: payload
+      }
+    );
+    return;
+  }
+
+  const boundary = `clinic-settings-${Date.now()}`;
+  const body = new Blob(
+    [
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({
+        name: SETTINGS_FILE_NAME,
+        mimeType: "application/json",
+        parents: [state.config.googleDriveRootFolderId]
+      })}\r\n`,
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${payload}\r\n`,
+      `--${boundary}--`
+    ],
+    { type: `multipart/related; boundary=${boundary}` }
+  );
+  await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${state.accessToken}`
+    },
+    body
+  }).then(async (response) => {
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(friendlyGoogleError(text, response.status));
+    }
+  });
+}
+
 async function syncPatientDriveFiles(patientId) {
   const patient = await ensurePatientDriveFolder(patientId);
   const driveFiles = await listDriveFolderFiles(patient.drive_folder_id);
@@ -2073,7 +2322,9 @@ async function syncPatientDriveFiles(patientId) {
 }
 
 async function loadData() {
-  if (!state.accessToken || !state.config.googleSpreadsheetId) return;
+  if (!state.accessToken) return;
+  await loadRemoteSettings().catch(() => {});
+  if (!state.config.googleSpreadsheetId) return;
   const [patients, sessions, payments, tasks, files, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
@@ -2163,6 +2414,8 @@ async function togglePatientArchive(patientId, shouldArchive) {
 async function saveSession(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || "";
+  lastCalendarSyncError = "";
+  lastDocumentSyncError = "";
 
   if (!patientId) throw new Error("לא נמצא מטופל לשמירת המפגש.");
   if (!data.session_date) throw new Error("תאריך מפגש הוא שדה חובה.");
@@ -2183,30 +2436,53 @@ async function saveSession(form) {
     updated_at: now
   };
 
-  await appendSheet("sessions", session);
+  try {
+    session.calendar_event_id = await createCalendarEvent(session);
+  } catch (error) {
+    lastCalendarSyncError =
+      error instanceof Error ? error.message : "סנכרון היומן נכשל.";
+  }
+
+  const appendResult = await appendSheet("sessions", session);
+  session._rowNumber = appendedRowNumber(appendResult);
   state.sessions = [session, ...state.sessions].sort((a, b) =>
     `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
   );
+
+  try {
+    await createSessionDocument(patientId, session);
+  } catch (error) {
+    lastDocumentSyncError =
+      error instanceof Error ? error.message : "יצירת מסמך התיעוד נכשלה.";
+  }
+
+  if (!session.summary?.trim()) {
+    await createSystemTask(patientId, "השלמת תיעוד מפגש", `מפגש מתאריך ${formatDate(session.session_date)} נשמר ללא סיכום.`, session.session_date);
+  }
 }
 
 async function savePayment(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || "";
+  const receiptUpload = form.elements.receipt_upload?.files?.[0];
 
   if (!patientId) throw new Error("לא נמצא מטופל לשמירת התשלום.");
   if (!data.amount) throw new Error("סכום התשלום הוא שדה חובה.");
 
   const now = new Date().toISOString();
+  const receiptFile = receiptUpload
+    ? await uploadPatientFile(patientId, receiptUpload, "receipt", receiptUpload.name)
+    : null;
   const payment = {
     id: id(),
     patient_id: patientId,
-    session_id: "",
+    session_id: data.session_id || "",
     amount: data.amount,
     payment_method: data.payment_method || "bank_transfer",
     payment_status: data.payment_status || "paid",
-    receipt_status: data.receipt_status || "needed",
+    receipt_status: receiptFile ? "issued" : data.receipt_status || "needed",
     paid_at: data.paid_at || isoDate(new Date()),
-    receipt_file_id: "",
+    receipt_file_id: receiptFile?.drive_file_id || "",
     notes: data.notes || "",
     created_at: now,
     updated_at: now
@@ -2216,6 +2492,43 @@ async function savePayment(form) {
   state.payments = [payment, ...state.payments].sort((a, b) =>
     `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`)
   );
+
+  if (payment.payment_status !== "paid") {
+    await createSystemTask(patientId, "מעקב תשלום פתוח", `תשלום פתוח: ${formatAmount(payment.amount)}`, payment.paid_at);
+  }
+  if (payment.payment_status === "paid" && payment.receipt_status !== "issued") {
+    await createSystemTask(patientId, "הפקת קבלה", `נדרשת קבלה עבור תשלום: ${formatAmount(payment.amount)}`, payment.paid_at);
+  }
+}
+
+async function createSystemTask(patientId, title, description = "", dueDate = "") {
+  const exists = state.tasks.some(
+    (task) =>
+      task.patient_id === patientId &&
+      task.title === title &&
+      task.status !== "done" &&
+      (task.due_date || "") === (dueDate || "")
+  );
+  if (exists) return null;
+
+  const now = new Date().toISOString();
+  const task = {
+    id: id(),
+    patient_id: patientId,
+    title,
+    description,
+    status: "open",
+    due_date: dueDate || isoDate(new Date()),
+    source: "auto",
+    created_at: now,
+    updated_at: now
+  };
+  const appendResult = await appendSheet("tasks", task);
+  task._rowNumber = appendedRowNumber(appendResult);
+  state.tasks = [task, ...state.tasks].sort((a, b) =>
+    `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`)
+  );
+  return task;
 }
 
 async function saveTask(form) {
@@ -2344,6 +2657,12 @@ async function startRecording(patientId) {
         { type: mimeType }
       );
       await uploadPatientFile(patientIdForUpload, file, "recording", file.name);
+      await createSystemTask(
+        patientIdForUpload,
+        "עיבוד הקלטה",
+        "הקלטה חדשה נשמרה בתיקיית המטופל וממתינה לתמלול/עיבוד.",
+        isoDate(new Date())
+      );
       state.message = "ההקלטה נשמרה בתיקיית המטופל.";
       state.error = "";
     } catch (error) {
@@ -2572,6 +2891,7 @@ function bindEvents() {
     try {
       if (form.dataset.form === "settings") {
         saveConfig(Object.fromEntries(new FormData(form).entries()));
+        await saveRemoteSettings();
         state.message = "ההגדרות נשמרו.";
       }
 
@@ -2591,7 +2911,10 @@ function bindEvents() {
       if (form.dataset.form === "session") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await saveSession(form);
-        state.message = "המפגש נשמר במערכת.";
+        const syncMessages = [lastCalendarSyncError, lastDocumentSyncError].filter(Boolean);
+        state.message = syncMessages.length
+          ? `המפגש נשמר במערכת. ${syncMessages.join(" ")}`
+          : "המפגש נשמר במערכת, סונכרן ליומן ונוצר לו מסמך תיעוד.";
       }
 
       if (form.dataset.form === "payment") {
