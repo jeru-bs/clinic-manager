@@ -1385,6 +1385,7 @@ function filesTable(rows) {
                         ? `<a class="button table-button" href="${html(file.url)}" target="_blank" rel="noopener">פתיחה</a>`
                         : ""
                     }
+                    <button class="button danger table-button" data-action="delete-file" data-id="${html(file.id)}" type="button">מחיקה</button>
                   </div>
                 </td>
               </tr>`
@@ -1726,6 +1727,17 @@ async function updateSheetRow(sheetName, rowNumber, record) {
   });
 }
 
+async function clearSheetRow(sheetName, rowNumber) {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  const columns = SHEETS[sheetName];
+  const range = `${sheetName}!A${rowNumber}:${String.fromCharCode(64 + columns.length)}${rowNumber}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:clear`;
+  await googleFetch(url, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
 async function checkStorageConnection() {
   if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני בדיקה.");
   if (!state.config.googleSpreadsheetId) throw new Error("לא הוגדר מזהה מאגר נתונים.");
@@ -1845,6 +1857,27 @@ async function uploadPatientFile(patientId, selectedFile, fileType = "document",
     created_at: result.createdTime || now,
     updated_at: now
   });
+}
+
+async function trashDriveFile(fileId) {
+  if (!fileId) return;
+  await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,trashed`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ trashed: true })
+    }
+  );
+}
+
+async function deleteFileRecord(fileId) {
+  const file = state.files.find((item) => item.id === fileId);
+  if (!file) throw new Error("הקובץ לא נמצא.");
+  if (!file._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת הקובץ.");
+
+  if (file.drive_file_id) await trashDriveFile(file.drive_file_id);
+  await clearSheetRow("files", file._rowNumber);
+  state.files = state.files.filter((item) => item.id !== fileId);
 }
 
 async function ensurePatientDriveFolder(patientId) {
@@ -2372,6 +2405,21 @@ function bindEvents() {
         render();
       } catch (error) {
         state.error = error instanceof Error ? error.message : "ייבוא הקבצים נכשל.";
+        render();
+      }
+    }
+    if (action === "delete-file") {
+      if (!window.confirm("האם את בטוחה שאת רוצה למחוק?")) return;
+
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+        await deleteFileRecord(target.dataset.id);
+        state.message = "הקובץ נמחק מכרטיס המטופל ומהתיקייה בדרייב.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "מחיקת הקובץ נכשלה.";
+        state.message = "";
         render();
       }
     }
