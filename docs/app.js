@@ -84,6 +84,8 @@ const state = {
   config: loadConfig(),
   currentPatientId: "",
   currentSessionId: "",
+  currentPaymentId: "",
+  currentTaskId: "",
   message: "",
   error: "",
   patients: [],
@@ -97,6 +99,11 @@ const state = {
     school: "",
     treatment: "",
     status: ""
+  },
+  taskFilter: {
+    status: "",
+    patient: "",
+    due: ""
   },
   profileTab: "overview",
   calendarMonth: isoDate(new Date()).slice(0, 7),
@@ -822,6 +829,9 @@ function sessionForm(patientId) {
 
 function paymentForm(patientId) {
   const today = isoDate(new Date());
+  const editedPayment =
+    state.currentPaymentId &&
+    state.payments.find((payment) => payment.id === state.currentPaymentId && payment.patient_id === patientId);
   const sessionOptions = state.sessions
     .filter((session) => session.patient_id === patientId)
     .sort((a, b) =>
@@ -829,11 +839,14 @@ function paymentForm(patientId) {
     )
     .map(
       (session) =>
-        `<option value="${html(session.id)}">${html(sessionLabel(session))}</option>`
+        `<option value="${html(session.id)}" ${session.id === editedPayment?.session_id ? "selected" : ""}>${html(sessionLabel(session))}</option>`
     )
     .join("");
+  const receiptFile = editedPayment?.receipt_file_id
+    ? state.files.find((file) => file.drive_file_id === editedPayment.receipt_file_id)
+    : null;
   return `
-    <form class="form-grid inline-form" data-form="payment" data-patient-id="${html(patientId)}">
+    <form class="form-grid inline-form" data-form="payment" data-patient-id="${html(patientId)}" data-id="${html(editedPayment?.id || "")}">
       <div class="field wide">
         <label for="payment_session_id">מפגש קשור</label>
         <select id="payment_session_id" name="session_id">
@@ -843,47 +856,53 @@ function paymentForm(patientId) {
       </div>
       <div class="field">
         <label for="amount">סכום</label>
-        <input id="amount" name="amount" inputmode="decimal" required />
+        <input id="amount" name="amount" inputmode="decimal" required value="${html(editedPayment?.amount || "")}" />
       </div>
       <div class="field">
         <label for="paid_at">תאריך</label>
-        <input class="picker-input" data-date-input id="paid_at" name="paid_at" readonly type="text" value="${today}" />
+        <input class="picker-input" data-date-input id="paid_at" name="paid_at" readonly type="text" value="${html(editedPayment?.paid_at || today)}" />
       </div>
       <div class="field">
         <label for="payment_method">אמצעי תשלום</label>
         <select id="payment_method" name="payment_method">
-          <option value="bank_transfer">העברה בנקאית</option>
-          <option value="cash">מזומן</option>
-          <option value="bit">ביט</option>
-          <option value="credit">אשראי</option>
+          <option value="bank_transfer" ${editedPayment?.payment_method === "bank_transfer" ? "selected" : ""}>העברה בנקאית</option>
+          <option value="cash" ${editedPayment?.payment_method === "cash" ? "selected" : ""}>מזומן</option>
+          <option value="bit" ${editedPayment?.payment_method === "bit" ? "selected" : ""}>ביט</option>
+          <option value="credit" ${editedPayment?.payment_method === "credit" ? "selected" : ""}>אשראי</option>
         </select>
       </div>
       <div class="field">
         <label for="payment_status">סטטוס</label>
         <select id="payment_status" name="payment_status">
-          <option value="paid">שולם</option>
-          <option value="unpaid">פתוח</option>
-          <option value="partial">חלקי</option>
+          <option value="paid" ${editedPayment?.payment_status === "paid" ? "selected" : ""}>שולם</option>
+          <option value="unpaid" ${editedPayment?.payment_status === "unpaid" ? "selected" : ""}>פתוח</option>
+          <option value="partial" ${editedPayment?.payment_status === "partial" ? "selected" : ""}>חלקי</option>
         </select>
       </div>
       <div class="field">
         <label for="receipt_status">קבלה</label>
         <select id="receipt_status" name="receipt_status">
-          <option value="needed">דרושה קבלה</option>
-          <option value="issued">הופקה קבלה</option>
-          <option value="not_needed">לא נדרש</option>
+          <option value="needed" ${editedPayment?.receipt_status === "needed" ? "selected" : ""}>דרושה קבלה</option>
+          <option value="issued" ${editedPayment?.receipt_status === "issued" ? "selected" : ""}>הופקה קבלה</option>
+          <option value="not_needed" ${editedPayment?.receipt_status === "not_needed" ? "selected" : ""}>לא נדרש</option>
         </select>
       </div>
       <div class="field wide">
         <label for="payment_notes">הערות</label>
-        <textarea id="payment_notes" name="notes"></textarea>
+        <textarea id="payment_notes" name="notes">${html(editedPayment?.notes || "")}</textarea>
       </div>
       <div class="field wide">
-        <label for="receipt_upload">קובץ קבלה</label>
+        <label for="receipt_upload">${receiptFile ? "החלפת קובץ קבלה" : "קובץ קבלה"}</label>
         <input id="receipt_upload" name="receipt_upload" type="file" />
+        ${
+          receiptFile
+            ? `<small><a href="${html(receiptFile.url || driveFileUrl(receiptFile.drive_file_id))}" target="_blank" rel="noopener">קבלה קיימת: ${html(receiptFile.name || "פתיחה")}</a></small>`
+            : ""
+        }
       </div>
       <div class="toolbar wide">
-        <button class="button" type="submit">שמירת תשלום</button>
+        <button class="button" type="submit">${editedPayment ? "עדכון תשלום" : "שמירת תשלום"}</button>
+        ${editedPayment ? `<button class="button secondary" data-action="cancel-payment-edit" type="button">ביטול עריכה</button>` : ""}
       </div>
     </form>`;
 }
@@ -939,6 +958,20 @@ function paymentsPanel(items = state.payments, patientId = "") {
                     <div><strong>${html(paymentMethodLabel(payment.payment_method))}</strong><span>${html(patientName(payment.patient_id))}</span></div>
                     ${payment.session_id ? `<p>${html(sessionLabelById(payment.session_id))}</p>` : ""}
                     <p>${html(payment.notes || paymentStatusLabel(payment.payment_status))}</p>
+                    <div class="actions">
+                      <button class="button secondary table-button" data-action="edit-payment" data-id="${html(payment.id)}" type="button">עריכה</button>
+                      ${
+                        payment.payment_status === "paid"
+                          ? `<button class="button secondary table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="unpaid" type="button">פתח</button>`
+                          : `<button class="button table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="paid" type="button">שולם</button>`
+                      }
+                      ${
+                        payment.receipt_file_id
+                          ? `<button class="button secondary table-button" data-action="delete-payment-receipt" data-id="${html(payment.id)}" type="button">מחיקת קבלה</button>`
+                          : ""
+                      }
+                      <button class="button danger table-button" data-action="delete-payment" data-id="${html(payment.id)}" type="button">מחיקה</button>
+                    </div>
                   </article>`
               )
               .join("")}</div>`
@@ -1088,7 +1121,23 @@ function paymentsPage() {
                       : html(receiptStatusLabel(payment.receipt_status))
                   }</td>
                   <td>${html(payment.notes || "-")}</td>
-                  <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button></td>
+                  <td>
+                    <div class="actions">
+                      <button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button>
+                      <button class="button secondary table-button" data-action="edit-payment" data-id="${html(payment.id)}" type="button">עריכה</button>
+                      ${
+                        payment.payment_status === "paid"
+                          ? `<button class="button secondary table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="unpaid" type="button">פתח</button>`
+                          : `<button class="button table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="paid" type="button">שולם</button>`
+                      }
+                      ${
+                        payment.receipt_file_id
+                          ? `<button class="button secondary table-button" data-action="delete-payment-receipt" data-id="${html(payment.id)}" type="button">מחיקת קבלה</button>`
+                          : ""
+                      }
+                      <button class="button danger table-button" data-action="delete-payment" data-id="${html(payment.id)}" type="button">מחיקה</button>
+                    </div>
+                  </td>
                 </tr>`
               )
               .join("") || `<tr><td colspan="9"><div class="empty">אין תשלומים להצגה. אפשר להוסיף תשלום מתוך כרטיס מטופל.</div></td></tr>`}
@@ -1257,8 +1306,11 @@ function taskStatusLabel(value) {
 }
 
 function taskForm(patientId = "") {
+  const editedTask =
+    state.currentTaskId &&
+    state.tasks.find((task) => task.id === state.currentTaskId && (!patientId || task.patient_id === patientId));
   return `
-    <form class="form-grid inline-form" data-form="task" data-patient-id="${html(patientId)}">
+    <form class="form-grid inline-form" data-form="task" data-patient-id="${html(patientId)}" data-id="${html(editedTask?.id || "")}">
       ${
         patientId
           ? ""
@@ -1266,32 +1318,33 @@ function taskForm(patientId = "") {
               <label for="task_patient_id">מטופל</label>
               <select id="task_patient_id" name="patient_id" required>
                 <option value="">בחירה</option>
-                ${patientOptions()}
+                ${patientOptions(editedTask?.patient_id || "")}
               </select>
             </div>`
       }
       <div class="field">
         <label for="task_title">משימה</label>
-        <input id="task_title" name="title" required placeholder="למשל: לשלוח סיכום להורה" />
+        <input id="task_title" name="title" required placeholder="למשל: לשלוח סיכום להורה" value="${html(editedTask?.title || "")}" />
       </div>
       <div class="field">
         <label for="task_due_date">תאריך יעד</label>
-        <input class="picker-input" data-date-input id="task_due_date" name="due_date" readonly type="text" />
+        <input class="picker-input" data-date-input id="task_due_date" name="due_date" readonly type="text" value="${html(editedTask?.due_date || "")}" />
       </div>
       <div class="field">
         <label for="task_status">סטטוס</label>
         <select id="task_status" name="status">
-          <option value="open">פתוחה</option>
-          <option value="waiting">בהמתנה</option>
-          <option value="done">בוצעה</option>
+          <option value="open" ${editedTask?.status === "open" ? "selected" : ""}>פתוחה</option>
+          <option value="waiting" ${editedTask?.status === "waiting" ? "selected" : ""}>בהמתנה</option>
+          <option value="done" ${editedTask?.status === "done" ? "selected" : ""}>בוצעה</option>
         </select>
       </div>
       <div class="field wide">
         <label for="task_description">פירוט</label>
-        <textarea id="task_description" name="description"></textarea>
+        <textarea id="task_description" name="description">${html(editedTask?.description || "")}</textarea>
       </div>
       <div class="toolbar wide">
-        <button class="button" type="submit">שמירת משימה</button>
+        <button class="button" type="submit">${editedTask ? "עדכון משימה" : "שמירת משימה"}</button>
+        ${editedTask ? `<button class="button secondary" data-action="cancel-task-edit" type="button">ביטול עריכה</button>` : ""}
       </div>
     </form>`;
 }
@@ -1323,11 +1376,13 @@ function tasksTable(rows) {
                 <td>
                   <div class="actions">
                     <button class="button secondary table-button" data-action="open-profile" data-id="${html(task.patient_id)}" type="button">כרטיס</button>
+                    <button class="button secondary table-button" data-action="edit-task" data-id="${html(task.id)}" type="button">עריכה</button>
                     ${
                       task.status === "done"
                         ? ""
                         : `<button class="button table-button" data-action="complete-task" data-id="${html(task.id)}" type="button">בוצע</button>`
                     }
+                    <button class="button danger table-button" data-action="delete-task" data-id="${html(task.id)}" type="button">מחיקה</button>
                   </div>
                 </td>
               </tr>`
@@ -1348,12 +1403,70 @@ function tasksPanel(items = state.tasks, patientId = "") {
     </article>`;
 }
 
+function taskDueMatches(task, dueFilter) {
+  if (!dueFilter) return true;
+  const today = isoDate(new Date());
+  if (dueFilter === "overdue") return task.status !== "done" && task.due_date && task.due_date < today;
+  if (dueFilter === "today") return task.due_date === today;
+  if (dueFilter === "week") {
+    const weekDates = dateRange(today, 7);
+    const weekEnd = weekDates[weekDates.length - 1];
+    return Boolean(task.due_date && task.due_date >= today && task.due_date <= weekEnd);
+  }
+  if (dueFilter === "no_date") return !task.due_date;
+  return true;
+}
+
+function filteredTasks(rows) {
+  return rows.filter((task) => {
+    const statusOk = !state.taskFilter.status || task.status === state.taskFilter.status;
+    const patientOk = !state.taskFilter.patient || task.patient_id === state.taskFilter.patient;
+    return statusOk && patientOk && taskDueMatches(task, state.taskFilter.due);
+  });
+}
+
+function taskFiltersPanel(total, shown) {
+  return `
+    <section class="panel compact-panel">
+      <div class="panel-head"><h2>סינון משימות</h2><span>${shown} מתוך ${total}</span></div>
+      <div class="form-grid compact-form">
+        <div class="field">
+          <label for="task_filter_status">סטטוס</label>
+          <select id="task_filter_status" data-task-filter="status">
+            <option value="" ${state.taskFilter.status ? "" : "selected"}>כל הסטטוסים</option>
+            <option value="open" ${state.taskFilter.status === "open" ? "selected" : ""}>פתוחות</option>
+            <option value="waiting" ${state.taskFilter.status === "waiting" ? "selected" : ""}>בהמתנה</option>
+            <option value="done" ${state.taskFilter.status === "done" ? "selected" : ""}>בוצעו</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="task_filter_patient">מטופל</label>
+          <select id="task_filter_patient" data-task-filter="patient">
+            <option value="" ${state.taskFilter.patient ? "" : "selected"}>כל המטופלים</option>
+            ${patientOptions(state.taskFilter.patient)}
+          </select>
+        </div>
+        <div class="field">
+          <label for="task_filter_due">תאריך יעד</label>
+          <select id="task_filter_due" data-task-filter="due">
+            <option value="" ${state.taskFilter.due ? "" : "selected"}>כל התאריכים</option>
+            <option value="overdue" ${state.taskFilter.due === "overdue" ? "selected" : ""}>באיחור</option>
+            <option value="today" ${state.taskFilter.due === "today" ? "selected" : ""}>היום</option>
+            <option value="week" ${state.taskFilter.due === "week" ? "selected" : ""}>השבוע הקרוב</option>
+            <option value="no_date" ${state.taskFilter.due === "no_date" ? "selected" : ""}>ללא תאריך</option>
+          </select>
+        </div>
+      </div>
+    </section>`;
+}
+
 function tasksPage() {
   const rows = [...state.tasks].sort((a, b) =>
     `${a.status === "done" ? "1" : "0"} ${a.due_date || "9999-99-99"}`.localeCompare(
       `${b.status === "done" ? "1" : "0"} ${b.due_date || "9999-99-99"}`
     )
   );
+  const shownRows = filteredTasks(rows);
   const openCount = rows.filter((task) => task.status !== "done").length;
   const dueToday = isoDate(new Date());
   const dueCount = rows.filter((task) => task.status !== "done" && task.due_date && task.due_date <= dueToday).length;
@@ -1375,9 +1488,10 @@ function tasksPage() {
       <div class="panel-head"><h2>משימה חדשה</h2><span>נשמרת במערכת</span></div>
       ${taskForm()}
     </section>
+    ${taskFiltersPanel(rows.length, shownRows.length)}
     <section class="panel page-gap">
-      <div class="panel-head"><h2>רשימת משימות</h2><span>${rows.length} רשומות</span></div>
-      ${tasksTable(rows)}
+      <div class="panel-head"><h2>רשימת משימות</h2><span>${shownRows.length} רשומות</span></div>
+      ${tasksTable(shownRows)}
     </section>
   `);
 }
@@ -2653,17 +2767,25 @@ async function deleteSessionRecord(sessionId) {
 async function savePayment(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || "";
+  const existingId = form.dataset.id || "";
+  const existingPayment = existingId ? state.payments.find((payment) => payment.id === existingId) : null;
   const receiptUpload = form.elements.receipt_upload?.files?.[0];
 
   if (!patientId) throw new Error("לא נמצא מטופל לשמירת התשלום.");
   if (!data.amount) throw new Error("סכום התשלום הוא שדה חובה.");
+  if (existingId && !existingPayment) throw new Error("התשלום לעריכה לא נמצא.");
+  if (existingPayment && !existingPayment._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת התשלום.");
 
   const now = new Date().toISOString();
   const receiptFile = receiptUpload
     ? await uploadPatientFile(patientId, receiptUpload, "receipt", receiptUpload.name)
     : null;
+  if (receiptFile && existingPayment?.receipt_file_id) {
+    await deleteFileRecordByDriveId(existingPayment.receipt_file_id);
+  }
   const payment = {
-    id: id(),
+    ...(existingPayment || {}),
+    id: existingPayment?.id || id(),
     patient_id: patientId,
     session_id: data.session_id || "",
     amount: data.amount,
@@ -2671,14 +2793,22 @@ async function savePayment(form) {
     payment_status: data.payment_status || "paid",
     receipt_status: receiptFile ? "issued" : data.receipt_status || "needed",
     paid_at: data.paid_at || isoDate(new Date()),
-    receipt_file_id: receiptFile?.drive_file_id || "",
+    receipt_file_id: receiptFile?.drive_file_id || existingPayment?.receipt_file_id || "",
     notes: data.notes || "",
-    created_at: now,
+    created_at: existingPayment?.created_at || now,
     updated_at: now
   };
 
-  await appendSheet("payments", payment);
-  state.payments = [payment, ...state.payments].sort((a, b) =>
+  if (existingPayment) {
+    await updateSheetRow("payments", existingPayment._rowNumber, payment);
+    state.payments = state.payments.map((item) => (item.id === payment.id ? payment : item));
+  } else {
+    const appendResult = await appendSheet("payments", payment);
+    payment._rowNumber = appendedRowNumber(appendResult);
+    state.payments = [payment, ...state.payments];
+  }
+  state.currentPaymentId = "";
+  state.payments = state.payments.sort((a, b) =>
     `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`)
   );
 
@@ -2687,6 +2817,65 @@ async function savePayment(form) {
   }
   if (payment.payment_status === "paid" && payment.receipt_status !== "issued") {
     await createSystemTask(patientId, "הפקת קבלה", `נדרשת קבלה עבור תשלום: ${formatAmount(payment.amount)}`, payment.paid_at);
+  }
+}
+
+async function deleteFileRecordByDriveId(driveFileId) {
+  if (!driveFileId) return;
+  const file = state.files.find((item) => item.drive_file_id === driveFileId);
+  if (file?.id) {
+    await deleteFileRecord(file.id);
+    return;
+  }
+  await trashDriveFile(driveFileId);
+}
+
+async function deletePaymentRecord(paymentId) {
+  const payment = state.payments.find((item) => item.id === paymentId);
+  if (!payment) throw new Error("התשלום לא נמצא.");
+  if (!payment._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת התשלום.");
+
+  if (payment.receipt_file_id) await deleteFileRecordByDriveId(payment.receipt_file_id);
+  await clearSheetRow("payments", payment._rowNumber);
+  state.payments = state.payments.filter((item) => item.id !== paymentId);
+  if (state.currentPaymentId === paymentId) state.currentPaymentId = "";
+}
+
+async function deletePaymentReceipt(paymentId) {
+  const payment = state.payments.find((item) => item.id === paymentId);
+  if (!payment) throw new Error("התשלום לא נמצא.");
+  if (!payment._rowNumber) throw new Error("צריך לרענן נתונים לפני עדכון התשלום.");
+  if (!payment.receipt_file_id) return;
+
+  await deleteFileRecordByDriveId(payment.receipt_file_id);
+  const updated = {
+    ...payment,
+    receipt_file_id: "",
+    receipt_status: "needed",
+    updated_at: new Date().toISOString()
+  };
+  await updateSheetRow("payments", payment._rowNumber, updated);
+  state.payments = state.payments.map((item) => (item.id === paymentId ? updated : item));
+}
+
+async function setPaymentStatus(paymentId, status) {
+  const payment = state.payments.find((item) => item.id === paymentId);
+  if (!payment) throw new Error("התשלום לא נמצא.");
+  if (!payment._rowNumber) throw new Error("צריך לרענן נתונים לפני עדכון התשלום.");
+
+  const updated = {
+    ...payment,
+    payment_status: status || "unpaid",
+    updated_at: new Date().toISOString()
+  };
+  await updateSheetRow("payments", payment._rowNumber, updated);
+  state.payments = state.payments.map((item) => (item.id === paymentId ? updated : item));
+
+  if (updated.payment_status !== "paid") {
+    await createSystemTask(updated.patient_id, "מעקב תשלום פתוח", `תשלום פתוח: ${formatAmount(updated.amount)}`, updated.paid_at);
+  }
+  if (updated.payment_status === "paid" && updated.receipt_status !== "issued") {
+    await createSystemTask(updated.patient_id, "הפקת קבלה", `נדרשת קבלה עבור תשלום: ${formatAmount(updated.amount)}`, updated.paid_at);
   }
 }
 
@@ -2723,28 +2912,50 @@ async function createSystemTask(patientId, title, description = "", dueDate = ""
 async function saveTask(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || data.patient_id || "";
+  const existingId = form.dataset.id || "";
+  const existingTask = existingId ? state.tasks.find((task) => task.id === existingId) : null;
 
   if (!patientId) throw new Error("צריך לבחור מטופל למשימה.");
   if (!data.title) throw new Error("כותרת המשימה היא שדה חובה.");
+  if (existingId && !existingTask) throw new Error("המשימה לעריכה לא נמצאה.");
+  if (existingTask && !existingTask._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת המשימה.");
 
   const now = new Date().toISOString();
   const task = {
-    id: id(),
+    ...(existingTask || {}),
+    id: existingTask?.id || id(),
     patient_id: patientId,
     title: data.title,
     description: data.description || "",
     status: data.status || "open",
     due_date: data.due_date || "",
-    source: "manual",
-    created_at: now,
+    source: existingTask?.source || "manual",
+    created_at: existingTask?.created_at || now,
     updated_at: now
   };
 
-  const appendResult = await appendSheet("tasks", task);
-  task._rowNumber = appendedRowNumber(appendResult);
-  state.tasks = [task, ...state.tasks].sort((a, b) =>
+  if (existingTask) {
+    await updateSheetRow("tasks", existingTask._rowNumber, task);
+    state.tasks = state.tasks.map((item) => (item.id === task.id ? task : item));
+  } else {
+    const appendResult = await appendSheet("tasks", task);
+    task._rowNumber = appendedRowNumber(appendResult);
+    state.tasks = [task, ...state.tasks];
+  }
+  state.currentTaskId = "";
+  state.tasks = state.tasks.sort((a, b) =>
     `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`)
   );
+}
+
+async function deleteTaskRecord(taskId) {
+  const task = state.tasks.find((item) => item.id === taskId);
+  if (!task) throw new Error("המשימה לא נמצאה.");
+  if (!task._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת המשימה.");
+
+  await clearSheetRow("tasks", task._rowNumber);
+  state.tasks = state.tasks.filter((item) => item.id !== taskId);
+  if (state.currentTaskId === taskId) state.currentTaskId = "";
 }
 
 async function completeTask(taskId) {
@@ -2926,11 +3137,15 @@ function bindEvents() {
     if (action === "open-profile") {
       state.profileTab = "overview";
       state.currentSessionId = "";
+      state.currentPaymentId = "";
+      state.currentTaskId = "";
       navigate(`patients/${target.dataset.id}`);
     }
     if (action === "profile-tab") {
       state.profileTab = target.dataset.tab || "overview";
       if (state.profileTab !== "documentation") state.currentSessionId = "";
+      if (state.profileTab !== "payments") state.currentPaymentId = "";
+      if (state.profileTab !== "tasks") state.currentTaskId = "";
       render();
     }
     if (action === "edit-session") {
@@ -2941,6 +3156,93 @@ function bindEvents() {
     if (action === "cancel-session-edit") {
       state.currentSessionId = "";
       render();
+    }
+    if (action === "edit-payment") {
+      const payment = state.payments.find((item) => item.id === target.dataset.id);
+      if (!payment) return;
+      state.currentPaymentId = payment.id;
+      state.profileTab = "payments";
+      if (!state.route.startsWith(`patients/${payment.patient_id}`)) {
+        navigate(`patients/${payment.patient_id}`);
+      } else {
+        render();
+      }
+    }
+    if (action === "cancel-payment-edit") {
+      state.currentPaymentId = "";
+      render();
+    }
+    if (action === "delete-payment") {
+      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את התשלום?")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+        await deletePaymentRecord(target.dataset.id);
+        state.message = "התשלום נמחק מהמערכת.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "מחיקת התשלום נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "delete-payment-receipt") {
+      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את קובץ הקבלה?")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+        await deletePaymentReceipt(target.dataset.id);
+        state.message = "קובץ הקבלה נמחק ועודכן ברשומת התשלום.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "מחיקת הקבלה נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "set-payment-status") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        await setPaymentStatus(target.dataset.id, target.dataset.status || "unpaid");
+        state.message = "סטטוס התשלום עודכן.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "עדכון התשלום נכשל.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "edit-task") {
+      const task = state.tasks.find((item) => item.id === target.dataset.id);
+      if (!task) return;
+      state.currentTaskId = task.id;
+      state.profileTab = state.route === "tasks" ? state.profileTab : "tasks";
+      if (state.route === "tasks") {
+        render();
+      } else if (!state.route.startsWith(`patients/${task.patient_id}`)) {
+        navigate(`patients/${task.patient_id}`);
+      } else {
+        render();
+      }
+    }
+    if (action === "cancel-task-edit") {
+      state.currentTaskId = "";
+      render();
+    }
+    if (action === "delete-task") {
+      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המשימה?")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+        await deleteTaskRecord(target.dataset.id);
+        state.message = "המשימה נמחקה.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "מחיקת המשימה נכשלה.";
+        state.message = "";
+        render();
+      }
     }
     if (action === "delete-session") {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המפגש?")) return;
@@ -3096,6 +3398,14 @@ function bindEvents() {
       nextTarget?.focus();
       nextTarget?.setSelectionRange?.(cursor, cursor);
     }
+  });
+
+  document.addEventListener("change", (event) => {
+    const taskFilter = event.target.closest("[data-task-filter]");
+    if (!taskFilter) return;
+
+    state.taskFilter[taskFilter.dataset.taskFilter] = taskFilter.value;
+    if (state.route === "tasks") render();
   });
 
   document.addEventListener("submit", async (event) => {
