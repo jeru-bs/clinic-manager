@@ -106,6 +106,7 @@ let activeRecorder = null;
 let activeRecordingPatientId = "";
 let activeRecordingStream = null;
 let activeRecordingChunks = [];
+let activePickerElement = null;
 
 function loadConfig() {
   const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
@@ -249,6 +250,154 @@ function calendarDays(monthValue) {
       inMonth: date.getMonth() === month - 1
     };
   });
+}
+
+function dateFromInput(value) {
+  const parsed = value ? new Date(`${value}T00:00:00`) : new Date();
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function closePicker() {
+  activePickerElement?.remove();
+  activePickerElement = null;
+}
+
+function placePicker(popover, input) {
+  document.body.appendChild(popover);
+  const rect = input.getBoundingClientRect();
+  const pickerRect = popover.getBoundingClientRect();
+  const top = Math.min(rect.bottom + 6, window.innerHeight - pickerRect.height - 12);
+  const preferredLeft = rect.right - pickerRect.width;
+  const left = Math.max(
+    12,
+    Math.min(preferredLeft, window.innerWidth - pickerRect.width - 12)
+  );
+  popover.style.top = `${Math.max(12, top)}px`;
+  popover.style.left = `${left}px`;
+}
+
+function showDatePicker(input, monthValue = "") {
+  const baseDate = dateFromInput(input.value);
+  const activeMonth = monthValue || isoDate(baseDate).slice(0, 7);
+  const selectedDate = input.value || isoDate(baseDate);
+  const days = calendarDays(activeMonth);
+  const weekdays = ["א", "ב", "ג", "ד", "ה", "ו", "ש"];
+  closePicker();
+
+  const popover = document.createElement("div");
+  popover.className = "picker-popover date-popover";
+  popover.dir = "rtl";
+  popover.innerHTML = `
+    <div class="picker-head">
+      <button class="picker-nav" data-picker-prev type="button">‹</button>
+      <strong>${html(monthLabel(activeMonth))}</strong>
+      <button class="picker-nav" data-picker-next type="button">›</button>
+    </div>
+    <div class="date-weekdays">${weekdays.map((day) => `<span>${day}</span>`).join("")}</div>
+    <div class="date-grid">
+      ${days
+        .map(
+          (day) => `
+            <button class="date-option ${day.inMonth ? "" : "muted"} ${
+              day.date === selectedDate ? "selected" : ""
+            }" data-picker-date="${html(day.date)}" type="button">
+              ${Number(day.date.slice(8, 10))}
+            </button>`
+        )
+        .join("")}
+    </div>`;
+
+  popover.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const previous = event.target.closest("[data-picker-prev]");
+    const next = event.target.closest("[data-picker-next]");
+    const dateButton = event.target.closest("[data-picker-date]");
+    if (previous) showDatePicker(input, shiftMonth(activeMonth, -1));
+    if (next) showDatePicker(input, shiftMonth(activeMonth, 1));
+    if (dateButton) {
+      input.value = dateButton.dataset.pickerDate;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      closePicker();
+    }
+  });
+
+  activePickerElement = popover;
+  placePicker(popover, input);
+}
+
+function timeParts(value) {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) {
+    const now = new Date();
+    return { hour: now.getHours(), minute: "00" };
+  }
+  return {
+    hour: Math.min(23, Math.max(0, Number(match[1]))),
+    minute: ["00", "15", "30", "45"].includes(match[2]) ? match[2] : "00"
+  };
+}
+
+function clockButtonStyle(value, total, radius) {
+  const angle = (value / total) * Math.PI * 2 - Math.PI / 2;
+  const x = 50 + radius * Math.cos(angle);
+  const y = 50 + radius * Math.sin(angle);
+  return `--x:${x.toFixed(3)}%;--y:${y.toFixed(3)}%;`;
+}
+
+function showTimePicker(input, selectedHour = null) {
+  const current = timeParts(input.value);
+  const hour = selectedHour ?? current.hour;
+  const minute = current.minute;
+  closePicker();
+
+  const popover = document.createElement("div");
+  popover.className = "picker-popover time-popover";
+  popover.dir = "rtl";
+  popover.innerHTML = `
+    <div class="picker-head">
+      <strong>בחירת שעה</strong>
+      <span>${String(hour).padStart(2, "0")}:${minute}</span>
+    </div>
+    <div class="time-clock" aria-label="שעון 24 שעות">
+      ${Array.from({ length: 24 }, (_, clockHour) => {
+        const label = String(clockHour).padStart(2, "0");
+        return `
+          <button class="clock-hour ${clockHour === hour ? "selected" : ""}" style="${clockButtonStyle(
+            clockHour,
+            24,
+            43
+          )}" data-picker-hour="${clockHour}" type="button">${label}</button>`;
+      }).join("")}
+      ${["00", "15", "30", "45"]
+        .map(
+          (clockMinute, index) => `
+            <button class="clock-minute ${clockMinute === minute ? "selected" : ""}" style="${clockButtonStyle(
+              index,
+              4,
+              22
+            )}" data-picker-minute="${clockMinute}" type="button">${clockMinute}</button>`
+        )
+        .join("")}
+      <div class="clock-center">${String(hour).padStart(2, "0")}:${minute}</div>
+    </div>`;
+
+  popover.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const hourButton = event.target.closest("[data-picker-hour]");
+    const minuteButton = event.target.closest("[data-picker-minute]");
+    if (hourButton) {
+      showTimePicker(input, Number(hourButton.dataset.pickerHour));
+      return;
+    }
+    if (minuteButton) {
+      input.value = `${String(hour).padStart(2, "0")}:${minuteButton.dataset.pickerMinute}`;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      closePicker();
+    }
+  });
+
+  activePickerElement = popover;
+  placePicker(popover, input);
 }
 
 function formatAmount(value) {
@@ -572,15 +721,15 @@ function sessionForm(patientId) {
     <form class="form-grid inline-form" data-form="session" data-patient-id="${html(patientId)}">
       <div class="field">
         <label for="session_date">תאריך מפגש</label>
-        <input id="session_date" name="session_date" required type="date" value="${today}" />
+        <input class="picker-input" data-date-input id="session_date" name="session_date" readonly required type="text" value="${today}" />
       </div>
       <div class="field">
         <label for="start_time">שעת התחלה</label>
-        <input id="start_time" name="start_time" type="time" />
+        <input class="picker-input" data-time-input id="start_time" name="start_time" readonly type="text" />
       </div>
       <div class="field">
         <label for="end_time">שעת סיום</label>
-        <input id="end_time" name="end_time" type="time" />
+        <input class="picker-input" data-time-input id="end_time" name="end_time" readonly type="text" />
       </div>
       <div class="field">
         <label for="session_type">סוג מפגש</label>
@@ -614,7 +763,7 @@ function paymentForm(patientId) {
       </div>
       <div class="field">
         <label for="paid_at">תאריך</label>
-        <input id="paid_at" name="paid_at" type="date" value="${today}" />
+        <input class="picker-input" data-date-input id="paid_at" name="paid_at" readonly type="text" value="${today}" />
       </div>
       <div class="field">
         <label for="payment_method">אמצעי תשלום</label>
@@ -1026,7 +1175,7 @@ function taskForm(patientId = "") {
       </div>
       <div class="field">
         <label for="task_due_date">תאריך יעד</label>
-        <input id="task_due_date" name="due_date" type="date" />
+        <input class="picker-input" data-date-input id="task_due_date" name="due_date" readonly type="text" />
       </div>
       <div class="field">
         <label for="task_status">סטטוס</label>
@@ -1352,9 +1501,7 @@ function patientDrawer() {
           </div>
           <div class="field">
             <label for="fixed_time">שעה קבועה</label>
-            <select id="fixed_time" name="fixed_time">
-              ${fixedTimeOptions(patient?.fixed_time || "")}
-            </select>
+            <input class="picker-input" data-time-input id="fixed_time" name="fixed_time" readonly type="text" value="${html(patient?.fixed_time || "")}" />
           </div>
           <div class="field wide">
             <label for="general_notes">הערות</label>
@@ -2073,6 +2220,24 @@ function stopRecording() {
 
 function bindEvents() {
   document.addEventListener("click", async (event) => {
+    if (event.target.closest(".picker-popover")) return;
+
+    const dateInput = event.target.closest("[data-date-input]");
+    if (dateInput) {
+      event.preventDefault();
+      showDatePicker(dateInput);
+      return;
+    }
+
+    const timeInput = event.target.closest("[data-time-input]");
+    if (timeInput) {
+      event.preventDefault();
+      showTimePicker(timeInput);
+      return;
+    }
+
+    closePicker();
+
     const target = event.target.closest("[data-action]");
     if (!target) return;
 
@@ -2303,6 +2468,7 @@ function bindEvents() {
 }
 
 function render() {
+  closePicker();
   state.route = getRoute();
   const [route, idPart] = state.route.split("/");
   const pages = {
