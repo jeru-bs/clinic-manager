@@ -31,9 +31,9 @@ const SHEETS = {
     "summary",
     "sensitive_notes",
     "calendar_event_id",
-    "document_file_id",
     "created_at",
-    "updated_at"
+    "updated_at",
+    "document_file_id"
   ],
   payments: [
     "id",
