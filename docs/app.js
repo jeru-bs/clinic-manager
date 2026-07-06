@@ -70,6 +70,16 @@ const SHEETS = {
     "url",
     "created_at",
     "updated_at"
+  ],
+  schedule_exceptions: [
+    "id",
+    "patient_id",
+    "exception_type",
+    "start_date",
+    "end_date",
+    "reason",
+    "created_at",
+    "updated_at"
   ]
 };
 
@@ -96,6 +106,7 @@ const state = {
   payments: [],
   tasks: [],
   files: [],
+  scheduleExceptions: [],
   templates: [],
   dataHealth: null,
   patientFilter: {
@@ -863,6 +874,43 @@ function settingsPage() {
       </div>
       ${dataHealthView()}
     </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>חריגי יומן</h2><span>ביטולים, חופשות וחגים</span></div>
+      <form class="inline-form schedule-exception-form" data-form="schedule-exception">
+        <div class="field">
+          <label>מטופל</label>
+          <select name="patient_id">
+            <option value="">כל המטופלים</option>
+            ${patientOptions("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>סוג חריג</label>
+          <select name="exception_type">
+            <option value="cancel">ביטול חד-פעמי</option>
+            <option value="vacation">חופשה</option>
+            <option value="holiday">חג</option>
+            <option value="blocked">יום חסום</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>מתאריך</label>
+          <input name="start_date" data-date-input placeholder="בחירת תאריך" />
+        </div>
+        <div class="field">
+          <label>עד תאריך</label>
+          <input name="end_date" data-date-input placeholder="ריק = יום אחד" />
+        </div>
+        <div class="field wide">
+          <label>סיבה</label>
+          <input name="reason" placeholder="חופשה / חג / ביטול" />
+        </div>
+        <div class="toolbar wide">
+          <button class="button" type="submit">שמירת חריג</button>
+        </div>
+      </form>
+      ${scheduleExceptionsView()}
+    </section>
   `);
 }
 
@@ -893,6 +941,46 @@ function dataHealthView() {
                   <td>${html(row.sheet)}</td>
                   <td><span class="status-pill ${row.ok ? "done" : "open"}">${row.ok ? "תקין" : "דורש תיקון"}</span></td>
                   <td>${html(row.message)}</td>
+                </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function scheduleExceptionsView() {
+  if (!state.scheduleExceptions.length) {
+    return `<div class="empty">אין חריגי יומן שמורים.</div>`;
+  }
+
+  const rows = [...state.scheduleExceptions].sort((a, b) =>
+    `${b.start_date || ""} ${b.created_at || ""}`.localeCompare(`${a.start_date || ""} ${a.created_at || ""}`)
+  );
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>תאריכים</th>
+            <th>מטופל</th>
+            <th>סוג</th>
+            <th>סיבה</th>
+            <th>פעולות</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (exception) => `
+                <tr>
+                  <td>${html(formatExceptionDateRange(exception))}</td>
+                  <td>${html(exception.patient_id ? patientName(exception.patient_id) : "כל המטופלים")}</td>
+                  <td>${html(exceptionTypeLabel(exception.exception_type))}</td>
+                  <td>${html(exception.reason || "-")}</td>
+                  <td><button class="button danger table-button" data-action="delete-schedule-exception" data-id="${html(exception.id)}" type="button">מחיקה</button></td>
                 </tr>`
             )
             .join("")}
@@ -1117,6 +1205,7 @@ function calendarPage() {
   const days = calendarDays(state.calendarMonth);
   const rows = sessionsForDates(days.map((day) => day.date));
   const selectedSessions = rows.filter((session) => session.session_date === state.selectedCalendarDate);
+  const selectedExceptions = scheduleExceptionsForDate(state.selectedCalendarDate);
   const sessionsByDate = rows.reduce((acc, session) => {
     if (!session.session_date) return acc;
     acc[session.session_date] = [...(acc[session.session_date] || []), session];
@@ -1172,8 +1261,21 @@ function calendarPage() {
       <aside class="panel day-panel">
         <div class="panel-head">
           <h2>${html(formatDate(state.selectedCalendarDate))}</h2>
-          <span>${selectedSessions.length} מפגשים</span>
+          <span>${selectedSessions.length} מפגשים${selectedExceptions.length ? `, ${selectedExceptions.length} חריגים` : ""}</span>
         </div>
+        ${
+          selectedExceptions.length
+            ? `<div class="exception-list">${selectedExceptions
+                .map(
+                  (exception) => `
+                    <div class="exception-note">
+                      <strong>${html(exceptionTypeLabel(exception.exception_type))}</strong>
+                      <span>${html(exception.patient_id ? patientName(exception.patient_id) : "כל המטופלים")} ${exception.reason ? `- ${exception.reason}` : ""}</span>
+                    </div>`
+                )
+                .join("")}</div>`
+            : ""
+        }
         ${
           selectedSessions.length
             ? `<div class="item-list">${selectedSessions
@@ -1186,7 +1288,8 @@ function calendarPage() {
                     <div class="row-actions">
                       ${
                         session.is_recurring
-                          ? `<button class="button blue table-button" data-action="materialize-recurring" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" type="button">שמירה</button>`
+                          ? `<button class="button blue table-button" data-action="materialize-recurring" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" type="button">שמירה</button>
+                             <button class="button danger table-button" data-action="cancel-recurring" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" type="button">ביטול</button>`
                           : ""
                       }
                       <button class="button secondary table-button" data-action="open-profile" data-id="${html(session.patient_id)}" type="button">כרטיס</button>
@@ -2005,12 +2108,105 @@ function actualSessionExists(patientId, dateValue) {
   );
 }
 
+function exceptionTypeLabel(type) {
+  return {
+    cancel: "ביטול חד-פעמי",
+    vacation: "חופשה",
+    holiday: "חג",
+    blocked: "יום חסום"
+  }[type] || "חריג יומן";
+}
+
+function formatExceptionDateRange(exception) {
+  if (!exception?.start_date) return "-";
+  if (!exception.end_date || exception.end_date === exception.start_date) {
+    return formatDate(exception.start_date);
+  }
+  return `${formatDate(exception.start_date)} - ${formatDate(exception.end_date)}`;
+}
+
+function exceptionApplies(exception, patientId, dateValue) {
+  if (!exception?.start_date) return false;
+  const endDate = exception.end_date || exception.start_date;
+  const appliesToPatient = !exception.patient_id || exception.patient_id === patientId;
+  return appliesToPatient && dateValue >= exception.start_date && dateValue <= endDate;
+}
+
+function scheduleExceptionsForDate(dateValue, patientId = "") {
+  return state.scheduleExceptions.filter((exception) =>
+    exceptionApplies(exception, patientId || exception.patient_id || "", dateValue)
+  );
+}
+
+function recurringBlockedByException(patientId, dateValue) {
+  return state.scheduleExceptions.find((exception) => exceptionApplies(exception, patientId, dateValue));
+}
+
+async function saveScheduleException(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  if (!data.start_date) throw new Error("צריך לבחור תאריך התחלה.");
+  const endDate = data.end_date || data.start_date;
+  if (endDate < data.start_date) throw new Error("תאריך הסיום לא יכול להיות לפני תאריך ההתחלה.");
+
+  const now = new Date().toISOString();
+  const exception = {
+    id: id(),
+    patient_id: data.patient_id || "",
+    exception_type: data.exception_type || "blocked",
+    start_date: data.start_date,
+    end_date: endDate,
+    reason: data.reason || "",
+    created_at: now,
+    updated_at: now
+  };
+
+  const appendResult = await appendSheet("schedule_exceptions", exception);
+  exception._rowNumber = appendedRowNumber(appendResult);
+  state.scheduleExceptions = [exception, ...state.scheduleExceptions].sort((a, b) =>
+    `${b.start_date || ""} ${b.created_at || ""}`.localeCompare(`${a.start_date || ""} ${a.created_at || ""}`)
+  );
+  return exception;
+}
+
+async function deleteScheduleException(exceptionId) {
+  const exception = state.scheduleExceptions.find((item) => item.id === exceptionId);
+  if (!exception) throw new Error("חריג היומן לא נמצא.");
+  if (!exception._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת חריג יומן.");
+
+  await clearSheetRow("schedule_exceptions", exception._rowNumber);
+  state.scheduleExceptions = state.scheduleExceptions.filter((item) => item.id !== exceptionId);
+}
+
+async function cancelRecurringSession(patientId, dateValue) {
+  const patient = state.patients.find((item) => item.id === patientId);
+  if (!patient) throw new Error("המטופל לא נמצא.");
+  if (!recurringSessionForDate(patient, dateValue)) throw new Error("לא נמצא מפגש קבוע לביטול בתאריך הזה.");
+
+  const now = new Date().toISOString();
+  const exception = {
+    id: id(),
+    patient_id: patientId,
+    exception_type: "cancel",
+    start_date: dateValue,
+    end_date: dateValue,
+    reason: "ביטול חד-פעמי מתוך היומן",
+    created_at: now,
+    updated_at: now
+  };
+  const appendResult = await appendSheet("schedule_exceptions", exception);
+  exception._rowNumber = appendedRowNumber(appendResult);
+  state.scheduleExceptions = [exception, ...state.scheduleExceptions];
+  return exception;
+}
+
 function recurringSessionForDate(patient, dateValue) {
   if (!patient?.id || patient.status === "archived") return null;
   if (!patient.fixed_day || !patient.fixed_time) return null;
   const date = dateFromInput(dateValue);
   if (fixedDayIndex(patient.fixed_day) !== date.getDay()) return null;
   if (actualSessionExists(patient.id, dateValue)) return null;
+  const exception = recurringBlockedByException(patient.id, dateValue);
+  if (exception) return null;
 
   return {
     id: `recurring-${patient.id}-${dateValue}`,
@@ -2296,6 +2492,7 @@ async function loadGoogleUser() {
     state.payments = [];
     state.tasks = [];
     state.files = [];
+    state.scheduleExceptions = [];
     state.templates = [];
     throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
   }
@@ -3135,12 +3332,13 @@ async function loadData() {
   await loadRemoteSettings().catch(() => {});
   if (!isAuthorizedGoogleUser()) throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
   if (!state.config.googleSpreadsheetId) return;
-  const [patients, sessions, payments, tasks, files, templates] = await Promise.all([
+  const [patients, sessions, payments, tasks, files, scheduleExceptions, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
     readSheet("payments"),
     readSheet("tasks"),
     readSheet("files"),
+    readSheet("schedule_exceptions"),
     loadDriveTemplates().catch(() => [])
   ]);
   state.patients = patients.sort((a, b) => (a.child_name || "").localeCompare(b.child_name || "", "he"));
@@ -3148,6 +3346,9 @@ async function loadData() {
   state.payments = payments.sort((a, b) => `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`));
   state.tasks = tasks.sort((a, b) => `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`));
   state.files = files.sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+  state.scheduleExceptions = scheduleExceptions.sort((a, b) =>
+    `${b.start_date || ""} ${b.created_at || ""}`.localeCompare(`${a.start_date || ""} ${a.created_at || ""}`)
+  );
   state.templates = templates.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
 }
 
@@ -3505,14 +3706,16 @@ function backupPayload() {
       sessions: state.sessions.length,
       payments: state.payments.length,
       tasks: state.tasks.length,
-      files: state.files.length
+      files: state.files.length,
+      schedule_exceptions: state.scheduleExceptions.length
     },
     data: {
       patients: state.patients,
       sessions: state.sessions,
       payments: state.payments,
       tasks: state.tasks,
-      files: state.files
+      files: state.files,
+      schedule_exceptions: state.scheduleExceptions
     }
   };
 }
@@ -4175,6 +4378,20 @@ function bindEvents() {
         render();
       }
     }
+    if (action === "delete-schedule-exception") {
+      if (!window.confirm("למחוק את חריג היומן?")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+        await deleteScheduleException(target.dataset.id);
+        state.message = "חריג היומן נמחק.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "מחיקת חריג היומן נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
     if (action === "delete-session") {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המפגש?")) return;
       try {
@@ -4240,6 +4457,20 @@ function bindEvents() {
         render();
       } catch (error) {
         state.error = error instanceof Error ? error.message : "שמירת המפגש הקבוע נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "cancel-recurring") {
+      if (!window.confirm("לבטל את המפגש הקבוע רק בתאריך הזה?")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני ביטול מפגש.");
+        await cancelRecurringSession(target.dataset.patientId, target.dataset.date);
+        state.message = "המפגש הקבוע בוטל לתאריך הזה בלבד.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "ביטול המפגש הקבוע נכשל.";
         state.message = "";
         render();
       }
@@ -4456,6 +4687,12 @@ function bindEvents() {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         await saveTask(form);
         state.message = "המשימה נשמרה במערכת.";
+      }
+
+      if (form.dataset.form === "schedule-exception") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        await saveScheduleException(form);
+        state.message = "חריג היומן נשמר.";
       }
 
       if (form.dataset.form === "file") {
