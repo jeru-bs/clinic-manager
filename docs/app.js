@@ -774,6 +774,24 @@ function settingsPage() {
         </div>
       </article>
     </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>גיבוי וייצוא</h2><span>שמירת עותק עבודה</span></div>
+      <div class="toolbar">
+        <button class="button blue" data-action="download-backup" type="button">הורדת גיבוי מלא</button>
+        <button class="button" data-action="save-backup-drive" type="button">שמירת גיבוי באחסון</button>
+        <button class="button secondary" data-action="export-table" data-table="patients" type="button">ייצוא מטופלים</button>
+        <button class="button secondary" data-action="export-table" data-table="payments" type="button">ייצוא תשלומים</button>
+        <button class="button secondary" data-action="export-table" data-table="tasks" type="button">ייצוא משימות</button>
+      </div>
+      <div class="detail-list detail-grid">
+        ${detail("מטופלים", state.patients.length)}
+        ${detail("מפגשים", state.sessions.length)}
+        ${detail("תשלומים", state.payments.length)}
+        ${detail("משימות", state.tasks.length)}
+        ${detail("קבצים", state.files.length)}
+        ${detail("תאריך גיבוי", formatDate(isoDate(new Date())))}
+      </div>
+    </section>
   `);
 }
 
@@ -3154,6 +3172,118 @@ function downloadTextFile(fileName, content, mimeType = "text/plain;charset=utf-
   URL.revokeObjectURL(url);
 }
 
+function backupFileName() {
+  return `clinic-manager-backup-${isoDate(new Date())}.json`;
+}
+
+function backupPayload() {
+  return {
+    exported_at: new Date().toISOString(),
+    app: "clinic-manager",
+    version: "browser-storage-v1",
+    config: {
+      googleDriveRootFolderId: state.config.googleDriveRootFolderId || "",
+      googleTemplatesFolderId: state.config.googleTemplatesFolderId || "",
+      googleCalendarId: state.config.googleCalendarId || "primary",
+      googleSpreadsheetId: state.config.googleSpreadsheetId || "",
+      sessionTypes: state.config.sessionTypes || "",
+      sessionLocations: state.config.sessionLocations || ""
+    },
+    counts: {
+      patients: state.patients.length,
+      sessions: state.sessions.length,
+      payments: state.payments.length,
+      tasks: state.tasks.length,
+      files: state.files.length
+    },
+    data: {
+      patients: state.patients,
+      sessions: state.sessions,
+      payments: state.payments,
+      tasks: state.tasks,
+      files: state.files
+    }
+  };
+}
+
+function downloadBackup() {
+  downloadTextFile(
+    backupFileName(),
+    JSON.stringify(backupPayload(), null, 2),
+    "application/json;charset=utf-8"
+  );
+}
+
+async function saveBackupToDrive() {
+  if (!state.config.googleDriveRootFolderId) throw new Error("צריך להגדיר תיקיית אחסון ראשית לפני שמירת גיבוי.");
+  const content = JSON.stringify(backupPayload(), null, 2);
+  const file = new File([content], backupFileName(), { type: "application/json" });
+  return uploadDriveFile(state.config.googleDriveRootFolderId, file, file.name);
+}
+
+const EXPORT_TABLES = {
+  patients: {
+    fileName: "patients",
+    rows: () => state.patients,
+    columns: [
+      ["שם", "child_name"],
+      ["מוסד", "school_name"],
+      ["סוג טיפול", "treatment_type"],
+      ["יום קבוע", "fixed_day"],
+      ["שעה קבועה", "fixed_time"],
+      ["מחיר קבוע", "fixed_price"],
+      ["סטטוס", "status"]
+    ]
+  },
+  payments: {
+    fileName: "payments",
+    rows: () => state.payments,
+    columns: [
+      ["תאריך", "paid_at"],
+      ["מטופל", (payment) => patientName(payment.patient_id)],
+      ["סכום", "amount"],
+      ["אמצעי", (payment) => paymentMethodLabel(payment.payment_method)],
+      ["תשלום", (payment) => paymentStatusLabel(payment.payment_status)],
+      ["קבלה", (payment) => receiptStatusLabel(payment.receipt_status)],
+      ["הערות", "notes"]
+    ]
+  },
+  tasks: {
+    fileName: "tasks",
+    rows: () => state.tasks,
+    columns: [
+      ["תאריך יעד", "due_date"],
+      ["מטופל", (task) => patientName(task.patient_id)],
+      ["משימה", "title"],
+      ["סטטוס", (task) => taskStatusLabel(task.status)],
+      ["פירוט", "description"],
+      ["מקור", "source"]
+    ]
+  }
+};
+
+function exportTableCsv(tableKey) {
+  const table = EXPORT_TABLES[tableKey];
+  if (!table) throw new Error("טבלת הייצוא לא נמצאה.");
+  const rows = table.rows();
+  const headerRow = table.columns.map(([label]) => label);
+  const csvRows = [
+    headerRow.map(csvValue).join(","),
+    ...rows.map((row) =>
+      table.columns
+        .map(([, getter]) => (typeof getter === "function" ? getter(row) : row[getter] || ""))
+        .map(csvValue)
+        .join(",")
+    )
+  ];
+  downloadTextFile(
+    `${table.fileName}-${isoDate(new Date())}.csv`,
+    `\uFEFF${csvRows.join("\n")}`,
+    "text/csv;charset=utf-8"
+  );
+  return rows.length;
+}
+
 function exportReceiptsCsv() {
   const rows = state.payments
     .filter((payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued")
@@ -3467,6 +3597,37 @@ function bindEvents() {
         render();
       } catch (error) {
         state.error = error instanceof Error ? error.message : "בדיקת החיבור נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "download-backup") {
+      downloadBackup();
+      state.message = "גיבוי מלא ירד למחשב.";
+      state.error = "";
+      render();
+    }
+    if (action === "save-backup-drive") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירת גיבוי.");
+        const result = await saveBackupToDrive();
+        state.message = `הגיבוי נשמר באחסון: ${result.name || backupFileName()}.`;
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "שמירת הגיבוי נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "export-table") {
+      try {
+        const count = exportTableCsv(target.dataset.table || "");
+        state.message = `נוצר קובץ ייצוא עם ${count} רשומות.`;
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "הייצוא נכשל.";
         state.message = "";
         render();
       }
