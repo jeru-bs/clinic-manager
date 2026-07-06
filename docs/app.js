@@ -120,6 +120,8 @@ const state = {
 
 let messageDismissTimer = null;
 let messageDismissValue = "";
+const pendingActions = new Set();
+const pendingForms = new WeakSet();
 let activeRecorder = null;
 let activeRecordingPatientId = "";
 let activeRecordingStream = null;
@@ -793,10 +795,6 @@ function settingsPage() {
       </div>
     </section>
   `);
-}
-
-function placeholderPage(title) {
-  return shell(`${header(title, "המסך הזה יתחבר לנתוני המערכת בשלב הבא.", `<button class="button secondary" data-action="refresh" type="button">רענון</button>`)}<section class="panel"><div class="empty">בקרוב.</div></section>`);
 }
 
 function detail(label, value) {
@@ -3581,6 +3579,10 @@ function bindEvents() {
     if (!target) return;
 
     const action = target.dataset.action;
+    const busyKey = beginBusyAction(target);
+    if (!busyKey) return;
+
+    try {
     if (action === "connect-google") await connectGoogle();
     if (action === "force-connect-google") await connectGoogle(true);
     if (action === "refresh") {
@@ -3941,6 +3943,9 @@ function bindEvents() {
         render();
       }
     }
+    } finally {
+      endBusyAction(target, busyKey);
+    }
   });
 
   document.addEventListener("input", (event) => {
@@ -3991,6 +3996,7 @@ function bindEvents() {
     const form = event.target;
     if (!form.matches("[data-form]")) return;
     event.preventDefault();
+    if (!beginBusyForm(form)) return;
     state.error = "";
     state.message = "";
 
@@ -4052,6 +4058,8 @@ function bindEvents() {
     } catch (error) {
       state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
       render();
+    } finally {
+      endBusyForm(form);
     }
   });
 }
@@ -4093,6 +4101,50 @@ function scheduleMessageDismiss() {
     messageDismissValue = "";
     render();
   }, 4500);
+}
+
+function busyActionKey(target) {
+  const parts = [
+    target.dataset.action || "",
+    target.dataset.id || "",
+    target.dataset.table || "",
+    target.dataset.status || "",
+    target.dataset.tab || "",
+    target.dataset.date || ""
+  ];
+  return parts.join(":");
+}
+
+function beginBusyAction(target) {
+  const key = busyActionKey(target);
+  if (!key || pendingActions.has(key) || target.disabled) return "";
+  pendingActions.add(key);
+  target.disabled = true;
+  target.dataset.busy = "true";
+  return key;
+}
+
+function endBusyAction(target, key) {
+  if (!key) return;
+  pendingActions.delete(key);
+  if (target.isConnected) {
+    target.disabled = false;
+    delete target.dataset.busy;
+  }
+}
+
+function beginBusyForm(form) {
+  if (pendingForms.has(form)) return false;
+  pendingForms.add(form);
+  form.dataset.busy = "true";
+  form.querySelectorAll("button").forEach((control) => {
+    control.disabled = true;
+  });
+  return true;
+}
+
+function endBusyForm(form) {
+  pendingForms.delete(form);
 }
 
 window.addEventListener("hashchange", render);
