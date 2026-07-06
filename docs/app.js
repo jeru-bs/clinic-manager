@@ -82,6 +82,8 @@ const DEFAULT_SESSION_LOCATIONS = ["קליניקה", "בית ספר", "אונל�
 const state = {
   accessToken: loadStoredGoogleToken(),
   config: loadConfig(),
+  googleUser: null,
+  authChecked: false,
   currentPatientId: "",
   currentSessionId: "",
   currentPaymentId: "",
@@ -147,6 +149,11 @@ function loadConfig() {
       saved.googleCalendarId || configDefaults.googleCalendarId || "primary",
     googleSpreadsheetId:
       saved.googleSpreadsheetId || configDefaults.googleSpreadsheetId || "",
+    allowedUserEmails: listText(
+      saved.allowedUserEmails,
+      configDefaults.allowedUserEmails,
+      []
+    ),
     sessionTypes: listText(saved.sessionTypes, configDefaults.sessionTypes, DEFAULT_SESSION_TYPES),
     sessionLocations: listText(
       saved.sessionLocations,
@@ -175,6 +182,20 @@ function optionValues(value, fallbackItems) {
     .map((item) => item.trim())
     .filter(Boolean);
   return [...new Set(items.length ? items : fallbackItems)];
+}
+
+function configuredEmails() {
+  return optionValues(state.config.allowedUserEmails || "", []).map((email) => email.toLowerCase());
+}
+
+function isAuthorizedGoogleUser() {
+  const allowedEmails = configuredEmails();
+  if (!allowedEmails.length) return true;
+  return Boolean(state.googleUser?.email && allowedEmails.includes(state.googleUser.email.toLowerCase()));
+}
+
+function canUseStorage() {
+  return Boolean(state.accessToken && state.authChecked && isAuthorizedGoogleUser());
 }
 
 function selectOptions(items, selectedValue = "") {
@@ -535,6 +556,32 @@ function connectionBanner() {
     </div>`;
 }
 
+function accessGatePage() {
+  const allowedEmails = configuredEmails();
+  const connectedEmail = state.googleUser?.email || "";
+  const subtitle = state.accessToken
+    ? "החשבון המחובר נבדק לפני טעינת הנתונים."
+    : "יש להתחבר לחשבון Google מורשה כדי לעבוד עם נתוני הקליניקה.";
+  const details = state.accessToken && connectedEmail
+    ? `מחובר כעת: ${connectedEmail}`
+    : allowedEmails.length
+      ? `חשבונות מורשים: ${allowedEmails.join(", ")}`
+      : "לא הוגדרה רשימת מורשים. אפשר להגדיר אותה במסך ההגדרות.";
+
+  return shell(`
+    ${header("כניסה למערכת", subtitle, `<button class="button blue" data-action="connect-google" type="button">התחברות לחשבון מורשה</button>`)}
+    <section class="panel">
+      <div class="empty">
+        <div>
+          <strong>${html(details)}</strong>
+          <p>הנתונים יוצגו רק אחרי זיהוי חשבון מורשה.</p>
+          <a class="button secondary" href="#/settings">הגדרות</a>
+        </div>
+      </div>
+    </section>
+  `);
+}
+
 function header(title, subtitle, actions = "") {
   return `
     <section class="header">
@@ -746,6 +793,10 @@ function settingsPage() {
             <input id="googleCalendarId" name="googleCalendarId" value="${html(state.config.googleCalendarId)}" placeholder="primary" />
           </div>
           <div class="field wide">
+            <label for="allowedUserEmails">חשבונות Google מורשים</label>
+            <textarea id="allowedUserEmails" name="allowedUserEmails" placeholder="כל שורה היא כתובת אימייל מורשית. אם הרשימה ריקה, כל חשבון Google שמאשר הרשאות יוכל להתחבר.">${html(state.config.allowedUserEmails)}</textarea>
+          </div>
+          <div class="field wide">
             <label for="sessionTypes">סוגי מפגש</label>
             <textarea id="sessionTypes" name="sessionTypes" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionTypes)}</textarea>
           </div>
@@ -764,6 +815,8 @@ function settingsPage() {
           <p><strong>קוד:</strong> נטען מהאתר.</p>
           <p><strong>נתונים:</strong> נשמרים באחסון המחובר.</p>
           <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר כרגע." : "לא מחובר כרגע."}</p>
+          <p><strong>חשבון:</strong> ${state.googleUser?.email ? html(state.googleUser.email) : "לא זוהה עדיין."}</p>
+          <p><strong>הרשאה:</strong> ${state.accessToken && state.authChecked ? (isAuthorizedGoogleUser() ? "מורשה." : "לא מורשה.") : "תיבדק אחרי התחברות."}</p>
           <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
           <button class="button secondary" data-action="force-connect-google" type="button">התחברות מחדש עם הרשאות</button>
           <div class="diagnostic-actions">
@@ -784,6 +837,13 @@ function settingsPage() {
         <button class="button secondary" data-action="export-table" data-table="patients" type="button">ייצוא מטופלים</button>
         <button class="button secondary" data-action="export-table" data-table="payments" type="button">ייצוא תשלומים</button>
         <button class="button secondary" data-action="export-table" data-table="tasks" type="button">ייצוא משימות</button>
+      </div>
+      <div class="restore-box">
+        <label class="field">
+          <span>שחזור מגיבוי JSON</span>
+          <input id="restoreBackupFile" type="file" accept="application/json,.json" />
+        </label>
+        <button class="button danger" data-action="restore-backup" type="button">שחזור מגיבוי</button>
       </div>
       <div class="detail-list detail-grid">
         ${detail("מטופלים", state.patients.length)}
@@ -2008,7 +2068,7 @@ async function connectGoogle(forceConsent = false) {
   const tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: state.config.googleClientId,
     scope:
-      "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/documents",
+      "openid email profile https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/documents",
     callback: async (response) => {
       if (response.error) {
         state.error = "ההתחברות לאחסון נכשלה.";
@@ -2018,7 +2078,13 @@ async function connectGoogle(forceConsent = false) {
 
       state.accessToken = response.access_token;
       saveGoogleToken(response);
-      await loadData();
+      try {
+        await loadGoogleUser();
+        await loadData();
+        state.error = "";
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "בדיקת ההרשאה נכשלה.";
+      }
       render();
     }
   });
@@ -2059,6 +2125,8 @@ function friendlyGoogleError(text, status) {
   if (status === 401 || combined.includes("invalid credentials")) {
     clearStoredGoogleToken();
     state.accessToken = "";
+    state.googleUser = null;
+    state.authChecked = false;
     return "החיבור פג תוקף. צריך להתחבר שוב.";
   }
 
@@ -2070,6 +2138,8 @@ function friendlyGoogleError(text, status) {
   ) {
     clearStoredGoogleToken(true);
     state.accessToken = "";
+    state.googleUser = null;
+    state.authChecked = false;
     return "חסרה הרשאה לאחסון קבצים. צריך להתחבר שוב ולאשר את כל ההרשאות המבוקשות.";
   }
 
@@ -2093,6 +2163,35 @@ async function googleFetch(url, options = {}) {
   }
 
   return response.status === 204 ? null : response.json();
+}
+
+async function loadGoogleUser() {
+  if (!state.accessToken) {
+    state.googleUser = null;
+    state.authChecked = false;
+    return null;
+  }
+
+  const profile = await googleFetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+    headers: {}
+  });
+  state.googleUser = {
+    email: profile?.email || "",
+    name: profile?.name || ""
+  };
+  state.authChecked = true;
+
+  if (!isAuthorizedGoogleUser()) {
+    state.patients = [];
+    state.sessions = [];
+    state.payments = [];
+    state.tasks = [];
+    state.files = [];
+    state.templates = [];
+    throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
+  }
+
+  return state.googleUser;
 }
 
 async function readSheet(sheetName) {
@@ -2738,6 +2837,7 @@ async function saveRemoteSettings() {
       googleTemplatesFolderId: state.config.googleTemplatesFolderId || "",
       googleCalendarId: state.config.googleCalendarId || "primary",
       googleSpreadsheetId: state.config.googleSpreadsheetId || "",
+      allowedUserEmails: state.config.allowedUserEmails || "",
       sessionTypes: state.config.sessionTypes || "",
       sessionLocations: state.config.sessionLocations || "",
       updated_at: new Date().toISOString()
@@ -2821,7 +2921,10 @@ async function syncPatientDriveFiles(patientId) {
 
 async function loadData() {
   if (!state.accessToken) return;
+  if (!state.authChecked) await loadGoogleUser();
+  if (!isAuthorizedGoogleUser()) throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
   await loadRemoteSettings().catch(() => {});
+  if (!isAuthorizedGoogleUser()) throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
   if (!state.config.googleSpreadsheetId) return;
   const [patients, sessions, payments, tasks, files, templates] = await Promise.all([
     readSheet("patients"),
@@ -3184,6 +3287,7 @@ function backupPayload() {
       googleTemplatesFolderId: state.config.googleTemplatesFolderId || "",
       googleCalendarId: state.config.googleCalendarId || "primary",
       googleSpreadsheetId: state.config.googleSpreadsheetId || "",
+      allowedUserEmails: state.config.allowedUserEmails || "",
       sessionTypes: state.config.sessionTypes || "",
       sessionLocations: state.config.sessionLocations || ""
     },
@@ -3217,6 +3321,47 @@ async function saveBackupToDrive() {
   const content = JSON.stringify(backupPayload(), null, 2);
   const file = new File([content], backupFileName(), { type: "application/json" });
   return uploadDriveFile(state.config.googleDriveRootFolderId, file, file.name);
+}
+
+function backupRows(payload, tableName) {
+  const rows = payload?.data?.[tableName];
+  if (!Array.isArray(rows)) return [];
+  return rows.map(({ _rowNumber, ...record }) => record);
+}
+
+async function clearSheetData(sheetName) {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  const columns = SHEETS[sheetName];
+  const range = `${sheetName}!A2:${String.fromCharCode(64 + columns.length)}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:clear`;
+  await googleFetch(url, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+async function replaceSheetData(sheetName, rows) {
+  await clearSheetData(sheetName);
+  for (const row of rows) {
+    await appendSheet(sheetName, row);
+  }
+}
+
+async function restoreBackupFile(file) {
+  if (!file) throw new Error("צריך לבחור קובץ גיבוי.");
+  if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני שחזור.");
+
+  const payload = JSON.parse(await file.text());
+  if (payload?.app !== "clinic-manager" || !payload?.data) {
+    throw new Error("קובץ הגיבוי לא מתאים למערכת.");
+  }
+
+  await saveBackupToDrive().catch(() => {});
+  for (const tableName of Object.keys(SHEETS)) {
+    await replaceSheetData(tableName, backupRows(payload, tableName));
+  }
+  await loadData();
+  return Object.fromEntries(Object.keys(SHEETS).map((tableName) => [tableName, backupRows(payload, tableName).length]));
 }
 
 const EXPORT_TABLES = {
@@ -3618,6 +3763,28 @@ function bindEvents() {
         render();
       } catch (error) {
         state.error = error instanceof Error ? error.message : "שמירת הגיבוי נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "restore-backup") {
+      const fileInput = document.getElementById("restoreBackupFile");
+      const selectedFile = fileInput?.files?.[0];
+      if (!selectedFile) {
+        state.error = "צריך לבחור קובץ גיבוי לשחזור.";
+        state.message = "";
+        render();
+        return;
+      }
+      if (!window.confirm("שחזור מגיבוי יחליף את הנתונים הקיימים בטבלאות. להמשיך?")) return;
+
+      try {
+        const counts = await restoreBackupFile(selectedFile);
+        state.message = `השחזור הושלם: ${counts.patients || 0} מטופלים, ${counts.sessions || 0} מפגשים, ${counts.payments || 0} תשלומים, ${counts.tasks || 0} משימות.`;
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "שחזור הגיבוי נכשל.";
         state.message = "";
         render();
       }
@@ -4078,7 +4245,9 @@ function render() {
     files: filesPage,
     settings: settingsPage
   };
-  document.getElementById("app").innerHTML = (pages[route] || dashboardPage)();
+  const isSettings = route === "settings";
+  document.getElementById("app").innerHTML =
+    !isSettings && !canUseStorage() ? accessGatePage() : (pages[route] || dashboardPage)();
   scheduleMessageDismiss();
 }
 

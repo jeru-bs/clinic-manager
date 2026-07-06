@@ -497,6 +497,18 @@ th {
   color: var(--danger);
 }
 
+.restore-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.restore-box .field {
+  min-width: min(360px, 100%);
+}
+
 .empty {
   display: grid;
   min-height: 130px;
