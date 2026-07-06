@@ -976,6 +976,11 @@ function paymentsPanel(items = state.payments, patientId = "") {
                           ? `<button class="button secondary table-button" data-action="delete-payment-receipt" data-id="${html(payment.id)}" type="button">מחיקת קבלה</button>`
                           : ""
                       }
+                      ${
+                        payment.payment_status === "paid" && payment.receipt_status !== "issued"
+                          ? `<button class="button blue table-button" data-action="set-receipt-status" data-id="${html(payment.id)}" data-status="issued" type="button">קבלה הופקה</button>`
+                          : ""
+                      }
                       <button class="button danger table-button" data-action="delete-payment" data-id="${html(payment.id)}" type="button">מחיקה</button>
                     </div>
                   </article>`
@@ -1072,6 +1077,9 @@ function paymentsPage() {
   const rows = [...state.payments].sort((a, b) =>
     `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`)
   );
+  const receiptsToPrepare = rows.filter(
+    (payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued"
+  );
   const paidTotal = rows
     .filter((payment) => payment.payment_status === "paid")
     .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
@@ -1085,13 +1093,14 @@ function paymentsPage() {
       "תשלומים",
       "מעקב גבייה, תשלומים וקבלות.",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
+       <button class="button blue" data-action="export-receipts" type="button">ייצוא קבלות להכנה</button>
        <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
     )}
     ${connectionBanner()}
     <section class="metric-row">
       <article class="metric blue-card"><strong>${html(formatAmount(paidTotal))}</strong><span>שולם</span></article>
       <article class="metric pink-card"><strong>${html(formatAmount(openTotal))}</strong><span>פתוח</span></article>
-      <article class="metric teal-card"><strong>${receiptNeeded}</strong><span>קבלות לבדיקה</span></article>
+      <article class="metric teal-card"><strong>${receiptsToPrepare.length}</strong><span>קבלות להכנה</span></article>
     </section>
     <section class="panel">
       <div class="panel-head"><h2>רשימת תשלומים</h2><span>${rows.length} רשומות</span></div>
@@ -1139,6 +1148,11 @@ function paymentsPage() {
                       ${
                         payment.receipt_file_id
                           ? `<button class="button secondary table-button" data-action="delete-payment-receipt" data-id="${html(payment.id)}" type="button">מחיקת קבלה</button>`
+                          : ""
+                      }
+                      ${
+                        payment.payment_status === "paid" && payment.receipt_status !== "issued"
+                          ? `<button class="button blue table-button" data-action="set-receipt-status" data-id="${html(payment.id)}" data-status="issued" type="button">קבלה הופקה</button>`
                           : ""
                       }
                       <button class="button danger table-button" data-action="delete-payment" data-id="${html(payment.id)}" type="button">מחיקה</button>
@@ -1630,6 +1644,11 @@ function filesTable(rows) {
                     ${
                       file.url
                         ? `<a class="button table-button" href="${html(file.url)}" target="_blank" rel="noopener">פתיחה</a>`
+                        : ""
+                    }
+                    ${
+                      file.file_type === "recording"
+                        ? `<button class="button blue table-button" data-action="create-transcript-draft" data-id="${html(file.id)}" type="button">טיוטת תמלול</button>`
                         : ""
                     }
                     <button class="button danger table-button" data-action="delete-file" data-id="${html(file.id)}" type="button">מחיקה</button>
@@ -2347,6 +2366,100 @@ async function updateSessionDocument(patientId, session) {
   return file?.drive_file_id || "";
 }
 
+function recordingTranscriptTitle(patient, recordingFile) {
+  return `טיוטת תמלול - ${patient.child_name || patientName(recordingFile.patient_id)} - ${String(
+    recordingFile.created_at || isoDate(new Date())
+  ).slice(0, 10)} - ${String(recordingFile.id).slice(0, 8)}`;
+}
+
+function recordingTranscriptText(patient, recordingFile) {
+  return [
+    recordingTranscriptTitle(patient, recordingFile),
+    "",
+    `מטופל: ${patient.child_name || patientName(recordingFile.patient_id)}`,
+    `קובץ הקלטה: ${recordingFile.name || "-"}`,
+    `תאריך הקלטה: ${formatDate(String(recordingFile.created_at || "").slice(0, 10))}`,
+    recordingFile.drive_file_id ? `קישור להקלטה: ${driveFileUrl(recordingFile.drive_file_id)}` : "",
+    "",
+    "תמלול גולמי:",
+    "",
+    "כאן ייכנס התמלול לאחר עיבוד.",
+    "",
+    "ניקוי ועריכה:",
+    "",
+    "נקודות טיפוליות:",
+    "",
+    "משימות המשך:"
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+async function createRecordingTranscriptDraft(fileId) {
+  const recordingFile = state.files.find((file) => file.id === fileId);
+  if (!recordingFile) throw new Error("קובץ ההקלטה לא נמצא.");
+  if (recordingFile.file_type !== "recording") throw new Error("אפשר ליצור טיוטת תמלול רק מקובץ הקלטה.");
+
+  const existing = state.files.find(
+    (file) =>
+      file.patient_id === recordingFile.patient_id &&
+      file.file_type === "summary" &&
+      file.name?.includes(String(recordingFile.id).slice(0, 8))
+  );
+  if (existing) return existing;
+
+  const patient = await ensurePatientDriveFolder(recordingFile.patient_id);
+  const title = recordingTranscriptTitle(patient, recordingFile);
+  const documentFile = await googleFetch(
+    "https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,createdTime",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: title,
+        mimeType: "application/vnd.google-apps.document",
+        parents: [patient.drive_folder_id]
+      })
+    }
+  );
+
+  await googleFetch(
+    `https://docs.googleapis.com/v1/documents/${encodeURIComponent(documentFile.id)}:batchUpdate`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        requests: [
+          {
+            insertText: {
+              location: { index: 1 },
+              text: recordingTranscriptText(patient, recordingFile)
+            }
+          }
+        ]
+      })
+    }
+  );
+
+  const draft = await appendFileRecord({
+    id: id(),
+    patient_id: recordingFile.patient_id,
+    drive_file_id: documentFile.id || "",
+    drive_folder_id: patient.drive_folder_id || "",
+    name: documentFile.name || title,
+    file_type: "summary",
+    url: documentFile.webViewLink || driveFileUrl(documentFile.id),
+    created_at: documentFile.createdTime || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  });
+
+  await createSystemTask(
+    recordingFile.patient_id,
+    "עריכת טיוטת תמלול",
+    `נוצרה טיוטת תמלול עבור ההקלטה: ${recordingFile.name || "הקלטה"}`,
+    isoDate(new Date())
+  );
+  return draft;
+}
+
 async function createPatientFolder(patientNameValue) {
   if (!state.config.googleDriveRootFolderId) return { id: "", path: "" };
   const folderName = `${patientNameValue} - ${isoDate(new Date())}`;
@@ -3010,6 +3123,62 @@ async function setPaymentStatus(paymentId, status) {
   }
 }
 
+async function setReceiptStatus(paymentId, status) {
+  const payment = state.payments.find((item) => item.id === paymentId);
+  if (!payment) throw new Error("התשלום לא נמצא.");
+  if (!payment._rowNumber) throw new Error("צריך לרענן נתונים לפני עדכון התשלום.");
+
+  const updated = {
+    ...payment,
+    receipt_status: status || "needed",
+    updated_at: new Date().toISOString()
+  };
+  await updateSheetRow("payments", payment._rowNumber, updated);
+  state.payments = state.payments.map((item) => (item.id === paymentId ? updated : item));
+}
+
+function csvValue(value) {
+  const text = String(value ?? "");
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function downloadTextFile(fileName, content, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportReceiptsCsv() {
+  const rows = state.payments
+    .filter((payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued")
+    .sort((a, b) => `${a.paid_at} ${a.created_at}`.localeCompare(`${b.paid_at} ${b.created_at}`));
+  if (!rows.length) return 0;
+  const headerRow = ["תאריך", "מטופל", "סכום", "אמצעי תשלום", "מפגש", "הערות"];
+  const csvRows = [
+    headerRow.map(csvValue).join(","),
+    ...rows.map((payment) =>
+      [
+        formatDate(payment.paid_at),
+        patientName(payment.patient_id),
+        payment.amount || "",
+        paymentMethodLabel(payment.payment_method),
+        payment.session_id ? sessionLabelById(payment.session_id) : "",
+        payment.notes || ""
+      ]
+        .map(csvValue)
+        .join(",")
+    )
+  ];
+  downloadTextFile(`receipts-to-prepare-${isoDate(new Date())}.csv`, `\uFEFF${csvRows.join("\n")}`, "text/csv;charset=utf-8");
+  return rows.length;
+}
+
 async function createSystemTask(patientId, title, description = "", dueDate = "") {
   const exists = state.tasks.some(
     (task) =>
@@ -3392,6 +3561,25 @@ function bindEvents() {
         render();
       }
     }
+    if (action === "set-receipt-status") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        await setReceiptStatus(target.dataset.id, target.dataset.status || "issued");
+        state.message = "סטטוס הקבלה עודכן.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "עדכון הקבלה נכשל.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "export-receipts") {
+      const count = exportReceiptsCsv();
+      state.message = count ? `נוצר קובץ ייצוא עבור ${count} קבלות להכנה.` : "אין קבלות להכנה כרגע.";
+      state.error = "";
+      render();
+    }
     if (action === "edit-task") {
       const task = state.tasks.find((item) => item.id === target.dataset.id);
       if (!task) return;
@@ -3553,6 +3741,19 @@ function bindEvents() {
       state.currentFileId = "";
       render();
     }
+    if (action === "create-transcript-draft") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת מסמך.");
+        const draft = await createRecordingTranscriptDraft(target.dataset.id);
+        state.message = `טיוטת התמלול נוצרה ונשמרה בקבצים: ${draft.name || "מסמך תמלול"}.`;
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "יצירת טיוטת התמלול נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
     if (action === "delete-file") {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק?")) return;
 
@@ -3675,8 +3876,9 @@ function bindEvents() {
 
       if (form.dataset.form === "file") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        const isEdit = Boolean(form.dataset.id);
         await saveFile(form);
-        state.message = "הקובץ הועלה ונרשם בכרטיס המטופל.";
+        state.message = isEdit ? "פרטי הקובץ עודכנו." : "הקובץ הועלה ונרשם בכרטיס המטופל.";
       }
 
       if (form.dataset.form === "template-copy") {
