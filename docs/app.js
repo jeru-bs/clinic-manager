@@ -75,6 +75,8 @@ const SHEETS = {
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
 const GOOGLE_CONSENT_KEY = "clinic-manager-google-consent";
+const DEFAULT_SESSION_TYPES = ["טיפול", "הדרכת הורים", "שיחה", "אבחון"];
+const DEFAULT_SESSION_LOCATIONS = ["קליניקה", "בית ספר", "אונליין", "בית"];
 const state = {
   accessToken: loadStoredGoogleToken(),
   config: loadConfig(),
@@ -122,13 +124,45 @@ function loadConfig() {
       configDefaults.googleTemplatesFolderId ||
       "",
     googleSpreadsheetId:
-      saved.googleSpreadsheetId || configDefaults.googleSpreadsheetId || ""
+      saved.googleSpreadsheetId || configDefaults.googleSpreadsheetId || "",
+    sessionTypes: listText(saved.sessionTypes, configDefaults.sessionTypes, DEFAULT_SESSION_TYPES),
+    sessionLocations: listText(
+      saved.sessionLocations,
+      configDefaults.sessionLocations,
+      DEFAULT_SESSION_LOCATIONS
+    )
   };
 }
 
 function saveConfig(nextConfig) {
   state.config = { ...state.config, ...nextConfig };
   localStorage.setItem("clinic-manager-config", JSON.stringify(state.config));
+}
+
+function listText(savedValue, defaultValue, fallbackItems) {
+  if (Array.isArray(savedValue)) return savedValue.join("\n");
+  if (typeof savedValue === "string" && savedValue.trim()) return savedValue;
+  if (Array.isArray(defaultValue)) return defaultValue.join("\n");
+  if (typeof defaultValue === "string" && defaultValue.trim()) return defaultValue;
+  return fallbackItems.join("\n");
+}
+
+function optionValues(value, fallbackItems) {
+  const items = String(value || "")
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return [...new Set(items.length ? items : fallbackItems)];
+}
+
+function selectOptions(items, selectedValue = "") {
+  const options = selectedValue && !items.includes(selectedValue) ? [...items, selectedValue] : items;
+  return [
+    `<option value="">בחירה</option>`,
+    ...options.map(
+      (item) => `<option value="${html(item)}" ${item === selectedValue ? "selected" : ""}>${html(item)}</option>`
+    )
+  ].join("");
 }
 
 function loadStoredGoogleToken() {
@@ -495,7 +529,9 @@ function dashboardPage() {
   const openTasks = state.tasks.filter((task) => task.status !== "done").length;
   const activePatients = state.patients.filter((patient) => patient.status !== "archived").length;
   const today = isoDate(new Date());
-  const todaySessions = state.sessions.filter((session) => session.session_date === today).length;
+  const todayRows = sessionsForDates([today]);
+  const weekRows = sessionsForDates(dateRange(today, 7));
+  const todaySessions = todayRows.length;
 
   return shell(`
     ${header(
@@ -511,7 +547,7 @@ function dashboardPage() {
       <article class="kpi-card purple-card"><div><strong>${activePatients}</strong><span>מטופלים פעילים</span></div><span class="kpi-symbol">${icon("patients")}</span></article>
     </section>
     <section class="dashboard-grid">
-      ${sessionsPanel()}
+      ${sessionsPanel(weekRows)}
       ${paymentsPanel()}
       <div class="dashboard-full">${tasksPanel()}</div>
     </section>
@@ -683,6 +719,14 @@ function settingsPage() {
             <label for="googleTemplatesFolderId">תיקיית תבניות</label>
             <input id="googleTemplatesFolderId" name="googleTemplatesFolderId" value="${html(state.config.googleTemplatesFolderId)}" />
           </div>
+          <div class="field wide">
+            <label for="sessionTypes">סוגי מפגש</label>
+            <textarea id="sessionTypes" name="sessionTypes" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionTypes)}</textarea>
+          </div>
+          <div class="field wide">
+            <label for="sessionLocations">מיקומים למפגש</label>
+            <textarea id="sessionLocations" name="sessionLocations" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionLocations)}</textarea>
+          </div>
           <div class="toolbar wide">
             <button class="button" type="submit">שמירת הגדרות</button>
           </div>
@@ -733,11 +777,15 @@ function sessionForm(patientId) {
       </div>
       <div class="field">
         <label for="session_type">סוג מפגש</label>
-        <input id="session_type" name="session_type" placeholder="טיפול / הדרכה / שיחה" />
+        <select id="session_type" name="session_type">
+          ${selectOptions(optionValues(state.config.sessionTypes, DEFAULT_SESSION_TYPES))}
+        </select>
       </div>
       <div class="field wide">
         <label for="location">מיקום</label>
-        <input id="location" name="location" placeholder="קליניקה / בית ספר / אונליין" />
+        <select id="location" name="location">
+          ${selectOptions(optionValues(state.config.sessionLocations, DEFAULT_SESSION_LOCATIONS))}
+        </select>
       </div>
       <div class="field wide">
         <label for="summary">תיעוד טיפול</label>
@@ -851,11 +899,9 @@ function paymentsPanel(items = state.payments, patientId = "") {
 }
 
 function calendarPage() {
-  const rows = [...state.sessions].sort((a, b) =>
-    `${a.session_date} ${a.start_time}`.localeCompare(`${b.session_date} ${b.start_time}`)
-  );
   const today = isoDate(new Date());
   const days = calendarDays(state.calendarMonth);
+  const rows = sessionsForDates(days.map((day) => day.date));
   const selectedSessions = rows.filter((session) => session.session_date === state.selectedCalendarDate);
   const sessionsByDate = rows.reduce((acc, session) => {
     if (!session.session_date) return acc;
@@ -1545,6 +1591,71 @@ function fixedTimeOptions(selectedValue = "") {
   }
 
   return options.join("");
+}
+
+function fixedDayIndex(value = "") {
+  const day = String(value || "");
+  if (day.includes("ראש")) return 0;
+  if (day.includes("שני")) return 1;
+  if (day.includes("שלישי")) return 2;
+  if (day.includes("רביעי")) return 3;
+  if (day.includes("חמישי")) return 4;
+  if (day.includes("שישי")) return 5;
+  if (day.includes("שבת")) return 6;
+  return -1;
+}
+
+function actualSessionExists(patientId, dateValue) {
+  return state.sessions.some(
+    (session) => session.patient_id === patientId && session.session_date === dateValue
+  );
+}
+
+function recurringSessionForDate(patient, dateValue) {
+  if (!patient?.id || patient.status === "archived") return null;
+  if (!patient.fixed_day || !patient.fixed_time) return null;
+  const date = dateFromInput(dateValue);
+  if (fixedDayIndex(patient.fixed_day) !== date.getDay()) return null;
+  if (actualSessionExists(patient.id, dateValue)) return null;
+
+  return {
+    id: `recurring-${patient.id}-${dateValue}`,
+    patient_id: patient.id,
+    session_date: dateValue,
+    start_time: patient.fixed_time,
+    end_time: "",
+    location: optionValues(state.config.sessionLocations, DEFAULT_SESSION_LOCATIONS)[0] || "",
+    session_type: "מפגש קבוע",
+    summary: "מפגש קבוע לפי הגדרת המטופל.",
+    sensitive_notes: "",
+    calendar_event_id: "",
+    created_at: "",
+    updated_at: "",
+    is_recurring: true
+  };
+}
+
+function dateRange(startDateValue, numberOfDays) {
+  const start = dateFromInput(startDateValue);
+  return Array.from({ length: numberOfDays }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return isoDate(date);
+  });
+}
+
+function sessionsForDates(dateValues) {
+  const wantedDates = new Set(dateValues);
+  const actualSessions = state.sessions.filter((session) => wantedDates.has(session.session_date));
+  const recurringSessions = dateValues.flatMap((dateValue) =>
+    state.patients
+      .map((patient) => recurringSessionForDate(patient, dateValue))
+      .filter(Boolean)
+  );
+
+  return [...actualSessions, ...recurringSessions].sort((a, b) =>
+    `${a.session_date} ${a.start_time}`.localeCompare(`${b.session_date} ${b.start_time}`)
+  );
 }
 
 function patientName(patientId) {
