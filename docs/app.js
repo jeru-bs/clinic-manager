@@ -86,6 +86,7 @@ const state = {
   currentSessionId: "",
   currentPaymentId: "",
   currentTaskId: "",
+  currentFileId: "",
   message: "",
   error: "",
   patients: [],
@@ -104,6 +105,11 @@ const state = {
     status: "",
     patient: "",
     due: ""
+  },
+  fileFilter: {
+    patient: "",
+    type: "",
+    text: ""
   },
   profileTab: "overview",
   calendarMonth: isoDate(new Date()).slice(0, 7),
@@ -1152,6 +1158,10 @@ function reportsPage() {
   const month = state.reportMonth;
   const monthSessions = state.sessions.filter((session) => session.session_date?.startsWith(month));
   const monthPayments = state.payments.filter((payment) => payment.paid_at?.startsWith(month));
+  const monthTasks = state.tasks.filter(
+    (task) => task.due_date?.startsWith(month) || task.created_at?.startsWith(month)
+  );
+  const monthFiles = state.files.filter((file) => file.created_at?.startsWith(month));
   const paidTotal = monthPayments
     .filter((payment) => payment.payment_status === "paid")
     .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
@@ -1160,6 +1170,7 @@ function reportsPage() {
   const missingReceipts = state.payments.filter(
     (payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued"
   );
+  const openTasks = monthTasks.filter((task) => task.status !== "done");
 
   const patientRows = state.patients
     .map((patient) => {
@@ -1201,7 +1212,7 @@ function reportsPage() {
       <article class="metric blue-card"><strong>${html(formatAmount(paidTotal))}</strong><span>הכנסות בחודש</span></article>
       <article class="metric pink-card"><strong>${html(formatAmount(openTotal))}</strong><span>תשלומים פתוחים</span></article>
       <article class="metric teal-card"><strong>${monthSessions.length}</strong><span>מפגשים בחודש</span></article>
-      <article class="metric purple-card"><strong>${missingReceipts.length}</strong><span>קבלות חסרות</span></article>
+      <article class="metric purple-card"><strong>${openTasks.length}</strong><span>משימות פתוחות</span></article>
     </section>
     <section class="grid-two">
       <article class="panel">
@@ -1284,6 +1295,16 @@ function reportsPage() {
           </tbody>
         </table>
       </div>
+    </section>
+    <section class="grid-two page-gap">
+      <article class="panel">
+        <div class="panel-head"><h2>משימות לחודש</h2><span>${openTasks.length} פתוחות</span></div>
+        ${tasksTable(openTasks.slice(0, 8))}
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>קבצים שנוספו</h2><span>${monthFiles.length} בחודש</span></div>
+        ${filesTable(monthFiles.slice(0, 8))}
+      </article>
     </section>
   `);
 }
@@ -1508,8 +1529,12 @@ function fileTypeLabel(value) {
 }
 
 function fileForm(patientId = "") {
+  const editedFile =
+    state.currentFileId &&
+    state.files.find((file) => file.id === state.currentFileId && (!patientId || file.patient_id === patientId));
+  const selectedPatientId = editedFile?.patient_id || patientId;
   return `
-    <form class="form-grid inline-form" data-form="file" data-patient-id="${html(patientId)}">
+    <form class="form-grid inline-form" data-form="file" data-patient-id="${html(patientId)}" data-id="${html(editedFile?.id || "")}">
       ${
         patientId
           ? ""
@@ -1517,31 +1542,37 @@ function fileForm(patientId = "") {
               <label for="file_patient_id">מטופל</label>
               <select id="file_patient_id" name="patient_id" required>
                 <option value="">בחירה</option>
-                ${patientOptions()}
+                ${patientOptions(selectedPatientId)}
               </select>
             </div>`
       }
       <div class="field">
         <label for="file_name">שם קובץ</label>
-        <input id="file_name" name="name" placeholder="אם ריק, יישמר בשם הקובץ המקורי" />
+        <input id="file_name" name="name" placeholder="אם ריק, יישמר בשם הקובץ המקורי" value="${html(editedFile?.name || "")}" />
       </div>
       <div class="field">
         <label for="file_type">סוג</label>
         <select id="file_type" name="file_type">
-          <option value="document">מסמך</option>
-          <option value="summary">סיכום</option>
-          <option value="receipt">קבלה</option>
-          <option value="form">טופס</option>
-          <option value="recording">הקלטה</option>
-          <option value="other">אחר</option>
+          <option value="document" ${editedFile?.file_type === "document" ? "selected" : ""}>מסמך</option>
+          <option value="summary" ${editedFile?.file_type === "summary" ? "selected" : ""}>סיכום</option>
+          <option value="receipt" ${editedFile?.file_type === "receipt" ? "selected" : ""}>קבלה</option>
+          <option value="form" ${editedFile?.file_type === "form" ? "selected" : ""}>טופס</option>
+          <option value="recording" ${editedFile?.file_type === "recording" ? "selected" : ""}>הקלטה</option>
+          <option value="other" ${editedFile?.file_type === "other" ? "selected" : ""}>אחר</option>
         </select>
       </div>
       <div class="field wide">
-        <label for="file_upload">קובץ להעלאה</label>
-        <input id="file_upload" name="upload" type="file" required />
+        <label for="file_upload">${editedFile ? "החלפת קובץ" : "קובץ להעלאה"}</label>
+        <input id="file_upload" name="upload" type="file" ${editedFile ? "" : "required"} />
+        ${
+          editedFile?.url
+            ? `<small><a href="${html(editedFile.url)}" target="_blank" rel="noopener">קובץ קיים: ${html(editedFile.name || "פתיחה")}</a></small>`
+            : ""
+        }
       </div>
       <div class="toolbar wide">
-        <button class="button" type="submit">העלאת קובץ</button>
+        <button class="button" type="submit">${editedFile ? "עדכון קובץ" : "העלאת קובץ"}</button>
+        ${editedFile ? `<button class="button secondary" data-action="cancel-file-edit" type="button">ביטול עריכה</button>` : ""}
       </div>
     </form>`;
 }
@@ -1595,6 +1626,7 @@ function filesTable(rows) {
                 <td>
                   <div class="actions">
                     <button class="button secondary table-button" data-action="open-profile" data-id="${html(file.patient_id)}" type="button">כרטיס</button>
+                    <button class="button secondary table-button" data-action="edit-file" data-id="${html(file.id)}" type="button">עריכה</button>
                     ${
                       file.url
                         ? `<a class="button table-button" href="${html(file.url)}" target="_blank" rel="noopener">פתיחה</a>`
@@ -1646,8 +1678,53 @@ function filesPanel(items = state.files, patient = null) {
     </article>`;
 }
 
+function filteredFiles(rows) {
+  return rows.filter((file) => {
+    const patientOk = !state.fileFilter.patient || file.patient_id === state.fileFilter.patient;
+    const typeOk = !state.fileFilter.type || file.file_type === state.fileFilter.type;
+    const textOk =
+      !state.fileFilter.text ||
+      String(file.name || "").toLowerCase().includes(state.fileFilter.text.toLowerCase()) ||
+      patientName(file.patient_id).toLowerCase().includes(state.fileFilter.text.toLowerCase());
+    return patientOk && typeOk && textOk;
+  });
+}
+
+function fileFiltersPanel(total, shown) {
+  return `
+    <section class="panel compact-panel">
+      <div class="panel-head"><h2>סינון קבצים</h2><span>${shown} מתוך ${total}</span></div>
+      <div class="form-grid compact-form">
+        <div class="field">
+          <label for="file_filter_text">חיפוש</label>
+          <input id="file_filter_text" data-file-filter="text" value="${html(state.fileFilter.text)}" placeholder="שם קובץ או מטופל" />
+        </div>
+        <div class="field">
+          <label for="file_filter_patient">מטופל</label>
+          <select id="file_filter_patient" data-file-filter="patient">
+            <option value="" ${state.fileFilter.patient ? "" : "selected"}>כל המטופלים</option>
+            ${patientOptions(state.fileFilter.patient)}
+          </select>
+        </div>
+        <div class="field">
+          <label for="file_filter_type">סוג</label>
+          <select id="file_filter_type" data-file-filter="type">
+            <option value="" ${state.fileFilter.type ? "" : "selected"}>כל הסוגים</option>
+            <option value="document" ${state.fileFilter.type === "document" ? "selected" : ""}>מסמך</option>
+            <option value="summary" ${state.fileFilter.type === "summary" ? "selected" : ""}>סיכום</option>
+            <option value="receipt" ${state.fileFilter.type === "receipt" ? "selected" : ""}>קבלה</option>
+            <option value="form" ${state.fileFilter.type === "form" ? "selected" : ""}>טופס</option>
+            <option value="recording" ${state.fileFilter.type === "recording" ? "selected" : ""}>הקלטה</option>
+            <option value="other" ${state.fileFilter.type === "other" ? "selected" : ""}>אחר</option>
+          </select>
+        </div>
+      </div>
+    </section>`;
+}
+
 function filesPage() {
   const rows = [...state.files].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+  const shownRows = filteredFiles(rows);
   const patientsWithFolders = state.patients.filter((patient) => patient.drive_folder_id).length;
 
   return shell(`
@@ -1668,12 +1745,13 @@ function filesPage() {
       <article class="metric purple-card"><strong>${state.patients.length}</strong><span>מטופלים במערכת</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>קובץ חדש</h2><span>העלאה לתיקיית המטופל</span></div>
+      <div class="panel-head"><h2>${state.currentFileId ? "עריכת קובץ" : "קובץ חדש"}</h2><span>העלאה לתיקיית המטופל</span></div>
       ${fileForm()}
     </section>
+    ${fileFiltersPanel(rows.length, shownRows.length)}
     <section class="panel page-gap">
-      <div class="panel-head"><h2>רשימת קבצים</h2><span>${rows.length} רשומות</span></div>
-      ${filesTable(rows)}
+      <div class="panel-head"><h2>רשימת קבצים</h2><span>${shownRows.length} רשומות</span></div>
+      ${filesTable(shownRows)}
     </section>
   `);
 }
@@ -2380,14 +2458,67 @@ async function trashDriveFile(fileId) {
   );
 }
 
+async function updateDriveFileName(fileId, name) {
+  if (!fileId || !name) return;
+  await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ name })
+    }
+  );
+}
+
+async function moveDriveFile(fileId, oldFolderId, newFolderId) {
+  if (!fileId || !newFolderId || oldFolderId === newFolderId) return;
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
+  url.searchParams.set("addParents", newFolderId);
+  if (oldFolderId) url.searchParams.set("removeParents", oldFolderId);
+  url.searchParams.set("fields", "id,parents");
+  await googleFetch(url.toString(), { method: "PATCH" });
+}
+
+async function updateLinkedFileReferences(oldDriveFileId, newDriveFileId = "") {
+  if (!oldDriveFileId) return;
+  const now = new Date().toISOString();
+  const linkedPayments = state.payments.filter((payment) => payment.receipt_file_id === oldDriveFileId);
+  for (const payment of linkedPayments) {
+    if (!payment._rowNumber) continue;
+    const updated = {
+      ...payment,
+      receipt_file_id: newDriveFileId,
+      receipt_status: newDriveFileId ? payment.receipt_status || "issued" : "needed",
+      updated_at: now
+    };
+    await updateSheetRow("payments", payment._rowNumber, updated);
+    state.payments = state.payments.map((item) => (item.id === payment.id ? updated : item));
+  }
+
+  const linkedSessions = state.sessions.filter((session) => session.document_file_id === oldDriveFileId);
+  for (const session of linkedSessions) {
+    if (!session._rowNumber) continue;
+    const updated = {
+      ...session,
+      document_file_id: newDriveFileId,
+      updated_at: now
+    };
+    await updateSheetRow("sessions", session._rowNumber, updated);
+    state.sessions = state.sessions.map((item) => (item.id === session.id ? updated : item));
+  }
+}
+
 async function deleteFileRecord(fileId) {
   const file = state.files.find((item) => item.id === fileId);
   if (!file) throw new Error("הקובץ לא נמצא.");
   if (!file._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת הקובץ.");
 
-  if (file.drive_file_id) await trashDriveFile(file.drive_file_id);
+  if (file.drive_file_id) {
+    await updateLinkedFileReferences(file.drive_file_id, "");
+    await trashDriveFile(file.drive_file_id);
+  }
   await clearSheetRow("files", file._rowNumber);
   state.files = state.files.filter((item) => item.id !== fileId);
+  if (state.currentFileId === fileId) state.currentFileId = "";
 }
 
 async function ensurePatientDriveFolder(patientId) {
@@ -2977,12 +3108,58 @@ async function saveFile(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || data.patient_id || "";
   const selectedFile = form.elements.upload?.files?.[0];
+  const existingId = form.dataset.id || "";
+  const existingFile = existingId ? state.files.find((file) => file.id === existingId) : null;
   const fileName = fileNameWithFallback(data.name, selectedFile);
 
   if (!patientId) throw new Error("צריך לבחור מטופל לקובץ.");
-  if (!selectedFile) throw new Error("צריך לבחור קובץ להעלאה.");
+  if (!existingFile && !selectedFile) throw new Error("צריך לבחור קובץ להעלאה.");
+  if (existingId && !existingFile) throw new Error("הקובץ לעריכה לא נמצא.");
+  if (existingFile && !existingFile._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת הקובץ.");
 
-  await uploadPatientFile(patientId, selectedFile, data.file_type || "document", fileName);
+  if (!existingFile) {
+    await uploadPatientFile(patientId, selectedFile, data.file_type || "document", fileName);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const replacement = selectedFile
+    ? await uploadPatientFile(patientId, selectedFile, data.file_type || existingFile.file_type, fileName || selectedFile.name)
+    : null;
+
+  if (replacement) {
+    if (existingFile.drive_file_id) {
+      await updateLinkedFileReferences(existingFile.drive_file_id, replacement.drive_file_id);
+      await trashDriveFile(existingFile.drive_file_id);
+    }
+    await clearSheetRow("files", existingFile._rowNumber);
+    state.files = state.files.filter((file) => file.id !== existingFile.id);
+    state.currentFileId = "";
+    return;
+  }
+
+  const updatedName = fileName || existingFile.name || "";
+  if (updatedName && updatedName !== existingFile.name && existingFile.drive_file_id) {
+    await updateDriveFileName(existingFile.drive_file_id, updatedName);
+  }
+  let nextFolderId = existingFile.drive_folder_id || "";
+  if (patientId !== existingFile.patient_id && existingFile.drive_file_id) {
+    const nextPatient = await ensurePatientDriveFolder(patientId);
+    await moveDriveFile(existingFile.drive_file_id, existingFile.drive_folder_id, nextPatient.drive_folder_id);
+    nextFolderId = nextPatient.drive_folder_id || nextFolderId;
+  }
+
+  const updated = {
+    ...existingFile,
+    patient_id: patientId,
+    drive_folder_id: nextFolderId,
+    name: updatedName,
+    file_type: data.file_type || existingFile.file_type || "document",
+    updated_at: now
+  };
+  await updateSheetRow("files", existingFile._rowNumber, updated);
+  state.files = state.files.map((file) => (file.id === existingFile.id ? updated : file));
+  state.currentFileId = "";
 }
 
 async function createFileFromTemplate(form) {
@@ -3139,6 +3316,7 @@ function bindEvents() {
       state.currentSessionId = "";
       state.currentPaymentId = "";
       state.currentTaskId = "";
+      state.currentFileId = "";
       navigate(`patients/${target.dataset.id}`);
     }
     if (action === "profile-tab") {
@@ -3146,6 +3324,7 @@ function bindEvents() {
       if (state.profileTab !== "documentation") state.currentSessionId = "";
       if (state.profileTab !== "payments") state.currentPaymentId = "";
       if (state.profileTab !== "tasks") state.currentTaskId = "";
+      if (state.profileTab !== "files") state.currentFileId = "";
       render();
     }
     if (action === "edit-session") {
@@ -3357,6 +3536,23 @@ function bindEvents() {
         render();
       }
     }
+    if (action === "edit-file") {
+      const file = state.files.find((item) => item.id === target.dataset.id);
+      if (!file) return;
+      state.currentFileId = file.id;
+      state.profileTab = state.route === "files" ? state.profileTab : "files";
+      if (state.route === "files") {
+        render();
+      } else if (!state.route.startsWith(`patients/${file.patient_id}`)) {
+        navigate(`patients/${file.patient_id}`);
+      } else {
+        render();
+      }
+    }
+    if (action === "cancel-file-edit") {
+      state.currentFileId = "";
+      render();
+    }
     if (action === "delete-file") {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק?")) return;
 
@@ -3386,6 +3582,20 @@ function bindEvents() {
   });
 
   document.addEventListener("input", (event) => {
+    const fileFilter = event.target.closest("[data-file-filter]");
+    if (fileFilter) {
+      state.fileFilter[fileFilter.dataset.fileFilter] = fileFilter.value;
+      if (state.route === "files") {
+        const filterKey = fileFilter.dataset.fileFilter;
+        const cursor = fileFilter.selectionStart || fileFilter.value.length;
+        render();
+        const nextTarget = document.querySelector(`[data-file-filter="${filterKey}"]`);
+        nextTarget?.focus();
+        nextTarget?.setSelectionRange?.(cursor, cursor);
+      }
+      return;
+    }
+
     const target = event.target.closest("[data-patient-filter]");
     if (!target) return;
 
@@ -3401,6 +3611,13 @@ function bindEvents() {
   });
 
   document.addEventListener("change", (event) => {
+    const fileFilter = event.target.closest("[data-file-filter]");
+    if (fileFilter) {
+      state.fileFilter[fileFilter.dataset.fileFilter] = fileFilter.value;
+      if (state.route === "files") render();
+      return;
+    }
+
     const taskFilter = event.target.closest("[data-task-filter]");
     if (!taskFilter) return;
 
