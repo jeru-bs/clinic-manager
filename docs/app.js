@@ -31,6 +31,7 @@ const SHEETS = {
     "summary",
     "sensitive_notes",
     "calendar_event_id",
+    "document_file_id",
     "created_at",
     "updated_at"
   ],
@@ -82,6 +83,7 @@ const state = {
   accessToken: loadStoredGoogleToken(),
   config: loadConfig(),
   currentPatientId: "",
+  currentSessionId: "",
   message: "",
   error: "",
   patients: [],
@@ -771,43 +773,49 @@ function detail(label, value) {
 }
 
 function sessionForm(patientId) {
+  const editedSession =
+    state.currentSessionId &&
+    state.sessions.find(
+      (session) => session.id === state.currentSessionId && session.patient_id === patientId
+    );
   const today = isoDate(new Date());
   return `
-    <form class="form-grid inline-form" data-form="session" data-patient-id="${html(patientId)}">
+    <form class="form-grid inline-form" data-form="session" data-patient-id="${html(patientId)}" data-id="${html(editedSession?.id || "")}">
       <div class="field">
         <label for="session_date">תאריך מפגש</label>
-        <input class="picker-input" data-date-input id="session_date" name="session_date" readonly required type="text" value="${today}" />
+        <input class="picker-input" data-date-input id="session_date" name="session_date" readonly required type="text" value="${html(editedSession?.session_date || today)}" />
       </div>
       <div class="field">
         <label for="start_time">שעת התחלה</label>
-        <input class="picker-input" data-time-input id="start_time" name="start_time" readonly type="text" />
+        <input class="picker-input" data-time-input id="start_time" name="start_time" readonly type="text" value="${html(editedSession?.start_time || "")}" />
       </div>
       <div class="field">
         <label for="end_time">שעת סיום</label>
-        <input class="picker-input" data-time-input id="end_time" name="end_time" readonly type="text" />
+        <input class="picker-input" data-time-input id="end_time" name="end_time" readonly type="text" value="${html(editedSession?.end_time || "")}" />
       </div>
       <div class="field">
         <label for="session_type">סוג מפגש</label>
         <select id="session_type" name="session_type">
-          ${selectOptions(optionValues(state.config.sessionTypes, DEFAULT_SESSION_TYPES))}
+          ${selectOptions(optionValues(state.config.sessionTypes, DEFAULT_SESSION_TYPES), editedSession?.session_type || "")}
         </select>
       </div>
       <div class="field wide">
         <label for="location">מיקום</label>
         <select id="location" name="location">
-          ${selectOptions(optionValues(state.config.sessionLocations, DEFAULT_SESSION_LOCATIONS))}
+          ${selectOptions(optionValues(state.config.sessionLocations, DEFAULT_SESSION_LOCATIONS), editedSession?.location || "")}
         </select>
       </div>
       <div class="field wide">
         <label for="summary">תיעוד טיפול</label>
-        <textarea class="treatment-textarea" id="summary" name="summary" placeholder="כתיבה חופשית של תיעוד המפגש"></textarea>
+        <textarea class="treatment-textarea" id="summary" name="summary" placeholder="כתיבה חופשית של תיעוד המפגש">${html(editedSession?.summary || "")}</textarea>
       </div>
       <div class="field wide">
         <label for="sensitive_notes">הערות פנימיות</label>
-        <textarea id="sensitive_notes" name="sensitive_notes" placeholder="מידע פנימי שאינו מיועד לשיתוף"></textarea>
+        <textarea id="sensitive_notes" name="sensitive_notes" placeholder="מידע פנימי שאינו מיועד לשיתוף">${html(editedSession?.sensitive_notes || "")}</textarea>
       </div>
       <div class="toolbar wide">
-        <button class="button" type="submit">שמירת מפגש</button>
+        <button class="button" type="submit">${editedSession ? "עדכון מפגש" : "שמירת מפגש"}</button>
+        ${editedSession ? `<button class="button secondary" data-action="cancel-session-edit" type="button">ביטול עריכה</button>` : ""}
       </div>
     </form>`;
 }
@@ -897,6 +905,14 @@ function sessionsPanel(items = state.sessions, patientId = "") {
                     <div><strong>${html(formatDate(session.session_date))}</strong><span>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "ללא שעה")}</span></div>
                     <div><strong>${html(session.session_type || "מפגש")}</strong><span>${html(patientName(session.patient_id))}</span></div>
                     <p>${html(session.summary || "לא נכתב סיכום.")}</p>
+                    ${
+                      patientMode
+                        ? `<div class="actions">
+                            <button class="button secondary table-button" data-action="edit-session" data-id="${html(session.id)}" type="button">עריכה</button>
+                            <button class="button danger table-button" data-action="delete-session" data-id="${html(session.id)}" type="button">מחיקה</button>
+                          </div>`
+                        : ""
+                    }
                   </article>`
               )
               .join("")}</div>`
@@ -1969,6 +1985,50 @@ async function createCalendarEvent(session) {
   return result.id || "";
 }
 
+async function updateCalendarEvent(session) {
+  if (!session.calendar_event_id) return createCalendarEvent(session);
+  if (!session.session_date || !session.start_time) return session.calendar_event_id;
+  const calendarId = state.config.googleCalendarId || "primary";
+  const endTime = session.end_time || addMinutes(session.start_time, 50);
+  const patient = patientName(session.patient_id);
+  const body = {
+    summary: `${session.session_type || "מפגש"} - ${patient}`,
+    location: session.location || "",
+    description: session.summary || "",
+    start: {
+      dateTime: calendarDateTime(session.session_date, session.start_time),
+      timeZone: "Asia/Jerusalem"
+    },
+    end: {
+      dateTime: calendarDateTime(session.session_date, endTime),
+      timeZone: "Asia/Jerusalem"
+    }
+  };
+  const result = await googleFetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendarId
+    )}/events/${encodeURIComponent(session.calendar_event_id)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    }
+  );
+  return result.id || session.calendar_event_id;
+}
+
+async function deleteCalendarEvent(eventId) {
+  if (!eventId) return;
+  const calendarId = state.config.googleCalendarId || "primary";
+  await googleFetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendarId
+    )}/events/${encodeURIComponent(eventId)}`,
+    {
+      method: "DELETE"
+    }
+  );
+}
+
 function sessionDocumentText(patient, session) {
   return [
     `תיעוד מפגש - ${patient.child_name || patientName(session.patient_id)}`,
@@ -1986,9 +2046,68 @@ function sessionDocumentText(patient, session) {
   ].join("\n");
 }
 
+function sessionDocumentTitle(patient, session) {
+  return `תיעוד מפגש - ${patient.child_name || "מטופל"} - ${session.session_date} - ${String(
+    session.id
+  ).slice(0, 8)}`;
+}
+
+function sessionDocumentRecord(session) {
+  if (session.document_file_id) {
+    const byId = state.files.find((file) => file.drive_file_id === session.document_file_id);
+    if (byId) return byId;
+  }
+  return state.files.find(
+    (file) =>
+      file.patient_id === session.patient_id &&
+      file.file_type === "summary" &&
+      file.name &&
+      file.name.includes(String(session.id).slice(0, 8))
+  );
+}
+
+async function replaceDocumentText(documentId, text) {
+  const document = await googleFetch(
+    `https://docs.googleapis.com/v1/documents/${encodeURIComponent(documentId)}`,
+    { headers: {} }
+  );
+  const content = document.body?.content || [];
+  const endIndex = content.length ? content[content.length - 1].endIndex : 1;
+  const requests = [];
+  if (endIndex > 2) {
+    requests.push({
+      deleteContentRange: {
+        range: {
+          startIndex: 1,
+          endIndex: endIndex - 1
+        }
+      }
+    });
+  }
+  requests.push({
+    insertText: {
+      location: { index: 1 },
+      text
+    }
+  });
+  await googleFetch(
+    `https://docs.googleapis.com/v1/documents/${encodeURIComponent(documentId)}:batchUpdate`,
+    {
+      method: "POST",
+      body: JSON.stringify({ requests })
+    }
+  );
+}
+
 async function createSessionDocument(patientId, session) {
   const patient = await ensurePatientDriveFolder(patientId);
-  const title = `תיעוד מפגש - ${patient.child_name || "מטופל"} - ${session.session_date}`;
+  const existingRecord = sessionDocumentRecord(session);
+  if (existingRecord?.drive_file_id) {
+    await replaceDocumentText(existingRecord.drive_file_id, sessionDocumentText(patient, session));
+    return existingRecord;
+  }
+
+  const title = sessionDocumentTitle(patient, session);
   const documentFile = await googleFetch(
     "https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,createdTime",
     {
@@ -2029,6 +2148,11 @@ async function createSessionDocument(patientId, session) {
     created_at: documentFile.createdTime || new Date().toISOString(),
     updated_at: new Date().toISOString()
   });
+}
+
+async function updateSessionDocument(patientId, session) {
+  const file = await createSessionDocument(patientId, session);
+  return file?.drive_file_id || "";
 }
 
 async function createPatientFolder(patientNameValue) {
@@ -2414,15 +2538,20 @@ async function togglePatientArchive(patientId, shouldArchive) {
 async function saveSession(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || "";
+  const existingId = form.dataset.id || "";
+  const existing = existingId ? state.sessions.find((session) => session.id === existingId) : null;
   lastCalendarSyncError = "";
   lastDocumentSyncError = "";
 
   if (!patientId) throw new Error("לא נמצא מטופל לשמירת המפגש.");
   if (!data.session_date) throw new Error("תאריך מפגש הוא שדה חובה.");
+  if (existingId && !existing) throw new Error("המפגש לעריכה לא נמצא.");
+  if (existing && !existing._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת מפגש קיים.");
 
   const now = new Date().toISOString();
   const session = {
-    id: id(),
+    ...(existing || {}),
+    id: existing?.id || id(),
     patient_id: patientId,
     session_date: data.session_date,
     start_time: data.start_time || "",
@@ -2431,34 +2560,94 @@ async function saveSession(form) {
     session_type: data.session_type || "",
     summary: data.summary || "",
     sensitive_notes: data.sensitive_notes || "",
-    calendar_event_id: "",
-    created_at: now,
+    calendar_event_id: existing?.calendar_event_id || "",
+    document_file_id: existing?.document_file_id || "",
+    created_at: existing?.created_at || now,
     updated_at: now
   };
 
   try {
-    session.calendar_event_id = await createCalendarEvent(session);
+    session.calendar_event_id = existing
+      ? await updateCalendarEvent(session)
+      : await createCalendarEvent(session);
   } catch (error) {
     lastCalendarSyncError =
       error instanceof Error ? error.message : "סנכרון היומן נכשל.";
   }
 
-  const appendResult = await appendSheet("sessions", session);
-  session._rowNumber = appendedRowNumber(appendResult);
-  state.sessions = [session, ...state.sessions].sort((a, b) =>
-    `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
-  );
+  if (existing) {
+    await updateSheetRow("sessions", existing._rowNumber, session);
+    session._rowNumber = existing._rowNumber;
+    state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
+  } else {
+    const appendResult = await appendSheet("sessions", session);
+    session._rowNumber = appendedRowNumber(appendResult);
+    state.sessions = [session, ...state.sessions];
+  }
 
   try {
-    await createSessionDocument(patientId, session);
+    const documentFileId = await updateSessionDocument(patientId, session);
+    if (documentFileId && documentFileId !== session.document_file_id) {
+      session.document_file_id = documentFileId;
+      if (session._rowNumber) await updateSheetRow("sessions", session._rowNumber, session);
+      state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
+    }
   } catch (error) {
     lastDocumentSyncError =
       error instanceof Error ? error.message : "יצירת מסמך התיעוד נכשלה.";
   }
 
+  state.sessions = state.sessions.sort((a, b) =>
+    `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
+  );
+  state.currentSessionId = "";
+
   if (!session.summary?.trim()) {
     await createSystemTask(patientId, "השלמת תיעוד מפגש", `מפגש מתאריך ${formatDate(session.session_date)} נשמר ללא סיכום.`, session.session_date);
   }
+}
+
+async function unlinkSessionPayments(sessionId) {
+  const linkedPayments = state.payments.filter((payment) => payment.session_id === sessionId);
+  for (const payment of linkedPayments) {
+    if (!payment._rowNumber) continue;
+    const updated = {
+      ...payment,
+      session_id: "",
+      updated_at: new Date().toISOString()
+    };
+    await updateSheetRow("payments", payment._rowNumber, updated);
+    state.payments = state.payments.map((item) => (item.id === payment.id ? updated : item));
+  }
+}
+
+async function deleteSessionRecord(sessionId) {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  if (!session) throw new Error("המפגש לא נמצא.");
+  if (!session._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת מפגש.");
+
+  if (session.calendar_event_id) {
+    try {
+      await deleteCalendarEvent(session.calendar_event_id);
+    } catch (error) {
+      lastCalendarSyncError =
+        error instanceof Error ? error.message : "מחיקת האירוע מהיומן נכשלה.";
+    }
+  }
+
+  const documentRecord = sessionDocumentRecord(session);
+  if (documentRecord?.id) {
+    try {
+      await deleteFileRecord(documentRecord.id);
+    } catch {
+      // The session can still be removed even if an old document reference cannot be cleaned.
+    }
+  }
+
+  await unlinkSessionPayments(sessionId);
+  await clearSheetRow("sessions", session._rowNumber);
+  state.sessions = state.sessions.filter((item) => item.id !== sessionId);
+  if (state.currentSessionId === sessionId) state.currentSessionId = "";
 }
 
 async function savePayment(form) {
@@ -2736,11 +2925,39 @@ function bindEvents() {
     }
     if (action === "open-profile") {
       state.profileTab = "overview";
+      state.currentSessionId = "";
       navigate(`patients/${target.dataset.id}`);
     }
     if (action === "profile-tab") {
       state.profileTab = target.dataset.tab || "overview";
+      if (state.profileTab !== "documentation") state.currentSessionId = "";
       render();
+    }
+    if (action === "edit-session") {
+      state.currentSessionId = target.dataset.id || "";
+      state.profileTab = "documentation";
+      render();
+    }
+    if (action === "cancel-session-edit") {
+      state.currentSessionId = "";
+      render();
+    }
+    if (action === "delete-session") {
+      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המפגש?")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+        lastCalendarSyncError = "";
+        await deleteSessionRecord(target.dataset.id);
+        state.message = lastCalendarSyncError
+          ? `המפגש נמחק מהמערכת. ${lastCalendarSyncError}`
+          : "המפגש נמחק מהמערכת ומהיומן.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "מחיקת המפגש נכשלה.";
+        state.message = "";
+        render();
+      }
     }
     if (action === "toggle-patient-archive") {
       const shouldArchive = target.dataset.archive !== "restore";
