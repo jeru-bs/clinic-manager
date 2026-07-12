@@ -10,6 +10,7 @@
     "check:static": "node scripts/check-project.mjs",
     "lint": "eslint .",
     "hash-password": "node scripts/hash-password.mjs",
+    "reset-password": "node scripts/reset-password.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
