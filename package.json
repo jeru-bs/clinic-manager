@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "demo": "node scripts/local-server.mjs",
+    "check:static": "node scripts/check-project.mjs",
     "lint": "eslint .",
     "hash-password": "node scripts/hash-password.mjs",
     "typecheck": "tsc --noEmit"
