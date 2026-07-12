@@ -180,6 +180,11 @@ function saveConfig(nextConfig) {
   localStorage.setItem("clinic-manager-config", JSON.stringify(state.config));
 }
 
+function resetConfigToDefaults() {
+  localStorage.removeItem("clinic-manager-config");
+  state.config = loadConfig();
+}
+
 function listText(savedValue, defaultValue, fallbackItems) {
   if (Array.isArray(savedValue)) return savedValue.join("\n");
   if (typeof savedValue === "string" && savedValue.trim()) return savedValue;
@@ -829,8 +834,12 @@ function settingsPage() {
           <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר כרגע." : "לא מחובר כרגע."}</p>
           <p><strong>חשבון:</strong> ${state.googleUser?.email ? html(state.googleUser.email) : "לא זוהה עדיין."}</p>
           <p><strong>הרשאה:</strong> ${state.accessToken && state.authChecked ? (isAuthorizedGoogleUser() ? "מורשה." : "לא מורשה.") : "תיבדק אחרי התחברות."}</p>
+          <p><strong>מקור נוכחי ל-Google:</strong> <code>${html(window.location.origin)}</code></p>
+          <p><strong>Client ID בפועל:</strong> <code>${html(state.config.googleClientId || "לא הוגדר")}</code></p>
+          <p class="settings-hint">אם מתקבלת שגיאת origin_mismatch, צריך להוסיף ב-Google Cloud בדיוק את המקור שמופיע כאן, תחת Authorized JavaScript origins של אותו Client ID.</p>
           <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
           <button class="button secondary" data-action="force-connect-google" type="button">התחברות מחדש עם הרשאות</button>
+          <button class="button secondary" data-action="reset-google-settings" type="button">איפוס הגדרות Google לברירת המחדל</button>
           <div class="diagnostic-actions">
             <a class="button yellow" href="${html(googleApiActivationUrl("sheets.googleapis.com"))}" target="_blank" rel="noopener">הפעלת מאגר נתונים</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("drive.googleapis.com"))}" target="_blank" rel="noopener">הפעלת אחסון קבצים</a>
@@ -4125,6 +4134,13 @@ function bindEvents() {
     try {
     if (action === "connect-google") await connectGoogle();
     if (action === "force-connect-google") await connectGoogle(true);
+    if (action === "reset-google-settings") {
+      if (!window.confirm("לאפס את הגדרות Google המקומיות לערכים שמוגדרים בקובץ config.js?")) return;
+      resetConfigToDefaults();
+      state.message = "הגדרות Google המקומיות אופסו לברירת המחדל.";
+      state.error = "";
+      render();
+    }
     if (action === "refresh") {
       await loadData().catch((error) => {
         state.error = error.message;
