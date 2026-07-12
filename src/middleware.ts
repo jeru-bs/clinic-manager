@@ -2,7 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRequiredEnv } from "@/lib/env";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/session";
 
-const protectedRoutes = ["/dashboard", "/patients", "/calendar", "/settings"];
+const protectedRoutes = [
+  "/dashboard",
+  "/patients",
+  "/calendar",
+  "/tasks",
+  "/payments",
+  "/files",
+  "/settings"
+];
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname } = request.nextUrl;

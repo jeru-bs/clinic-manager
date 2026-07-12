@@ -1,13 +1,14 @@
+import Link from "next/link";
+
 export function PrimaryActionButton(): React.ReactElement {
   return (
-    <button
+    <Link
       aria-label="פעולות מהירות"
       className="floating-action"
-      disabled
-      title="פעולות מהירות יתווספו בשלב הבא"
-      type="button"
+      href="/patients"
+      title="הוספת מטופל"
     >
       +
-    </button>
+    </Link>
   );
 }

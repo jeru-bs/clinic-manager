@@ -58,11 +58,7 @@ export default function LoginPage(): React.ReactElement {
 
           {error ? <div className="form-error">{error}</div> : null}
 
-          <button
-            className="primary-button"
-            disabled={isSubmitting}
-            type="submit"
-          >
+          <button className="primary-button" disabled={isSubmitting} type="submit">
             {isSubmitting ? "בודק..." : "כניסה"}
           </button>
         </form>
