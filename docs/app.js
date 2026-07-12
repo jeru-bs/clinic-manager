@@ -1317,7 +1317,6 @@ function paymentsPage() {
   const openTotal = rows
     .filter((payment) => payment.payment_status !== "paid")
     .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
-  const receiptNeeded = rows.filter((payment) => payment.receipt_status !== "issued").length;
 
   return shell(`
     ${header(
@@ -2068,26 +2067,6 @@ function fixedDayOptions(selectedValue = "") {
       (day) => `<option value="${day}" ${day === selectedValue ? "selected" : ""}>${day}</option>`
     )
   ].join("");
-}
-
-function fixedTimeOptions(selectedValue = "") {
-  const options = [`<option value="">בחירה</option>`];
-
-  for (let hour = 7; hour <= 22; hour += 1) {
-    for (const minute of ["00", "15", "30", "45"]) {
-      if (hour === 22 && minute !== "00") continue;
-      const value = `${String(hour).padStart(2, "0")}:${minute}`;
-      options.push(
-        `<option value="${value}" ${value === selectedValue ? "selected" : ""}>${value}</option>`
-      );
-    }
-  }
-
-  if (selectedValue && !options.some((option) => option.includes(`value="${html(selectedValue)}"`))) {
-    options.push(`<option value="${html(selectedValue)}" selected>${html(selectedValue)}</option>`);
-  }
-
-  return options.join("");
 }
 
 function fixedDayIndex(value = "") {
@@ -3738,7 +3717,11 @@ async function saveBackupToDrive() {
 function backupRows(payload, tableName) {
   const rows = payload?.data?.[tableName];
   if (!Array.isArray(rows)) return [];
-  return rows.map(({ _rowNumber, ...record }) => record);
+  return rows.map((row) => {
+    const record = { ...row };
+    delete record._rowNumber;
+    return record;
+  });
 }
 
 async function clearSheetData(sheetName) {

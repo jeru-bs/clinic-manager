@@ -170,7 +170,7 @@ export function PaymentManager({
               >
                 <option value="bank_transfer">העברה</option>
                 <option value="cash">מזומן</option>
-                <option value="check">צ'ק</option>
+                <option value="check">צ&apos;ק</option>
               </select>
             </div>
             <div className="field">
