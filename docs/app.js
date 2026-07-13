@@ -113,6 +113,7 @@ const state = {
   scheduleExceptions: [],
   templates: [],
   dataHealth: null,
+  sharingSecurity: null,
   storageReadySpreadsheetId: "",
   patientFilter: {
     name: "",
@@ -957,6 +958,14 @@ function settingsPage() {
       ${dataHealthView()}
     </section>
     <section class="panel page-gap">
+      <div class="panel-head"><h2>אבטחת שיתוף</h2><span>Google Drive ו-Sheets</span></div>
+      <div class="toolbar">
+        <button class="button blue" data-action="check-sharing-security" type="button">בדיקת הרשאות שיתוף</button>
+        <button class="button yellow" data-action="repair-sharing-security" type="button">הסרת גישה ציבורית</button>
+      </div>
+      ${sharingSecurityView()}
+    </section>
+    <section class="panel page-gap">
       <div class="panel-head"><h2>חריגי יומן</h2><span>ביטולים, חופשות וחגים</span></div>
       <form class="inline-form schedule-exception-form" data-form="schedule-exception">
         <div class="field">
@@ -1030,6 +1039,79 @@ function dataHealthView() {
       </table>
     </div>
   `;
+}
+
+function sharingSecurityTargets() {
+  return [
+    ["תיקיית הקליניקה", state.config.googleDriveRootFolderId],
+    ["גיליון נתוני הקליניקה", state.config.googleSpreadsheetId],
+    ["תיקיית התבניות", state.config.googleTemplatesFolderId]
+  ].filter(([, fileId]) => fileId);
+}
+
+async function drivePermissions(fileId) {
+  const result = await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?fields=permissions(id,type,role,emailAddress,domain,allowFileDiscovery)`
+  );
+  return result?.permissions || [];
+}
+
+async function runSharingSecurityAudit() {
+  if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני בדיקת אבטחת השיתוף.");
+  const results = [];
+  for (const [label, fileId] of sharingSecurityTargets()) {
+    const permissions = await drivePermissions(fileId);
+    const publicPermissions = permissions.filter((permission) => permission.type === "anyone");
+    results.push({ label, fileId, publicPermissions });
+  }
+  state.sharingSecurity = {
+    checkedAt: new Date().toISOString(),
+    ok: results.every((item) => item.publicPermissions.length === 0),
+    results
+  };
+  return state.sharingSecurity;
+}
+
+async function repairSharingSecurity() {
+  if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני תיקון אבטחת השיתוף.");
+  let removed = 0;
+  for (const [, fileId] of sharingSecurityTargets()) {
+    const permissions = await drivePermissions(fileId);
+    for (const permission of permissions.filter((item) => item.type === "anyone")) {
+      if (!permission.id) continue;
+      await googleFetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permission.id)}`,
+        { method: "DELETE" }
+      );
+      removed += 1;
+    }
+  }
+  const report = await runSharingSecurityAudit();
+  if (!report.ok) throw new Error("נשארה הרשאת שיתוף ציבורית שלא ניתן היה להסיר אוטומטית.");
+  return removed;
+}
+
+function sharingSecurityView() {
+  const report = state.sharingSecurity;
+  if (!report) {
+    return `<div class="empty">הבדיקה רצה אוטומטית לאחר התחברות לחשבון המורשה.</div>`;
+  }
+  const rows = report.results
+    .map(
+      (item) => `<div class="security-row">
+        <strong>${html(item.label)}</strong>
+        <span class="status-pill ${item.publicPermissions.length ? "open" : "done"}">${
+          item.publicPermissions.length ? "ציבורי" : "מוגן"
+        }</span>
+      </div>`
+    )
+    .join("");
+  return `<div class="security-report">
+    <div class="health-summary ${report.ok ? "ok" : "warn"}">${
+      report.ok ? "אין הרשאות ציבוריות למשאבי הקליניקה." : "נמצאה גישה ציבורית למשאבי הקליניקה."
+    }</div>
+    ${rows}
+  </div>`;
 }
 
 function scheduleExceptionsView() {
@@ -3502,6 +3584,10 @@ async function loadData() {
   if (!isAuthorizedGoogleUser()) throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
   await loadRemoteSettings().catch(() => {});
   if (!isAuthorizedGoogleUser()) throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
+  const removedPublicPermissions = await repairSharingSecurity();
+  if (removedPublicPermissions) {
+    state.message = `הוסרו ${removedPublicPermissions} הרשאות שיתוף ציבוריות ממשאבי הקליניקה.`;
+  }
   if (!state.config.googleSpreadsheetId) return;
   await ensureSpreadsheetSchema();
   const [patients, sessions, payments, tasks, files, scheduleExceptions, templates] = await Promise.all([
@@ -4352,6 +4438,34 @@ function bindEvents() {
         render();
       } catch (error) {
         state.error = error instanceof Error ? error.message : "בדיקת תקינות הנתונים נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "check-sharing-security") {
+      try {
+        const report = await runSharingSecurityAudit();
+        state.message = report.ok
+          ? "משאבי הקליניקה אינם משותפים לציבור."
+          : "נמצאה גישה ציבורית. יש ללחוץ הסרת גישה ציבורית.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "בדיקת אבטחת השיתוף נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "repair-sharing-security") {
+      try {
+        const removed = await repairSharingSecurity();
+        state.message = removed
+          ? `הוסרו ${removed} הרשאות שיתוף ציבוריות.`
+          : "לא נמצאו הרשאות שיתוף ציבוריות.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "תיקון אבטחת השיתוף נכשל.";
         state.message = "";
         render();
       }

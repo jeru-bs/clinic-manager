@@ -19,7 +19,14 @@ const checks = [
   ["Empty allowlist denies access", app.includes("if (!allowedEmails.length) return false")],
   ["Verified Google email required", app.includes("profile?.email_verified !== true")],
   ["Automatic session restoration", app.includes("async function restoreGoogleSession()")],
-  ["Explicit device disconnect", app.includes('action === "disconnect-google"')]
+  ["Explicit device disconnect", app.includes('action === "disconnect-google"')],
+  ["Public Drive access audit", app.includes("async function runSharingSecurityAudit()")],
+  [
+    "Automatic public permission removal",
+    app.includes("async function repairSharingSecurity()") &&
+      app.includes('permission.type === "anyone"') &&
+      app.includes("const removedPublicPermissions = await repairSharingSecurity()")
+  ]
 ];
 
 let failed = false;

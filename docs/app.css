@@ -219,6 +219,10 @@ p {
   gap: 8px;
 }
 
+.panel > .toolbar {
+  padding: 12px 14px;
+}
+
 .button {
   display: inline-grid;
   min-height: 38px;
@@ -914,6 +918,22 @@ th {
 .health-summary.warn {
   background: #fff4d7;
   color: #7a5400;
+}
+
+.security-report {
+  display: grid;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.security-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--table-border);
+  border-radius: 4px;
+  padding: 9px 11px;
 }
 
 .settings-card {

@@ -18,6 +18,7 @@ This file is the compact operating contract for future work on this project. Rea
 - The static browser app stores Google access tokens in `sessionStorage` only; remembered consent is used for automatic reconnection on later visits.
 - An empty Google-account allowlist denies access. Authorized accounts must be configured explicitly.
 - Static hosting cannot protect data with server-side sessions; Google resource permissions remain the hard security boundary until the active surface moves behind a private server.
+- Every authorized data load audits the configured clinic Sheet and Drive folders and removes `anyone` permissions before business data is displayed.
 
 ## SSOT
 
