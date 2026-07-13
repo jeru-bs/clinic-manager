@@ -186,10 +186,9 @@ function loadConfig() {
       saved.googleCalendarId || configDefaults.googleCalendarId || "primary",
     googleSpreadsheetId:
       saved.googleSpreadsheetId || configDefaults.googleSpreadsheetId || "",
-    allowedUserEmails: listText(
-      saved.allowedUserEmails,
+    allowedUserEmails: mergeListText(
       configDefaults.allowedUserEmails,
-      []
+      saved.allowedUserEmails
     ),
     sessionTypes: listText(saved.sessionTypes, configDefaults.sessionTypes, DEFAULT_SESSION_TYPES),
     sessionLocations: listText(
@@ -221,6 +220,10 @@ function listText(savedValue, defaultValue, fallbackItems) {
   if (Array.isArray(defaultValue)) return defaultValue.join("\n");
   if (typeof defaultValue === "string" && defaultValue.trim()) return defaultValue;
   return fallbackItems.join("\n");
+}
+
+function mergeListText(...values) {
+  return [...new Set(values.flatMap((value) => optionValues(value, [])))].join("\n");
 }
 
 function optionValues(value, fallbackItems) {
@@ -3658,6 +3661,10 @@ async function loadRemoteSettings() {
   saveConfig({
     ...state.config,
     ...remoteConfig,
+    allowedUserEmails: mergeListText(
+      configDefaults.allowedUserEmails,
+      remoteConfig.allowedUserEmails
+    ),
     sessionTypes: listText(remoteConfig.sessionTypes, state.config.sessionTypes, DEFAULT_SESSION_TYPES),
     sessionLocations: listText(
       remoteConfig.sessionLocations,
