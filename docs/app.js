@@ -86,14 +86,18 @@ const SHEETS = {
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
 const GOOGLE_CONSENT_KEY = "clinic-manager-google-consent";
+const GOOGLE_ACCOUNT_KEY = "clinic-manager-google-account";
 const SETTINGS_FILE_NAME = "clinic-manager-settings.json";
 const DEFAULT_SESSION_TYPES = ["טיפול", "הדרכת הורים", "שיחה", "אבחון"];
 const DEFAULT_SESSION_LOCATIONS = ["קליניקה", "בית ספר", "אונליין", "בית"];
+let googleTokenExpiresAt = 0;
+let googleRefreshTimer = null;
 const state = {
   accessToken: loadStoredGoogleToken(),
   config: loadConfig(),
   googleUser: null,
   authChecked: false,
+  authRestoring: false,
   currentPatientId: "",
   currentSessionId: "",
   currentPaymentId: "",
@@ -144,6 +148,8 @@ let activeRecordingChunks = [];
 let activePickerElement = null;
 let lastCalendarSyncError = "";
 let lastDocumentSyncError = "";
+let googleAuthInFlight = false;
+let lastGoogleRestoreAttempt = 0;
 
 function loadConfig() {
   const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
@@ -213,7 +219,7 @@ function configuredEmails() {
 
 function isAuthorizedGoogleUser() {
   const allowedEmails = configuredEmails();
-  if (!allowedEmails.length) return true;
+  if (!allowedEmails.length) return false;
   return Boolean(state.googleUser?.email && allowedEmails.includes(state.googleUser.email.toLowerCase()));
 }
 
@@ -233,15 +239,17 @@ function selectOptions(items, selectedValue = "") {
 
 function loadStoredGoogleToken() {
   try {
-    const stored = JSON.parse(
-      localStorage.getItem(GOOGLE_TOKEN_KEY) || sessionStorage.getItem(GOOGLE_TOKEN_KEY) || "null"
-    );
+    const legacyToken = localStorage.getItem(GOOGLE_TOKEN_KEY);
+    const stored = JSON.parse(sessionStorage.getItem(GOOGLE_TOKEN_KEY) || legacyToken || "null");
+    localStorage.removeItem(GOOGLE_TOKEN_KEY);
 
     if (!stored?.accessToken || !stored?.expiresAt || Date.now() > stored.expiresAt) {
       clearStoredGoogleToken();
       return "";
     }
 
+    googleTokenExpiresAt = Number(stored.expiresAt);
+    if (legacyToken) sessionStorage.setItem(GOOGLE_TOKEN_KEY, JSON.stringify(stored));
     return stored.accessToken;
   } catch {
     clearStoredGoogleToken();
@@ -252,7 +260,13 @@ function loadStoredGoogleToken() {
 function clearStoredGoogleToken(resetConsent = false) {
   localStorage.removeItem(GOOGLE_TOKEN_KEY);
   sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
-  if (resetConsent) localStorage.removeItem(GOOGLE_CONSENT_KEY);
+  googleTokenExpiresAt = 0;
+  if (googleRefreshTimer) window.clearTimeout(googleRefreshTimer);
+  googleRefreshTimer = null;
+  if (resetConsent) {
+    localStorage.removeItem(GOOGLE_CONSENT_KEY);
+    localStorage.removeItem(GOOGLE_ACCOUNT_KEY);
+  }
 }
 
 function saveGoogleToken(response) {
@@ -263,9 +277,25 @@ function saveGoogleToken(response) {
     expiresAt
   });
 
-  localStorage.setItem(GOOGLE_TOKEN_KEY, payload);
   sessionStorage.setItem(GOOGLE_TOKEN_KEY, payload);
+  localStorage.removeItem(GOOGLE_TOKEN_KEY);
+  googleTokenExpiresAt = expiresAt;
   localStorage.setItem(GOOGLE_CONSENT_KEY, "yes");
+  scheduleGoogleTokenRenewal();
+}
+
+function scheduleGoogleTokenRenewal() {
+  if (googleRefreshTimer) window.clearTimeout(googleRefreshTimer);
+  googleRefreshTimer = null;
+  if (!googleTokenExpiresAt) return;
+  const delay = Math.max(30_000, googleTokenExpiresAt - Date.now() - 5 * 60_000);
+  googleRefreshTimer = window.setTimeout(() => {
+    if (document.visibilityState === "visible") {
+      connectGoogle(false, true);
+    } else {
+      googleRefreshTimer = window.setTimeout(scheduleGoogleTokenRenewal, 60_000);
+    }
+  }, delay);
 }
 
 function googleCloudProjectNumber() {
@@ -569,6 +599,11 @@ function shell(content) {
           <small>ניהול קליניקה</small>
         </div>
         <nav class="side-menu">${nav}</nav>
+        ${
+          state.accessToken
+            ? `<button class="side-signout" data-action="disconnect-google" type="button">התנתקות</button>`
+            : ""
+        }
       </aside>
       <main class="main">
         ${state.error ? `<div class="message error">${html(state.error)}</div>` : ""}
@@ -590,17 +625,26 @@ function connectionBanner() {
 function accessGatePage() {
   const allowedEmails = configuredEmails();
   const connectedEmail = state.googleUser?.email || "";
-  const subtitle = state.accessToken
+  const rememberedEmail = localStorage.getItem(GOOGLE_ACCOUNT_KEY) || "";
+  const subtitle = state.authRestoring
+    ? "משחזרים את החיבור המאובטח לחשבון Google..."
+    : state.accessToken
     ? "החשבון המחובר נבדק לפני טעינת הנתונים."
     : "יש להתחבר לחשבון Google מורשה כדי לעבוד עם נתוני הקליניקה.";
   const details = state.accessToken && connectedEmail
     ? `מחובר כעת: ${connectedEmail}`
+    : rememberedEmail && localStorage.getItem(GOOGLE_CONSENT_KEY) === "yes"
+      ? `חיבור שמור במכשיר עבור: ${rememberedEmail}`
     : allowedEmails.length
       ? `חשבונות מורשים: ${allowedEmails.join(", ")}`
-      : "לא הוגדרה רשימת מורשים. אפשר להגדיר אותה במסך ההגדרות.";
+      : "לא הוגדרה רשימת מורשים. הגישה לנתונים חסומה עד להגדרת חשבון מורשה.";
+
+  const connectAction = state.authRestoring
+    ? `<button class="button blue" disabled type="button">משחזר חיבור...</button>`
+    : `<button class="button blue" data-action="connect-google" type="button">התחברות לחשבון מורשה</button>`;
 
   return shell(`
-    ${header("כניסה למערכת", subtitle, `<button class="button blue" data-action="connect-google" type="button">התחברות לחשבון מורשה</button>`)}
+    ${header("כניסה למערכת", subtitle, connectAction)}
     <section class="panel">
       <div class="empty">
         <div>
@@ -710,9 +754,9 @@ function patientsPage() {
                   <td><span class="status-pill">${html(paymentStatusLabel(patient.payment_status))}</span></td>
                   <td>
                     <div class="actions">
-                      <button class="small-action" data-action="open-profile" data-id="${html(patient.id)}" type="button">↗</button>
-                      <button class="small-action edit" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button">✎</button>
-                      <button class="small-action danger" data-action="toggle-patient-archive" data-id="${html(patient.id)}" data-archive="${patient.status === "archived" ? "restore" : "archive"}" type="button" aria-label="${patient.status === "archived" ? "החזרה מארכיון" : "ארכוב"}">${patient.status === "archived" ? "↩" : "↓"}</button>
+                      <button class="small-action" data-action="open-profile" data-id="${html(patient.id)}" type="button" aria-label="פתיחת כרטיס מטופל" title="פתיחת כרטיס מטופל">↗</button>
+                      <button class="small-action edit" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button" aria-label="עריכת מטופל" title="עריכת מטופל">✎</button>
+                      <button class="small-action danger" data-action="toggle-patient-archive" data-id="${html(patient.id)}" data-archive="${patient.status === "archived" ? "restore" : "archive"}" type="button" aria-label="${patient.status === "archived" ? "החזרה מארכיון" : "ארכוב"}" title="${patient.status === "archived" ? "החזרה מארכיון" : "ארכוב"}">${patient.status === "archived" ? "↩" : "↓"}</button>
                     </div>
                   </td>
                 </tr>`
@@ -799,50 +843,53 @@ function profileOverviewPanel(patient) {
 function settingsPage() {
   const currentOrigin = window.location.origin;
   const activeClientId = state.config.googleClientId || "לא הוגדר";
+  const connectionAction = state.accessToken
+    ? `<button class="button secondary" data-action="disconnect-google" type="button">התנתקות מהמכשיר</button>`
+    : `<button class="button blue" data-action="connect-google" type="button">התחברות לאחסון</button>`;
   return shell(`
-    ${header("הגדרות", "חיבור הדפדפן לאחסון. פרטי החיבור נשמרים בדפדפן שלך.", `<button class="button blue" data-action="connect-google" type="button">התחברות לאחסון</button>`)}
-    <section class="grid-two">
-      <article class="panel">
+    ${header("הגדרות", "חיבור הדפדפן לאחסון. פרטי החיבור נשמרים בדפדפן שלך.", connectionAction)}
+    <section class="grid-two settings-grid">
+      <article class="panel settings-panel">
         <div class="panel-head"><h2>פרטי חיבור</h2><span>נשמר בדפדפן שלך</span></div>
-        <form class="form-grid" data-form="settings">
-          <div class="field wide">
+        <form class="form-grid settings-form" data-form="settings">
+          <div class="field settings-full">
             <label for="googleClientId">מזהה התחברות</label>
-            <input id="googleClientId" name="googleClientId" value="${html(state.config.googleClientId)}" placeholder="xxxx.apps.googleusercontent.com" />
+            <input id="googleClientId" name="googleClientId" value="${html(state.config.googleClientId)}" title="${html(state.config.googleClientId)}" placeholder="xxxx.apps.googleusercontent.com" />
           </div>
-          <div class="field wide">
+          <div class="field">
             <label for="googleSpreadsheetId">מזהה מאגר נתונים</label>
-            <input id="googleSpreadsheetId" name="googleSpreadsheetId" value="${html(state.config.googleSpreadsheetId)}" />
+            <input id="googleSpreadsheetId" name="googleSpreadsheetId" value="${html(state.config.googleSpreadsheetId)}" title="${html(state.config.googleSpreadsheetId)}" />
           </div>
-          <div class="field wide">
+          <div class="field">
             <label for="googleDriveRootFolderId">תיקיית אחסון ראשית</label>
-            <input id="googleDriveRootFolderId" name="googleDriveRootFolderId" value="${html(state.config.googleDriveRootFolderId)}" />
+            <input id="googleDriveRootFolderId" name="googleDriveRootFolderId" value="${html(state.config.googleDriveRootFolderId)}" title="${html(state.config.googleDriveRootFolderId)}" />
           </div>
-          <div class="field wide">
+          <div class="field">
             <label for="googleTemplatesFolderId">תיקיית תבניות</label>
-            <input id="googleTemplatesFolderId" name="googleTemplatesFolderId" value="${html(state.config.googleTemplatesFolderId)}" />
+            <input id="googleTemplatesFolderId" name="googleTemplatesFolderId" value="${html(state.config.googleTemplatesFolderId)}" title="${html(state.config.googleTemplatesFolderId)}" />
           </div>
-          <div class="field wide">
+          <div class="field">
             <label for="googleCalendarId">יומן לסנכרון מפגשים</label>
-            <input id="googleCalendarId" name="googleCalendarId" value="${html(state.config.googleCalendarId)}" placeholder="primary" />
+            <input id="googleCalendarId" name="googleCalendarId" value="${html(state.config.googleCalendarId)}" title="${html(state.config.googleCalendarId)}" placeholder="primary" />
           </div>
-          <div class="field wide">
+          <div class="field settings-full">
             <label for="allowedUserEmails">חשבונות Google מורשים</label>
             <textarea id="allowedUserEmails" name="allowedUserEmails" placeholder="כל שורה היא כתובת אימייל מורשית. אם הרשימה ריקה, כל חשבון Google שמאשר הרשאות יוכל להתחבר.">${html(state.config.allowedUserEmails)}</textarea>
           </div>
-          <div class="field wide">
+          <div class="field">
             <label for="sessionTypes">סוגי מפגש</label>
             <textarea id="sessionTypes" name="sessionTypes" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionTypes)}</textarea>
           </div>
-          <div class="field wide">
+          <div class="field">
             <label for="sessionLocations">מיקומים למפגש</label>
             <textarea id="sessionLocations" name="sessionLocations" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionLocations)}</textarea>
           </div>
-          <div class="toolbar wide">
+          <div class="toolbar settings-full">
             <button class="button" type="submit">שמירת הגדרות</button>
           </div>
         </form>
       </article>
-      <article class="panel">
+      <article class="panel settings-panel settings-status-panel">
         <div class="panel-head"><h2>מצב</h2><span>מערכת</span></div>
         <div class="settings-card">
           <p><strong>קוד:</strong> נטען מהאתר.</p>
@@ -850,6 +897,7 @@ function settingsPage() {
           <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר כרגע." : "לא מחובר כרגע."}</p>
           <p><strong>חשבון:</strong> ${state.googleUser?.email ? html(state.googleUser.email) : "לא זוהה עדיין."}</p>
           <p><strong>הרשאה:</strong> ${state.accessToken && state.authChecked ? (isAuthorizedGoogleUser() ? "מורשה." : "לא מורשה.") : "תיבדק אחרי התחברות."}</p>
+          <p><strong>כניסה חוזרת:</strong> ${localStorage.getItem(GOOGLE_CONSENT_KEY) === "yes" ? "חיבור אוטומטי מופעל במכשיר הזה." : "יופעל לאחר ההתחברות הראשונה."}</p>
           <label class="diagnostic-field">
             <span>מקור נוכחי ל-Google</span>
             <input readonly value="${html(currentOrigin)}" />
@@ -859,9 +907,11 @@ function settingsPage() {
             <input readonly value="${html(activeClientId)}" />
           </label>
           <p class="settings-hint">אם מתקבלת שגיאת origin_mismatch, צריך להוסיף ב-Google Cloud בדיוק את המקור שמופיע כאן, תחת Authorized JavaScript origins של אותו Client ID.</p>
-          <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
-          <button class="button secondary" data-action="force-connect-google" type="button">התחברות מחדש עם הרשאות</button>
-          <button class="button secondary" data-action="reset-google-settings" type="button">איפוס הגדרות Google לברירת המחדל</button>
+          <div class="diagnostic-actions settings-primary-actions">
+            <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
+            <button class="button secondary" data-action="force-connect-google" type="button">התחברות מחדש עם הרשאות</button>
+            <button class="button secondary" data-action="reset-google-settings" type="button">איפוס הגדרות Google לברירת המחדל</button>
+          </div>
           <div class="diagnostic-actions">
             <a class="button yellow" href="${html(googleOAuthClientUrl())}" target="_blank" rel="noopener">עריכת OAuth Client</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("sheets.googleapis.com"))}" target="_blank" rel="noopener">הפעלת מאגר נתונים</a>
@@ -1490,7 +1540,7 @@ function reportsPage() {
       <article class="metric teal-card"><strong>${monthSessions.length}</strong><span>מפגשים בחודש</span></article>
       <article class="metric purple-card"><strong>${openTasks.length}</strong><span>משימות פתוחות</span></article>
     </section>
-    <section class="grid-two">
+    <section class="grid-two reports-grid">
       <article class="panel">
         <div class="panel-head"><h2>מפגשים לפי מטופל</h2><span>${patientRows.length} מטופלים</span></div>
         <div class="table-wrap">
@@ -1572,7 +1622,7 @@ function reportsPage() {
         </table>
       </div>
     </section>
-    <section class="grid-two page-gap">
+    <section class="grid-two reports-grid page-gap">
       <article class="panel">
         <div class="panel-head"><h2>משימות לחודש</h2><span>${openTasks.length} פתוחות</span></div>
         ${tasksTable(openTasks.slice(0, 8))}
@@ -2360,15 +2410,18 @@ function receiptStatusLabel(value) {
   }[value] || "דרושה קבלה";
 }
 
-async function connectGoogle(forceConsent = false) {
+async function connectGoogle(forceConsent = false, automatic = false) {
+  if (googleAuthInFlight) return;
   state.error = "";
   state.message = "";
+  state.authRestoring = automatic;
   if (forceConsent) {
     clearStoredGoogleToken(true);
     state.accessToken = "";
   }
 
   if (!state.config.googleClientId) {
+    state.authRestoring = false;
     state.error = "צריך להכניס מזהה התחברות במסך ההגדרות.";
     navigate("settings");
     render();
@@ -2376,18 +2429,24 @@ async function connectGoogle(forceConsent = false) {
   }
 
   if (!window.google?.accounts?.oauth2) {
+    state.authRestoring = false;
     state.error = "רכיב ההתחברות עדיין לא נטען. נסו שוב בעוד רגע.";
     render();
     return;
   }
 
+  googleAuthInFlight = true;
   const tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: state.config.googleClientId,
     scope:
       "openid email profile https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/documents",
     callback: async (response) => {
+      googleAuthInFlight = false;
+      state.authRestoring = false;
       if (response.error) {
-        state.error = "ההתחברות לאחסון נכשלה.";
+        state.error = automatic
+          ? "החיבור השמור ממתין לאישור קצר של Google. לחצו התחברות כדי להמשיך."
+          : "ההתחברות לאחסון נכשלה.";
         render();
         return;
       }
@@ -2398,6 +2457,7 @@ async function connectGoogle(forceConsent = false) {
         await loadGoogleUser();
         await loadData();
         state.error = "";
+        state.message = automatic ? "החיבור לחשבון Google שוחזר אוטומטית." : "החיבור לחשבון Google הושלם.";
       } catch (error) {
         state.error = error instanceof Error ? error.message : "בדיקת ההרשאה נכשלה.";
       }
@@ -2405,9 +2465,82 @@ async function connectGoogle(forceConsent = false) {
     }
   });
 
-  tokenClient.requestAccessToken({
-    prompt: forceConsent || localStorage.getItem(GOOGLE_CONSENT_KEY) !== "yes" ? "consent" : ""
+  try {
+    tokenClient.requestAccessToken({
+      prompt: forceConsent || localStorage.getItem(GOOGLE_CONSENT_KEY) !== "yes" ? "consent" : ""
+    });
+  } catch (error) {
+    googleAuthInFlight = false;
+    state.authRestoring = false;
+    state.error = automatic
+      ? "לא ניתן היה לשחזר את החיבור אוטומטית. לחצו התחברות כדי להמשיך."
+      : error instanceof Error
+        ? error.message
+        : "ההתחברות לאחסון נכשלה.";
+    render();
+  }
+}
+
+function waitForGoogleIdentity(timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const check = () => {
+      if (window.google?.accounts?.oauth2) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      window.setTimeout(check, 100);
+    };
+    check();
   });
+}
+
+async function restoreGoogleSession() {
+  if (state.accessToken) {
+    scheduleGoogleTokenRenewal();
+    await loadData();
+    return;
+  }
+
+  if (localStorage.getItem(GOOGLE_CONSENT_KEY) !== "yes") return;
+  if (Date.now() - lastGoogleRestoreAttempt < 60_000) return;
+  lastGoogleRestoreAttempt = Date.now();
+  state.authRestoring = true;
+  render();
+  const ready = await waitForGoogleIdentity();
+  if (!ready) {
+    state.authRestoring = false;
+    state.error = "רכיב ההתחברות של Google לא נטען. לחצו התחברות כדי לנסות שוב.";
+    render();
+    return;
+  }
+  await connectGoogle(false, true);
+}
+
+function disconnectGoogle() {
+  const token = state.accessToken;
+  if (token && window.google?.accounts?.oauth2?.revoke) {
+    google.accounts.oauth2.revoke(token, () => {});
+  }
+  clearStoredGoogleToken(true);
+  state.accessToken = "";
+  state.googleUser = null;
+  state.authChecked = false;
+  state.authRestoring = false;
+  state.patients = [];
+  state.sessions = [];
+  state.payments = [];
+  state.tasks = [];
+  state.files = [];
+  state.scheduleExceptions = [];
+  state.templates = [];
+  state.message = "החיבור לחשבון Google נותק מהמכשיר הזה.";
+  state.error = "";
+  render();
 }
 
 function friendlyGoogleError(text, status) {
@@ -2491,6 +2624,13 @@ async function loadGoogleUser() {
   const profile = await googleFetch("https://www.googleapis.com/oauth2/v3/userinfo", {
     headers: {}
   });
+  if (profile?.email_verified !== true) {
+    clearStoredGoogleToken();
+    state.accessToken = "";
+    state.googleUser = null;
+    state.authChecked = false;
+    throw new Error("Google לא אישר את כתובת האימייל של החשבון המחובר.");
+  }
   state.googleUser = {
     email: profile?.email || "",
     name: profile?.name || ""
@@ -2505,8 +2645,12 @@ async function loadGoogleUser() {
     state.files = [];
     state.scheduleExceptions = [];
     state.templates = [];
+    clearStoredGoogleToken();
+    state.accessToken = "";
     throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
   }
+
+  localStorage.setItem(GOOGLE_ACCOUNT_KEY, state.googleUser.email);
 
   return state.googleUser;
 }
@@ -4174,6 +4318,7 @@ function bindEvents() {
     try {
     if (action === "connect-google") await connectGoogle();
     if (action === "force-connect-google") await connectGoogle(true);
+    if (action === "disconnect-google") disconnectGoogle();
     if (action === "reset-google-settings") {
       if (!window.confirm("לאפס את הגדרות Google המקומיות לערכים שמוגדרים בקובץ config.js?")) return;
       resetConfigToDefaults();
@@ -4844,15 +4989,23 @@ function endBusyForm(form) {
 }
 
 window.addEventListener("hashchange", render);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (state.accessToken && googleTokenExpiresAt && googleTokenExpiresAt - Date.now() <= 5 * 60_000) {
+    connectGoogle(false, true);
+    return;
+  }
+  if (!state.accessToken && localStorage.getItem(GOOGLE_CONSENT_KEY) === "yes") {
+    restoreGoogleSession().catch(() => {});
+  }
+});
 render();
 bindEvents();
 
-if (state.accessToken) {
-  loadData()
-    .then(render)
-    .catch((error) => {
-      state.error =
-        error instanceof Error ? error.message : "טעינת הנתונים נכשלה.";
-      render();
-    });
-}
+restoreGoogleSession()
+  .then(render)
+  .catch((error) => {
+    state.authRestoring = false;
+    state.error = error instanceof Error ? error.message : "טעינת הנתונים נכשלה.";
+    render();
+  });

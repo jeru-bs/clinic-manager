@@ -15,6 +15,9 @@ This file is the compact operating contract for future work on this project. Rea
 - `docs/app.js` is currently the main UI, Google integration, storage, and workflow layer.
 - `src/` is a Next.js app surface and should not be treated as the live product unless a task explicitly moves work there.
 - `scripts/serve-docs.mjs` serves the active app locally with `npm.cmd run demo`.
+- The static browser app stores Google access tokens in `sessionStorage` only; remembered consent is used for automatic reconnection on later visits.
+- An empty Google-account allowlist denies access. Authorized accounts must be configured explicitly.
+- Static hosting cannot protect data with server-side sessions; Google resource permissions remain the hard security boundary until the active surface moves behind a private server.
 
 ## SSOT
 

@@ -9,6 +9,7 @@
     "demo": "node scripts/serve-docs.mjs",
     "demo:server": "node scripts/local-server.mjs",
     "check:static": "node scripts/check-project.mjs",
+    "check:security": "node scripts/check-browser-security.mjs",
     "lint": "eslint .",
     "hash-password": "node scripts/hash-password.mjs",
     "reset-password": "node scripts/reset-password.mjs",
