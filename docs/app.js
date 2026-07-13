@@ -2436,7 +2436,7 @@ async function deleteScheduleException(exceptionId) {
   if (!exception) throw new Error("חריג היומן לא נמצא.");
   if (!exception._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת חריג יומן.");
 
-  await clearSheetRow("schedule_exceptions", exception._rowNumber);
+  await clearSheetRow("schedule_exceptions", exception._rowNumber, exception);
   state.scheduleExceptions = state.scheduleExceptions.filter((item) => item.id !== exceptionId);
 }
 
@@ -2890,8 +2890,14 @@ async function readSheet(sheetName) {
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
   const result = await googleFetch(url);
   return (result.values || [])
-    .map((row, index) => ({ ...rowToRecord(columns, row), _rowNumber: String(index + 2) }))
+    .map((row, index) => loadedSheetRecord(columns, row, String(index + 2)))
     .filter((record) => columns.some((column) => record[column]));
+}
+
+function loadedSheetRecord(columns, row, rowNumber) {
+  const record = { ...rowToRecord(columns, row), _rowNumber: String(rowNumber) };
+  record._loadedVersion = WorkflowCore.recordVersion(record);
+  return record;
 }
 
 async function getSpreadsheetSheetNames() {
@@ -3019,10 +3025,12 @@ async function appendSheet(sheetName, record) {
   );
   url.searchParams.set("valueInputOption", "RAW");
   url.searchParams.set("insertDataOption", "INSERT_ROWS");
-  return googleFetch(url.toString(), {
+  const result = await googleFetch(url.toString(), {
     method: "POST",
     body: JSON.stringify({ values: [recordToRow(columns, record)] })
   });
+  record._loadedVersion = WorkflowCore.recordVersion(record);
+  return result;
 }
 
 function appendedRowNumber(result) {
@@ -3030,7 +3038,40 @@ function appendedRowNumber(result) {
   return range.match(/![A-Z]+(\d+):/)?.[1] || "";
 }
 
-async function updateSheetRow(sheetName, rowNumber, record) {
+async function readSheetRow(sheetName, rowNumber) {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  const columns = SHEETS[sheetName];
+  const range = `${sheetName}!A${rowNumber}:${String.fromCharCode(64 + columns.length)}${rowNumber}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+  const result = await googleFetch(url);
+  const row = result.values?.[0];
+  if (!row || !columns.some((_, index) => row[index])) return null;
+  return loadedSheetRecord(columns, row, rowNumber);
+}
+
+function stateCollectionName(sheetName) {
+  if (sheetName === "schedule_exceptions") return "scheduleExceptions";
+  if (sheetName === "audit_log") return "auditLog";
+  return sheetName;
+}
+
+async function refreshSheetState(sheetName) {
+  const collectionName = stateCollectionName(sheetName);
+  if (!Array.isArray(state[collectionName])) return;
+  state[collectionName] = await readSheet(sheetName);
+}
+
+async function assertSheetRowCurrent(sheetName, rowNumber, expectedRecord) {
+  const current = await readSheetRow(sheetName, rowNumber);
+  if (!WorkflowCore.rowConflict(current, expectedRecord)) return current;
+  await refreshSheetState(sheetName).catch(() => {});
+  const error = new Error("הרשומה השתנתה בידי משתמש אחר. הנתונים רועננו; יש לבדוק את השינויים ולנסות שוב.");
+  error.code = "ROW_CONFLICT";
+  throw error;
+}
+
+async function updateSheetRow(sheetName, rowNumber, record, expectedRecord = record) {
+  await assertSheetRowCurrent(sheetName, rowNumber, expectedRecord);
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
   const range = `${sheetName}!A${rowNumber}:${String.fromCharCode(64 + columns.length)}${rowNumber}`;
@@ -3042,9 +3083,11 @@ async function updateSheetRow(sheetName, rowNumber, record) {
     method: "PUT",
     body: JSON.stringify({ values: [recordToRow(columns, record)] })
   });
+  record._loadedVersion = WorkflowCore.recordVersion(record);
 }
 
-async function clearSheetRow(sheetName, rowNumber) {
+async function clearSheetRow(sheetName, rowNumber, expectedRecord) {
+  await assertSheetRowCurrent(sheetName, rowNumber, expectedRecord);
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
   const range = `${sheetName}!A${rowNumber}:${String.fromCharCode(64 + columns.length)}${rowNumber}`;
@@ -3101,8 +3144,10 @@ async function appendAuditEntry(meta, mutations) {
 async function applyAuditMutations(mutations) {
   for (const mutation of mutations) {
     if (!mutation.rowNumber || !SHEETS[mutation.table]) throw new Error("רישום ה-Audit אינו מכיל מיקום שחזור תקין.");
-    if (mutation.after) await updateSheetRow(mutation.table, mutation.rowNumber, mutation.after);
-    else await clearSheetRow(mutation.table, mutation.rowNumber);
+    const collection = state[stateCollectionName(mutation.table)] || [];
+    const expected = collection.find((record) => record.id === mutation.before?.id) || mutation.before;
+    if (mutation.after) await updateSheetRow(mutation.table, mutation.rowNumber, mutation.after, expected);
+    else await clearSheetRow(mutation.table, mutation.rowNumber, expected);
   }
 }
 
@@ -3659,11 +3704,12 @@ async function deleteFileRecord(fileId) {
   if (!file) throw new Error("הקובץ לא נמצא.");
   if (!file._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת הקובץ.");
 
+  await assertSheetRowCurrent("files", file._rowNumber, file);
   if (file.drive_file_id) {
     await updateLinkedFileReferences(file.drive_file_id, "");
     await trashDriveFile(file.drive_file_id);
   }
-  await clearSheetRow("files", file._rowNumber);
+  await clearSheetRow("files", file._rowNumber, file);
   state.files = state.files.filter((item) => item.id !== fileId);
   if (state.currentFileId === fileId) state.currentFileId = "";
 }
@@ -3674,6 +3720,7 @@ async function ensurePatientDriveFolder(patientId) {
   if (patient.drive_folder_id) return patient;
   if (!patient._rowNumber) throw new Error("צריך לרענן נתונים לפני יצירת תיקייה למטופל הזה.");
 
+  await assertSheetRowCurrent("patients", patient._rowNumber, patient);
   const folder = await createPatientFolder(patient.child_name);
   if (!folder.id) throw new Error("לא הוגדרה תיקיית אחסון ראשית במסך ההגדרות.");
 
@@ -3884,6 +3931,7 @@ async function savePatient(form) {
   const existingId = form.dataset.id || "";
   const existing = existingId ? state.patients.find((patient) => patient.id === existingId) : null;
   if (!data.child_name) throw new Error("שם המטופל הוא שדה חובה.");
+  if (existing?._rowNumber) await assertSheetRowCurrent("patients", existing._rowNumber, existing);
 
   const now = new Date().toISOString();
   const folder = existing?.drive_folder_id
@@ -3961,6 +4009,7 @@ async function saveSession(form) {
   if (!data.session_date) throw new Error("תאריך מפגש הוא שדה חובה.");
   if (existingId && !existing) throw new Error("המפגש לעריכה לא נמצא.");
   if (existing && !existing._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת מפגש קיים.");
+  if (existing) await assertSheetRowCurrent("sessions", existing._rowNumber, existing);
 
   const now = new Date().toISOString();
   const session = {
@@ -4040,6 +4089,7 @@ async function deleteSessionRecord(sessionId) {
   if (!session) throw new Error("המפגש לא נמצא.");
   if (!session._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת מפגש.");
 
+  await assertSheetRowCurrent("sessions", session._rowNumber, session);
   if (session.calendar_event_id) {
     try {
       await deleteCalendarEvent(session.calendar_event_id);
@@ -4059,7 +4109,7 @@ async function deleteSessionRecord(sessionId) {
   }
 
   await unlinkSessionPayments(sessionId);
-  await clearSheetRow("sessions", session._rowNumber);
+  await clearSheetRow("sessions", session._rowNumber, session);
   state.sessions = state.sessions.filter((item) => item.id !== sessionId);
   if (state.currentSessionId === sessionId) state.currentSessionId = "";
 }
@@ -4075,6 +4125,7 @@ async function savePayment(form) {
   if (!data.amount) throw new Error("סכום התשלום הוא שדה חובה.");
   if (existingId && !existingPayment) throw new Error("התשלום לעריכה לא נמצא.");
   if (existingPayment && !existingPayment._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת התשלום.");
+  if (existingPayment) await assertSheetRowCurrent("payments", existingPayment._rowNumber, existingPayment);
 
   const now = new Date().toISOString();
   const receiptFile = receiptUpload
@@ -4135,8 +4186,9 @@ async function deletePaymentRecord(paymentId) {
   if (!payment) throw new Error("התשלום לא נמצא.");
   if (!payment._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת התשלום.");
 
+  await assertSheetRowCurrent("payments", payment._rowNumber, payment);
   if (payment.receipt_file_id) await deleteFileRecordByDriveId(payment.receipt_file_id);
-  await clearSheetRow("payments", payment._rowNumber);
+  await clearSheetRow("payments", payment._rowNumber, payment);
   state.payments = state.payments.filter((item) => item.id !== paymentId);
   if (state.currentPaymentId === paymentId) state.currentPaymentId = "";
 }
@@ -4147,6 +4199,7 @@ async function deletePaymentReceipt(paymentId) {
   if (!payment._rowNumber) throw new Error("צריך לרענן נתונים לפני עדכון התשלום.");
   if (!payment.receipt_file_id) return;
 
+  await assertSheetRowCurrent("payments", payment._rowNumber, payment);
   await deleteFileRecordByDriveId(payment.receipt_file_id);
   const updated = {
     ...payment,
@@ -4487,7 +4540,7 @@ async function deleteTaskRecord(taskId) {
   if (!task) throw new Error("המשימה לא נמצאה.");
   if (!task._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת המשימה.");
 
-  await clearSheetRow("tasks", task._rowNumber);
+  await clearSheetRow("tasks", task._rowNumber, task);
   state.tasks = state.tasks.filter((item) => item.id !== taskId);
   if (state.currentTaskId === taskId) state.currentTaskId = "";
 }
@@ -4519,6 +4572,7 @@ async function saveFile(form) {
   if (!existingFile && !selectedFile) throw new Error("צריך לבחור קובץ להעלאה.");
   if (existingId && !existingFile) throw new Error("הקובץ לעריכה לא נמצא.");
   if (existingFile && !existingFile._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת הקובץ.");
+  if (existingFile) await assertSheetRowCurrent("files", existingFile._rowNumber, existingFile);
 
   if (!existingFile) {
     await uploadPatientFile(patientId, selectedFile, data.file_type || "document", fileName);
@@ -4535,7 +4589,7 @@ async function saveFile(form) {
       await updateLinkedFileReferences(existingFile.drive_file_id, replacement.drive_file_id);
       await trashDriveFile(existingFile.drive_file_id);
     }
-    await clearSheetRow("files", existingFile._rowNumber);
+    await clearSheetRow("files", existingFile._rowNumber, existingFile);
     state.files = state.files.filter((file) => file.id !== existingFile.id);
     state.currentFileId = "";
     return;

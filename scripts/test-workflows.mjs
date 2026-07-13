@@ -45,6 +45,22 @@ const withoutRows = (snapshot) => Object.fromEntries(
 );
 assert.deepEqual(withoutRows(core.snapshot(restored)), withoutRows(before), "undo should reverse every mutation in reverse order");
 
+const loadedTask = { id: "task-1", title: "מקורי", status: "open", _rowNumber: "2" };
+loadedTask._loadedVersion = core.recordVersion(loadedTask);
+assert.equal(core.rowConflict({ ...loadedTask }, loadedTask), false, "unchanged remote row should remain writable");
+assert.equal(
+  core.rowConflict({ ...loadedTask, title: "נערך במקום אחר" }, loadedTask),
+  true,
+  "a concurrent edit must be detected before writing"
+);
+assert.equal(
+  core.rowConflict({ ...loadedTask, id: "task-replaced" }, loadedTask),
+  true,
+  "a row replaced or moved by another user must be detected"
+);
+assert.equal(core.rowConflict(null, loadedTask), true, "a concurrently deleted row must be detected");
+assert.equal(core.cleanRecord(loadedTask)._loadedVersion, undefined, "local concurrency metadata must not enter audit or backup data");
+
 assert.equal(core.reminderState({ status: "open", reminder_at: "2026-07-12" }, "2026-07-13"), "overdue");
 assert.equal(core.reminderState({ status: "open", reminder_at: "2026-07-13" }, "2026-07-13"), "today");
 assert.equal(core.reminderState({ status: "done", reminder_at: "2026-07-12" }, "2026-07-13"), "inactive");
@@ -80,4 +96,4 @@ try {
 }
 assert.deepEqual(live, rollback, "failed restore should roll back to the complete pre-restore snapshot");
 
-console.log("Workflow tests: audit/undo, reminders, Google failures, backup validation and restore rollback: ok");
+console.log("Workflow tests: concurrency, audit/undo, reminders, Google failures, backup validation and restore rollback: ok");

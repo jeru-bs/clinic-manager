@@ -7,7 +7,24 @@
     if (!record) return null;
     const copy = { ...record };
     delete copy._rowNumber;
+    delete copy._loadedVersion;
     return copy;
+  }
+
+  function recordVersion(record) {
+    if (!record) return "";
+    const clean = cleanRecord(record);
+    return JSON.stringify(
+      Object.keys(clean)
+        .sort()
+        .map((key) => [key, clean[key] ?? ""])
+    );
+  }
+
+  function rowConflict(current, expected) {
+    if (!current || !expected) return true;
+    if (String(current.id || "") !== String(expected.id || "")) return true;
+    return Boolean(expected._loadedVersion && recordVersion(current) !== expected._loadedVersion);
   }
 
   function snapshot(collections) {
@@ -88,7 +105,18 @@
     return "unknown";
   }
 
-  const api = { TABLES, cleanRecord, snapshot, diff, inverse, reminderState, validateBackup, googleFailure };
+  const api = {
+    TABLES,
+    cleanRecord,
+    recordVersion,
+    rowConflict,
+    snapshot,
+    diff,
+    inverse,
+    reminderState,
+    validateBackup,
+    googleFailure
+  };
   root.CLINIC_WORKFLOW_CORE = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

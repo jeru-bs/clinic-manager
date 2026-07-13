@@ -11,7 +11,8 @@
     "check:static": "node scripts/check-project.mjs",
     "check:security": "node scripts/check-browser-security.mjs",
     "test:workflows": "node scripts/test-workflows.mjs",
-    "release:check": "npm run check:static && npm run check:security && npm run test:workflows && npm run lint",
+    "test:browser": "playwright test",
+    "release:check": "npm run check:static && npm run check:security && npm run test:workflows && npm run lint && npm run test:browser",
     "lint": "eslint .",
     "hash-password": "node scripts/hash-password.mjs",
     "reset-password": "node scripts/reset-password.mjs",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "3.3.1",
+    "@playwright/test": "^1.61.1",
     "@types/node": "22.15.34",
     "@types/react": "19.0.14",
     "@types/react-dom": "19.0.6",
