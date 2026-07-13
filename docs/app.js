@@ -274,6 +274,14 @@ function googleApiActivationUrl(serviceName) {
     : `https://console.cloud.google.com/apis/library/${service}`;
 }
 
+function googleOAuthClientUrl() {
+  const clientId = state.config.googleClientId || "";
+  const projectNumber = googleCloudProjectNumber();
+  if (!clientId) return "https://console.cloud.google.com/apis/credentials";
+  const projectQuery = projectNumber ? `?project=${encodeURIComponent(projectNumber)}` : "";
+  return `https://console.cloud.google.com/apis/credentials/oauthclient/${encodeURIComponent(clientId)}${projectQuery}`;
+}
+
 function getRoute() {
   return location.hash.replace(/^#\/?/, "") || "dashboard";
 }
@@ -783,6 +791,8 @@ function profileOverviewPanel(patient) {
 }
 
 function settingsPage() {
+  const currentOrigin = window.location.origin;
+  const activeClientId = state.config.googleClientId || "לא הוגדר";
   return shell(`
     ${header("הגדרות", "חיבור הדפדפן לאחסון. פרטי החיבור נשמרים בדפדפן שלך.", `<button class="button blue" data-action="connect-google" type="button">התחברות לאחסון</button>`)}
     <section class="grid-two">
@@ -834,13 +844,20 @@ function settingsPage() {
           <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר כרגע." : "לא מחובר כרגע."}</p>
           <p><strong>חשבון:</strong> ${state.googleUser?.email ? html(state.googleUser.email) : "לא זוהה עדיין."}</p>
           <p><strong>הרשאה:</strong> ${state.accessToken && state.authChecked ? (isAuthorizedGoogleUser() ? "מורשה." : "לא מורשה.") : "תיבדק אחרי התחברות."}</p>
-          <p><strong>מקור נוכחי ל-Google:</strong> <code>${html(window.location.origin)}</code></p>
-          <p><strong>Client ID בפועל:</strong> <code>${html(state.config.googleClientId || "לא הוגדר")}</code></p>
+          <label class="diagnostic-field">
+            <span>מקור נוכחי ל-Google</span>
+            <input readonly value="${html(currentOrigin)}" />
+          </label>
+          <label class="diagnostic-field">
+            <span>Client ID בפועל</span>
+            <input readonly value="${html(activeClientId)}" />
+          </label>
           <p class="settings-hint">אם מתקבלת שגיאת origin_mismatch, צריך להוסיף ב-Google Cloud בדיוק את המקור שמופיע כאן, תחת Authorized JavaScript origins של אותו Client ID.</p>
           <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
           <button class="button secondary" data-action="force-connect-google" type="button">התחברות מחדש עם הרשאות</button>
           <button class="button secondary" data-action="reset-google-settings" type="button">איפוס הגדרות Google לברירת המחדל</button>
           <div class="diagnostic-actions">
+            <a class="button yellow" href="${html(googleOAuthClientUrl())}" target="_blank" rel="noopener">עריכת OAuth Client</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("sheets.googleapis.com"))}" target="_blank" rel="noopener">הפעלת מאגר נתונים</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("drive.googleapis.com"))}" target="_blank" rel="noopener">הפעלת אחסון קבצים</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("calendar.googleapis.com"))}" target="_blank" rel="noopener">הפעלת יומן</a>

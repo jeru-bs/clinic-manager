@@ -913,6 +913,29 @@ th {
   gap: 8px;
 }
 
+.diagnostic-field {
+  display: grid;
+  gap: 6px;
+}
+
+.diagnostic-field span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.diagnostic-field input {
+  width: 100%;
+  border: 1px solid var(--table-border);
+  border-radius: 4px;
+  background: #f9fbfd;
+  padding: 10px 12px;
+  color: var(--text);
+  direction: ltr;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.88rem;
+}
+
 .settings-hint {
   font-size: 0.92rem;
   line-height: 1.55;
