@@ -168,6 +168,7 @@ let lastCalendarSyncError = "";
 let lastDocumentSyncError = "";
 let googleAuthInFlight = false;
 let lastGoogleRestoreAttempt = 0;
+let drawerReturnFocus = null;
 
 function loadConfig() {
   const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
@@ -604,7 +605,7 @@ function shell(content) {
   ]
     .map(
       ([key, iconName, label]) => `
-        <a class="side-link ${activeKey() === key ? "active" : ""}" href="#/${key}">
+        <a class="side-link ${activeKey() === key ? "active" : ""}" href="#/${key}" ${activeKey() === key ? 'aria-current="page"' : ""}>
           <span class="side-glyph">${icon(iconName)}</span>
           <span>${label}</span>
         </a>`
@@ -613,13 +614,13 @@ function shell(content) {
 
   return `
     <div class="app-shell">
-      <aside class="side-nav">
+      <aside class="side-nav" aria-label="ניווט במערכת">
         <div class="side-brand">
           <img class="side-brand-logo" src="./assets/malka-logo.png" alt="מלכה זיידמן" />
           <span>מלכה זיידמן</span>
           <small>ניהול קליניקה</small>
         </div>
-        <nav class="side-menu">${nav}</nav>
+        <nav class="side-menu" aria-label="ניווט ראשי">${nav}</nav>
         ${
           state.accessToken
             ? `<button class="side-signout" data-action="disconnect-google" type="button">התנתקות</button>`
@@ -627,8 +628,8 @@ function shell(content) {
         }
       </aside>
       <main class="main">
-        ${state.error ? `<div class="message error">${html(state.error)}</div>` : ""}
-        ${state.message ? `<div class="message">${html(state.message)}${state.lastUndoActionId ? ` <button class="button secondary message-action" data-action="undo-last-action" data-id="${html(state.lastUndoActionId)}" type="button">ביטול הפעולה</button>` : ""}</div>` : ""}
+        ${state.error ? `<div class="message error" role="alert" aria-live="assertive">${html(state.error)}</div>` : ""}
+        ${state.message ? `<div class="message" role="status" aria-live="polite">${html(state.message)}${state.lastUndoActionId ? ` <button class="button secondary message-action" data-action="undo-last-action" data-id="${html(state.lastUndoActionId)}" type="button">ביטול הפעולה</button>` : ""}</div>` : ""}
         ${content}
       </main>
     </div>`;
@@ -636,10 +637,11 @@ function shell(content) {
 
 function connectionBanner() {
   if (state.accessToken) return "";
+  const connecting = googleAuthInFlight || state.authRestoring;
   return `
-    <div class="message">
-      יש להתחבר לאחסון כדי לקרוא ולשמור נתונים.
-      <button class="button blue" data-action="connect-google" type="button">התחברות לאחסון</button>
+    <div class="message" role="status" aria-live="polite">
+      ${connecting ? "ממתינים לאישור בחלון Google…" : "יש להתחבר לאחסון כדי לקרוא ולשמור נתונים."}
+      <button class="button blue" data-action="connect-google" type="button" ${connecting ? "disabled" : ""}>${connecting ? "מתחבר…" : "התחברות לאחסון"}</button>
     </div>`;
 }
 
@@ -653,15 +655,15 @@ function accessGatePage() {
     ? "החשבון המחובר נבדק לפני טעינת הנתונים."
     : "יש להתחבר לחשבון Google מורשה כדי לעבוד עם נתוני הקליניקה.";
   const details = state.accessToken && connectedEmail
-    ? `מחובר כעת: ${connectedEmail}`
+    ? "חשבון Google מחובר ונמצא בבדיקה."
     : rememberedEmail && localStorage.getItem(GOOGLE_CONSENT_KEY) === "yes"
-      ? `חיבור שמור במכשיר עבור: ${rememberedEmail}`
+      ? "נמצא חיבור Google שמור במכשיר הזה."
     : allowedEmails.length
-      ? `חשבונות מורשים: ${allowedEmails.join(", ")}`
+      ? "הכניסה מוגבלת לחשבונות Google שאושרו מראש."
       : "לא הוגדרה רשימת מורשים. הגישה לנתונים חסומה עד להגדרת חשבון מורשה.";
 
-  const connectAction = state.authRestoring
-    ? `<button class="button blue" disabled type="button">משחזר חיבור...</button>`
+  const connectAction = state.authRestoring || googleAuthInFlight
+    ? `<button class="button blue" disabled type="button">מתחבר…</button>`
     : `<button class="button blue" data-action="connect-google" type="button">התחברות לחשבון מורשה</button>`;
 
   return shell(`
@@ -754,10 +756,10 @@ function patientsPage() {
               <th>פעולות</th>
             </tr>
             <tr class="filters">
-              <td><input class="table-filter" placeholder="חיפוש שם" data-patient-filter="name" value="${html(filters.name)}" /></td>
-              <td><input class="table-filter" placeholder="מוסד" data-patient-filter="school" value="${html(filters.school)}" /></td>
-              <td><input class="table-filter" placeholder="סוג טיפול" data-patient-filter="treatment" value="${html(filters.treatment)}" /></td>
-              <td><input class="table-filter" placeholder="סטטוס" data-patient-filter="status" value="${html(filters.status)}" /></td>
+              <td><input class="table-filter" aria-label="חיפוש מטופל לפי שם" placeholder="חיפוש שם" data-patient-filter="name" value="${html(filters.name)}" /></td>
+              <td><input class="table-filter" aria-label="סינון לפי מוסד" placeholder="מוסד" data-patient-filter="school" value="${html(filters.school)}" /></td>
+              <td><input class="table-filter" aria-label="סינון לפי סוג טיפול" placeholder="סוג טיפול" data-patient-filter="treatment" value="${html(filters.treatment)}" /></td>
+              <td><input class="table-filter" aria-label="סינון לפי סטטוס" placeholder="סטטוס" data-patient-filter="status" value="${html(filters.status)}" /></td>
               <td></td>
             </tr>
           </thead>
@@ -866,7 +868,7 @@ function settingsPage() {
   const activeClientId = state.config.googleClientId || "לא הוגדר";
   const connectionAction = state.accessToken
     ? `<button class="button secondary" data-action="disconnect-google" type="button">התנתקות מהמכשיר</button>`
-    : `<button class="button blue" data-action="connect-google" type="button">התחברות לאחסון</button>`;
+    : `<button class="button blue" data-action="connect-google" type="button" ${googleAuthInFlight || state.authRestoring ? "disabled" : ""}>${googleAuthInFlight || state.authRestoring ? "מתחבר…" : "התחברות לאחסון"}</button>`;
   return shell(`
     ${header("הגדרות", "", connectionAction)}
     <section class="grid-two settings-grid">
@@ -917,13 +919,13 @@ function settingsPage() {
           <p><strong>חשבון:</strong> ${state.googleUser?.email ? html(state.googleUser.email) : "לא זוהה עדיין."}</p>
           <p><strong>הרשאה:</strong> ${state.accessToken && state.authChecked ? (isAuthorizedGoogleUser() ? "מורשה." : "לא מורשה.") : "תיבדק אחרי התחברות."}</p>
           <p><strong>כניסה חוזרת:</strong> ${localStorage.getItem(GOOGLE_CONSENT_KEY) === "yes" ? "חיבור אוטומטי מופעל במכשיר הזה." : "יופעל לאחר ההתחברות הראשונה."}</p>
-          <label class="diagnostic-field">
+          <label class="diagnostic-field" for="currentGoogleOrigin">
             <span>מקור נוכחי ל-Google</span>
-            <input readonly value="${html(currentOrigin)}" />
+            <input id="currentGoogleOrigin" readonly value="${html(currentOrigin)}" />
           </label>
-          <label class="diagnostic-field">
+          <label class="diagnostic-field" for="activeGoogleClientId">
             <span>Client ID בפועל</span>
-            <input readonly value="${html(activeClientId)}" />
+            <input id="activeGoogleClientId" readonly value="${html(activeClientId)}" />
           </label>
           <div class="diagnostic-actions settings-primary-actions">
             <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
@@ -959,7 +961,7 @@ function settingsPage() {
         <button class="button secondary" data-action="export-table" data-table="tasks" type="button">ייצוא משימות</button>
       </div>
       <div class="restore-box">
-        <label class="field">
+        <label class="field" for="restoreBackupFile">
           <span>שחזור מגיבוי JSON</span>
           <input id="restoreBackupFile" type="file" accept="application/json,.json" />
         </label>
@@ -994,15 +996,15 @@ function settingsPage() {
       <div class="panel-head"><h2>חריגי יומן</h2></div>
       <form class="inline-form schedule-exception-form" data-form="schedule-exception">
         <div class="field">
-          <label>מטופל</label>
-          <select name="patient_id">
+          <label for="exceptionPatientId">מטופל</label>
+          <select id="exceptionPatientId" name="patient_id">
             <option value="">כל המטופלים</option>
             ${patientOptions("")}
           </select>
         </div>
         <div class="field">
-          <label>סוג חריג</label>
-          <select name="exception_type">
+          <label for="exceptionType">סוג חריג</label>
+          <select id="exceptionType" name="exception_type">
             <option value="cancel">ביטול חד-פעמי</option>
             <option value="vacation">חופשה</option>
             <option value="holiday">חג</option>
@@ -1010,16 +1012,16 @@ function settingsPage() {
           </select>
         </div>
         <div class="field">
-          <label>מתאריך</label>
-          <input name="start_date" data-date-input placeholder="בחירת תאריך" />
+          <label for="exceptionStartDate">מתאריך</label>
+          <input id="exceptionStartDate" name="start_date" data-date-input placeholder="בחירת תאריך" />
         </div>
         <div class="field">
-          <label>עד תאריך</label>
-          <input name="end_date" data-date-input placeholder="ריק = יום אחד" />
+          <label for="exceptionEndDate">עד תאריך</label>
+          <input id="exceptionEndDate" name="end_date" data-date-input placeholder="ריק = יום אחד" />
         </div>
         <div class="field wide">
-          <label>סיבה</label>
-          <input name="reason" placeholder="חופשה / חג / ביטול" />
+          <label for="exceptionReason">סיבה</label>
+          <input id="exceptionReason" name="reason" placeholder="חופשה / חג / ביטול" />
         </div>
         <div class="toolbar wide">
           <button class="button" type="submit">שמירת חריג</button>
@@ -1445,8 +1447,9 @@ function calendarPage() {
             .map((day) => {
               const daySessions = sessionsByDate[day.date] || [];
               return `
-                <button class="calendar-day ${day.inMonth ? "" : "muted"} ${day.date === today ? "today" : ""} ${day.date === state.selectedCalendarDate ? "selected" : ""}" data-action="select-calendar-date" data-date="${html(day.date)}" type="button">
+                <button class="calendar-day ${day.inMonth ? "" : "muted"} ${day.date === today ? "today" : ""} ${day.date === state.selectedCalendarDate ? "selected" : ""} ${daySessions.length ? "has-events" : ""}" data-action="select-calendar-date" data-date="${html(day.date)}" type="button" aria-label="${html(`${formatDate(day.date)}: ${daySessions.length} מפגשים`)}">
                   <span class="day-number">${Number(day.date.slice(8, 10))}</span>
+                  ${daySessions.length ? `<span class="calendar-mobile-count" aria-hidden="true">${daySessions.length}</span>` : ""}
                   <span class="day-events">
                     ${daySessions
                       .slice(0, 1)
@@ -1456,7 +1459,7 @@ function calendarPage() {
                       )
                       .join("")}
                     ${
-                      daySessions.length > 3
+                      daySessions.length > 1
                         ? `<span class="calendar-more">+${daySessions.length - 1}</span>`
                         : ""
                     }
@@ -2230,6 +2233,62 @@ function filesPage() {
   `);
 }
 
+function openPatientDrawer(target) {
+  drawerReturnFocus = { patientId: target.dataset.id || "" };
+  state.currentPatientId = target.dataset.id || "";
+  render();
+  const drawer = document.getElementById("patientDrawer");
+  drawer?.removeAttribute("hidden");
+  drawer?.querySelector("input, select, textarea, button")?.focus();
+}
+
+function closePatientDrawer() {
+  state.currentPatientId = "";
+  const drawer = document.getElementById("patientDrawer");
+  drawer?.setAttribute("hidden", "");
+  const candidates = [...document.querySelectorAll('[data-action="open-patient-drawer"]')];
+  const returnTarget = candidates.find(
+    (candidate) => (candidate.dataset.id || "") === (drawerReturnFocus?.patientId || "")
+  );
+  returnTarget?.focus();
+  drawerReturnFocus = null;
+}
+
+function handleDrawerKeyboard(event) {
+  const drawer = document.getElementById("patientDrawer");
+  if (!drawer || drawer.hasAttribute("hidden")) return;
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closePatientDrawer();
+    return;
+  }
+
+  if (event.key !== "Tab") return;
+  const focusable = [...drawer.querySelectorAll('button, input, select, textarea, a[href]')].filter(
+    (element) => !element.disabled && !element.hasAttribute("hidden")
+  );
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function handlePickerKeyboard(event) {
+  if (!["Enter", " "].includes(event.key)) return;
+  const input = event.target.closest?.("[data-date-input], [data-time-input]");
+  if (!input) return;
+  event.preventDefault();
+  if (input.matches("[data-date-input]")) showDatePicker(input);
+  if (input.matches("[data-time-input]")) showTimePicker(input);
+}
+
 function patientDrawer() {
   const patient = state.currentPatientId
     ? state.patients.find((item) => item.id === state.currentPatientId)
@@ -2238,10 +2297,10 @@ function patientDrawer() {
   const submitLabel = patient ? "שמירת שינויים" : "שמירה";
 
   return `
-    <section class="drawer" id="patientDrawer" hidden>
+    <section class="drawer" id="patientDrawer" role="dialog" aria-modal="true" aria-labelledby="patientDrawerTitle" hidden>
       <div class="drawer-inner">
         <div class="panel-head">
-          <h2>${title}</h2>
+          <h2 id="patientDrawerTitle">${title}</h2>
           <button class="button secondary" data-action="close-drawer" type="button">סגירה</button>
         </div>
         <form class="form-grid" data-form="patient" data-id="${html(patient?.id || "")}">
@@ -2579,6 +2638,7 @@ async function connectGoogle(forceConsent = false, automatic = false) {
   }
 
   googleAuthInFlight = true;
+  state.message = automatic ? "" : "נפתח חלון Google. יש לבחור חשבון ולאשר את ההרשאות.";
   const tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: state.config.googleClientId,
     scope:
@@ -2586,6 +2646,7 @@ async function connectGoogle(forceConsent = false, automatic = false) {
     callback: async (response) => {
       googleAuthInFlight = false;
       state.authRestoring = false;
+      state.message = "";
       if (response.error) {
         state.error = automatic
           ? "החיבור השמור ממתין לאישור קצר של Google. לחצו התחברות כדי להמשיך."
@@ -2605,16 +2666,32 @@ async function connectGoogle(forceConsent = false, automatic = false) {
         state.error = error instanceof Error ? error.message : "בדיקת ההרשאה נכשלה.";
       }
       render();
+    },
+    error_callback: (error) => {
+      googleAuthInFlight = false;
+      state.authRestoring = false;
+      state.message = "";
+      const errorType = error?.type || "";
+      state.error = errorType === "popup_failed_to_open"
+        ? "חלון Google נחסם על ידי הדפדפן. יש לאפשר חלונות קופצים לאתר ולנסות שוב."
+        : errorType === "popup_closed"
+          ? "חלון ההתחברות נסגר לפני שהאישור הושלם. אפשר ללחוץ שוב על התחברות."
+          : automatic
+            ? "לא ניתן היה לשחזר את החיבור אוטומטית. לחצו התחברות כדי להמשיך."
+            : "לא ניתן לפתוח את ההתחברות ל-Google. יש לנסות שוב.";
+      render();
     }
   });
 
   try {
+    render();
     tokenClient.requestAccessToken({
       prompt: forceConsent || localStorage.getItem(GOOGLE_CONSENT_KEY) !== "yes" ? "consent" : ""
     });
   } catch (error) {
     googleAuthInFlight = false;
     state.authRestoring = false;
+    state.message = "";
     state.error = automatic
       ? "לא ניתן היה לשחזר את החיבור אוטומטית. לחצו התחברות כדי להמשיך."
       : error instanceof Error
@@ -4585,6 +4662,9 @@ function stopRecording() {
 }
 
 function bindEvents() {
+  document.addEventListener("keydown", handleDrawerKeyboard);
+  document.addEventListener("keydown", handlePickerKeyboard);
+
   document.addEventListener("click", async (event) => {
     if (event.target.closest(".picker-popover")) return;
 
@@ -4760,13 +4840,10 @@ function bindEvents() {
       }
     }
     if (action === "open-patient-drawer") {
-      state.currentPatientId = target.dataset.id || "";
-      render();
-      document.getElementById("patientDrawer")?.removeAttribute("hidden");
+      openPatientDrawer(target);
     }
     if (action === "close-drawer") {
-      state.currentPatientId = "";
-      document.getElementById("patientDrawer")?.setAttribute("hidden", "");
+      closePatientDrawer();
     }
     if (action === "open-profile") {
       state.profileTab = "overview";

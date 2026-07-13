@@ -71,6 +71,7 @@ for (const file of sourceFiles) {
 
 const mojibakeFiles = [];
 const suspiciousSecretFiles = [];
+const uiRegressionFindings = [];
 const secretPatterns = [
   /BEGIN [A-Z ]*PRIVATE KEY/,
   /AIza[0-9A-Za-z_-]{20,}/,
@@ -91,10 +92,30 @@ for (const file of textFiles) {
   }
 }
 
+const browserAppSource = fs.readFileSync(path.join(root, "docs", "app.js"), "utf8");
+const browserCssSource = fs.readFileSync(path.join(root, "docs", "app.css"), "utf8");
+
+if (!browserAppSource.includes("daySessions.length > 1")) {
+  uiRegressionFindings.push("calendar does not reveal additional sessions from the second meeting onward");
+}
+if (!browserAppSource.includes('error_callback: (error) =>')) {
+  uiRegressionFindings.push("Google popup failures are not handled");
+}
+if (browserAppSource.includes('חשבונות מורשים: ${allowedEmails.join')) {
+  uiRegressionFindings.push("the public access gate exposes authorized email addresses");
+}
+if (!browserAppSource.includes('role="dialog" aria-modal="true"')) {
+  uiRegressionFindings.push("the patient drawer is not exposed as an accessible dialog");
+}
+if (!browserCssSource.includes(".calendar-mobile-count") || !browserCssSource.includes("height: 72px")) {
+  uiRegressionFindings.push("mobile calendar or bottom navigation styles are missing");
+}
+
 const checks = [
   ["Alias imports", missingImports],
   ["Mojibake marker", mojibakeFiles],
-  ["Obvious secret values", suspiciousSecretFiles]
+  ["Obvious secret values", suspiciousSecretFiles],
+  ["QA regression contracts", uiRegressionFindings]
 ];
 
 let failed = false;
