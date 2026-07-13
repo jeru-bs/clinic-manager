@@ -4,5 +4,5 @@ window.CLINIC_MANAGER_CONFIG = {
   googleDriveRootFolderId: "16XWqhBGBZ053aRGPmuWTv0MOsM-d7JfV",
   googleTemplatesFolderId: "1167Z455Tsu9ZrEmf71TqP_-PbnFkWIky",
   googleSpreadsheetId: "1j9Y_0RyFlhj1UcOIwCZT61EMBbtSf4k4XRH-QnzF1J4",
-  allowedUserEmails: "azaidman1@gmail.com"
+  allowedUserEmails: "azaidman1@gmail.com\nmalki.frankel@gmail.com"
 };
