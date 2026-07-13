@@ -109,6 +109,7 @@ const state = {
   scheduleExceptions: [],
   templates: [],
   dataHealth: null,
+  storageReadySpreadsheetId: "",
   patientFilter: {
     name: "",
     school: "",
@@ -176,13 +177,18 @@ function loadConfig() {
 }
 
 function saveConfig(nextConfig) {
+  const previousSpreadsheetId = state.config.googleSpreadsheetId || "";
   state.config = { ...state.config, ...nextConfig };
+  if ((state.config.googleSpreadsheetId || "") !== previousSpreadsheetId) {
+    state.storageReadySpreadsheetId = "";
+  }
   localStorage.setItem("clinic-manager-config", JSON.stringify(state.config));
 }
 
 function resetConfigToDefaults() {
   localStorage.removeItem("clinic-manager-config");
   state.config = loadConfig();
+  state.storageReadySpreadsheetId = "";
 }
 
 function listText(savedValue, defaultValue, fallbackItems) {
@@ -2617,6 +2623,22 @@ async function runDataHealthCheck({ repair = false } = {}) {
   return report;
 }
 
+async function ensureSpreadsheetSchema() {
+  const spreadsheetId = state.config.googleSpreadsheetId || "";
+  if (!spreadsheetId || state.storageReadySpreadsheetId === spreadsheetId) return;
+
+  const report = await runDataHealthCheck({ repair: true });
+  if (!report.ok) {
+    const failedSheets = report.results
+      .filter((row) => !row.ok)
+      .map((row) => row.sheet)
+      .join(", ");
+    throw new Error(`מבנה מאגר הנתונים לא תקין: ${failedSheets || "נדרש תיקון בגיליון"}.`);
+  }
+
+  state.storageReadySpreadsheetId = spreadsheetId;
+}
+
 async function appendSheet(sheetName, record) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
@@ -2667,7 +2689,7 @@ async function checkStorageConnection() {
   if (!state.config.googleSpreadsheetId) throw new Error("לא הוגדר מזהה מאגר נתונים.");
   if (!state.config.googleDriveRootFolderId) throw new Error("לא הוגדרה תיקיית אחסון ראשית.");
 
-  await readSheet("patients");
+  await ensureSpreadsheetSchema();
 
   const rootFolder = await googleFetch(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
@@ -3337,6 +3359,7 @@ async function loadData() {
   await loadRemoteSettings().catch(() => {});
   if (!isAuthorizedGoogleUser()) throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
   if (!state.config.googleSpreadsheetId) return;
+  await ensureSpreadsheetSchema();
   const [patients, sessions, payments, tasks, files, scheduleExceptions, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
