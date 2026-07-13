@@ -1262,8 +1262,41 @@ th {
   overflow-y: auto;
 }
 
-.calendar-list-item {
-  grid-template-columns: 1fr;
+.day-agenda {
+  padding: 4px 12px 10px;
+}
+
+.day-agenda-row {
+  align-items: center;
+  border-bottom: 1px solid var(--table-border);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 52px minmax(0, 1fr);
+  min-height: 46px;
+  padding: 6px 2px;
+}
+
+.day-agenda-row:last-child {
+  border-bottom: 0;
+}
+
+.day-agenda-row time {
+  color: var(--primary-strong);
+  direction: ltr;
+  font-size: 0.92rem;
+  font-weight: 900;
+  text-align: start;
+}
+
+.day-agenda-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.day-panel .empty {
+  min-height: 80px;
 }
 
 .exception-list {
@@ -1495,7 +1528,4 @@ th {
     overflow-x: auto;
   }
 
-  .calendar-list-item {
-    grid-template-columns: 1fr;
-  }
 }

@@ -892,7 +892,7 @@ function settingsPage() {
           </div>
           <div class="field settings-full">
             <label for="allowedUserEmails">חשבונות Google מורשים</label>
-            <textarea id="allowedUserEmails" name="allowedUserEmails" placeholder="כל שורה היא כתובת אימייל מורשית. אם הרשימה ריקה, כל חשבון Google שמאשר הרשאות יוכל להתחבר.">${html(state.config.allowedUserEmails)}</textarea>
+            <textarea id="allowedUserEmails" name="allowedUserEmails" placeholder="כתובת Google אחת בכל שורה">${html(state.config.allowedUserEmails)}</textarea>
           </div>
           <div class="field">
             <label for="sessionTypes">סוגי מפגש</label>
@@ -1483,26 +1483,16 @@ function calendarPage() {
         }
         ${
           selectedSessions.length
-            ? `<div class="item-list">${selectedSessions
+            ? `<div class="day-agenda">${selectedSessions
                 .map(
                   (session) => `
-                  <article class="list-item calendar-list-item">
-                    <div><strong>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "ללא שעה")}</strong><span>${html(session.location || "-")}</span></div>
-                    <div><strong>${html(patientName(session.patient_id))}</strong><span>${html(session.session_type || "מפגש")}${session.is_recurring ? ` <span class="status-pill muted">קבוע</span>` : ""}</span></div>
-                    <p>${html(session.summary || "לא נכתב סיכום.")}</p>
-                    <div class="row-actions">
-                      ${
-                        session.is_recurring
-                          ? `<button class="button blue table-button" data-action="materialize-recurring" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" type="button">שמירה</button>
-                             <button class="button danger table-button" data-action="cancel-recurring" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" type="button">ביטול</button>`
-                          : ""
-                      }
-                      <button class="button secondary table-button" data-action="open-profile" data-id="${html(session.patient_id)}" type="button">כרטיס</button>
-                    </div>
-                  </article>`
+                  <div class="day-agenda-row">
+                    <time>${html(session.start_time || "--:--")}</time>
+                    <strong>${html(patientName(session.patient_id))}</strong>
+                  </div>`
                 )
                 .join("")}</div>`
-            : `<div class="empty">אין מפגשים ביום הזה. אפשר להוסיף מפגש מתוך כרטיס מטופל.</div>`
+            : `<div class="empty">אין מפגשים ביום הזה.</div>`
         }
       </aside>
     </section>
