@@ -952,6 +952,51 @@ th {
   gap: 12px;
 }
 
+.message-action {
+  margin-inline-start: 0.75rem;
+}
+
+.table-note {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.reminder-panel {
+  border-inline-start: 4px solid #e9a23b;
+}
+
+.reminder-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.reminder-row {
+  align-items: center;
+  background: #fff9ec;
+  border: 1px solid #f2d7a0;
+  border-radius: 12px;
+  display: flex;
+  justify-content: space-between;
+  padding: 0.7rem 0.85rem;
+}
+
+.reminder-row.overdue {
+  background: #fff2f2;
+  border-color: #efb8b8;
+}
+
+.reminder-row div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.reminder-row span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .settings-panel .panel-head {
   min-height: 46px;
   padding: 9px 14px;

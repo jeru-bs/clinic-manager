@@ -21,6 +21,16 @@ Then open the app, go to `הגדרות`, and fill:
 
 The current non-secret defaults are in `docs/config.js`.
 
+## Release verification
+
+Before publishing, run from the repository root:
+
+```powershell
+npm.cmd run release:check
+```
+
+The production entry point is `docs/index.html`. The release must not include `.env.local`, access tokens, backup files, or patient data.
+
 ## GitHub setting
 
 In the repository settings, set Pages to deploy from a branch:

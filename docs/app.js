@@ -58,7 +58,8 @@ const SHEETS = {
     "due_date",
     "source",
     "created_at",
-    "updated_at"
+    "updated_at",
+    "reminder_at"
   ],
   files: [
     "id",
@@ -80,8 +81,22 @@ const SHEETS = {
     "reason",
     "created_at",
     "updated_at"
+  ],
+  audit_log: [
+    "id",
+    "action_type",
+    "entity_type",
+    "entity_id",
+    "summary",
+    "actor_email",
+    "mutations_json",
+    "undoable",
+    "undone_at",
+    "created_at"
   ]
 };
+
+const WorkflowCore = window.CLINIC_WORKFLOW_CORE;
 
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
@@ -111,6 +126,8 @@ const state = {
   tasks: [],
   files: [],
   scheduleExceptions: [],
+  auditLog: [],
+  lastUndoActionId: "",
   templates: [],
   dataHealth: null,
   sharingSecurity: null,
@@ -608,7 +625,7 @@ function shell(content) {
       </aside>
       <main class="main">
         ${state.error ? `<div class="message error">${html(state.error)}</div>` : ""}
-        ${state.message ? `<div class="message">${html(state.message)}</div>` : ""}
+        ${state.message ? `<div class="message">${html(state.message)}${state.lastUndoActionId ? ` <button class="button secondary message-action" data-action="undo-last-action" data-id="${html(state.lastUndoActionId)}" type="button">ביטול הפעולה</button>` : ""}</div>` : ""}
         ${content}
       </main>
     </div>`;
@@ -671,12 +688,12 @@ function header(title, subtitle, actions = "") {
 
 function dashboardPage() {
   const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid").length;
-  const openTasks = state.tasks.filter((task) => task.status !== "done").length;
   const activePatients = state.patients.filter((patient) => patient.status !== "archived").length;
   const today = isoDate(new Date());
   const todayRows = sessionsForDates([today]);
   const weekRows = sessionsForDates(dateRange(today, 7));
   const todaySessions = todayRows.length;
+  const reminderCount = activeReminders().length;
 
   return shell(`
     ${header(
@@ -687,11 +704,12 @@ function dashboardPage() {
     ${connectionBanner()}
     <section class="kpi-grid">
       <article class="kpi-card blue-card"><div><strong>${todaySessions}</strong><span>מפגשים היום</span></div><span class="kpi-symbol">${icon("calendar")}</span></article>
-      <article class="kpi-card teal-card"><div><strong>${openTasks}</strong><span>משימות פתוחות</span></div><span class="kpi-symbol">${icon("tasks")}</span></article>
+      <article class="kpi-card teal-card"><div><strong>${reminderCount}</strong><span>תזכורות פעילות</span></div><span class="kpi-symbol">${icon("tasks")}</span></article>
       <article class="kpi-card pink-card"><div><strong>${openPayments}</strong><span>תשלומים פתוחים</span></div><span class="kpi-symbol">${icon("payments")}</span></article>
       <article class="kpi-card purple-card"><div><strong>${activePatients}</strong><span>מטופלים פעילים</span></div><span class="kpi-symbol">${icon("patients")}</span></article>
     </section>
     <section class="dashboard-grid">
+      <div class="dashboard-full">${remindersPanel()}</div>
       ${sessionsPanel(weekRows)}
       ${paymentsPanel()}
       <div class="dashboard-full">${tasksPanel()}</div>
@@ -925,6 +943,10 @@ function settingsPage() {
       </article>
     </section>
     <section class="panel page-gap">
+      <div class="panel-head"><h2>יומן פעילות וביטול</h2><span>Audit מרכזי</span></div>
+      ${auditLogView()}
+    </section>
+    <section class="panel page-gap">
       <div class="panel-head"><h2>גיבוי וייצוא</h2><span>שמירת עותק עבודה</span></div>
       <div class="toolbar">
         <button class="button blue" data-action="download-backup" type="button">הורדת גיבוי מלא</button>
@@ -1003,6 +1025,25 @@ function settingsPage() {
       ${scheduleExceptionsView()}
     </section>
   `);
+}
+
+function auditLogView() {
+  const rows = state.auditLog.slice(0, 20);
+  if (!rows.length) return `<div class="empty">יומן הפעילות עדיין ריק.</div>`;
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>זמן</th><th>פעולה</th><th>משתמש</th><th>מצב</th><th>פעולה</th></tr></thead>
+        <tbody>${rows.map((entry) => `
+          <tr>
+            <td>${html(new Date(entry.created_at).toLocaleString("he-IL"))}</td>
+            <td><strong>${html(entry.summary)}</strong><small class="table-note">${html(entry.entity_type || "system")}</small></td>
+            <td>${html(entry.actor_email || "-")}</td>
+            <td>${entry.undone_at ? "בוטל" : entry.undoable === "yes" && auditMutations(entry).length ? "ניתן לביטול" : "תיעוד בלבד"}</td>
+            <td>${entry.undoable === "yes" && !entry.undone_at && auditMutations(entry).length ? `<button class="button secondary table-button" data-action="undo-last-action" data-id="${html(entry.id)}" type="button">ביטול</button>` : "-"}</td>
+          </tr>`).join("")}</tbody>
+      </table>
+    </div>`;
 }
 
 function dataHealthView() {
@@ -1760,6 +1801,10 @@ function taskForm(patientId = "") {
         <input class="picker-input" data-date-input id="task_due_date" name="due_date" readonly type="text" value="${html(editedTask?.due_date || "")}" />
       </div>
       <div class="field">
+        <label for="task_reminder_at">תזכורת בתאריך</label>
+        <input class="picker-input" data-date-input id="task_reminder_at" name="reminder_at" readonly type="text" value="${html(editedTask?.reminder_at || editedTask?.due_date || "")}" />
+      </div>
+      <div class="field">
         <label for="task_status">סטטוס</label>
         <select id="task_status" name="status">
           <option value="open" ${editedTask?.status === "open" ? "selected" : ""}>פתוחה</option>
@@ -1784,7 +1829,7 @@ function tasksTable(rows) {
       <table>
         <thead>
           <tr>
-            <th>יעד</th>
+            <th>יעד / תזכורת</th>
             <th>מטופל</th>
             <th>משימה</th>
             <th>סטטוס</th>
@@ -1797,7 +1842,7 @@ function tasksTable(rows) {
             .map(
               (task) => `
               <tr>
-                <td>${html(formatDate(task.due_date))}</td>
+                <td>${html(formatDate(task.due_date))}<small class="table-note">${task.reminder_at ? `תזכורת: ${html(formatDate(task.reminder_at))}` : ""}</small></td>
                 <td><strong>${html(patientName(task.patient_id))}</strong></td>
                 <td>${html(task.title || "-")}</td>
                 <td><span class="status-pill">${html(taskStatusLabel(task.status))}</span></td>
@@ -1829,6 +1874,29 @@ function tasksPanel(items = state.tasks, patientId = "") {
       <div class="panel-head"><h2>משימות</h2><span>${rows.length} לתצוגה</span></div>
       ${patientId ? taskForm(patientId) : ""}
       ${tasksTable(rows)}
+    </article>`;
+}
+
+function activeReminders() {
+  const today = isoDate(new Date());
+  return state.tasks
+    .filter((task) => ["today", "overdue"].includes(WorkflowCore.reminderState(task, today)))
+    .sort((a, b) => `${a.reminder_at || a.due_date || ""}`.localeCompare(`${b.reminder_at || b.due_date || ""}`));
+}
+
+function remindersPanel() {
+  const reminders = activeReminders();
+  if (!reminders.length) return "";
+  return `
+    <article class="panel reminder-panel">
+      <div class="panel-head"><h2>תזכורות פעילות</h2><span>${reminders.length} דורשות תשומת לב</span></div>
+      <div class="reminder-list">
+        ${reminders.slice(0, 8).map((task) => `
+          <div class="reminder-row ${WorkflowCore.reminderState(task, isoDate(new Date()))}">
+            <div><strong>${html(task.title)}</strong><span>${html(patientName(task.patient_id))} · ${html(formatDate(task.reminder_at || task.due_date))}</span></div>
+            <button class="button table-button" data-action="complete-task" data-id="${html(task.id)}" type="button">בוצע</button>
+          </div>`).join("")}
+      </div>
     </article>`;
 }
 
@@ -2603,6 +2671,18 @@ async function restoreGoogleSession() {
   await connectGoogle(false, true);
 }
 
+function clearClinicData() {
+  state.patients = [];
+  state.sessions = [];
+  state.payments = [];
+  state.tasks = [];
+  state.files = [];
+  state.scheduleExceptions = [];
+  state.auditLog = [];
+  state.lastUndoActionId = "";
+  state.templates = [];
+}
+
 function disconnectGoogle() {
   const token = state.accessToken;
   if (token && window.google?.accounts?.oauth2?.revoke) {
@@ -2613,13 +2693,7 @@ function disconnectGoogle() {
   state.googleUser = null;
   state.authChecked = false;
   state.authRestoring = false;
-  state.patients = [];
-  state.sessions = [];
-  state.payments = [];
-  state.tasks = [];
-  state.files = [];
-  state.scheduleExceptions = [];
-  state.templates = [];
+  clearClinicData();
   state.message = "החיבור לחשבון Google נותק מהמכשיר הזה.";
   state.error = "";
   render();
@@ -2636,6 +2710,7 @@ function friendlyGoogleError(text, status) {
   }
 
   const combined = `${text || ""} ${message}`.toLowerCase();
+  const failureKind = WorkflowCore.googleFailure(status, combined);
 
   if (combined.includes("sheets.googleapis.com") || combined.includes("google sheets api")) {
     return "רכיב מאגר הנתונים לא פעיל בפרויקט החיבור. במסך ההגדרות לחץ על הפעלת מאגר נתונים, המתן דקה ואז לחץ בדיקת חיבור.";
@@ -2658,6 +2733,7 @@ function friendlyGoogleError(text, status) {
     state.accessToken = "";
     state.googleUser = null;
     state.authChecked = false;
+    clearClinicData();
     return "החיבור פג תוקף. צריך להתחבר שוב.";
   }
 
@@ -2671,8 +2747,13 @@ function friendlyGoogleError(text, status) {
     state.accessToken = "";
     state.googleUser = null;
     state.authChecked = false;
+    clearClinicData();
     return "חסרה הרשאה לאחסון קבצים. צריך להתחבר שוב ולאשר את כל ההרשאות המבוקשות.";
   }
+
+  if (failureKind === "rate_limit") return "Google מגביל זמנית את מספר הפעולות. יש להמתין מעט ולנסות שוב.";
+  if (failureKind === "temporary") return "שירות Google אינו זמין זמנית. הנתונים לא סומנו כשמורים; יש לנסות שוב בעוד רגע.";
+  if (failureKind === "not_found") return "המשאב המבוקש ב-Google לא נמצא. יש לבדוק את המזהים וההרשאות במסך ההגדרות.";
 
   return message || "הקריאה לאחסון נכשלה.";
 }
@@ -2720,13 +2801,7 @@ async function loadGoogleUser() {
   state.authChecked = true;
 
   if (!isAuthorizedGoogleUser()) {
-    state.patients = [];
-    state.sessions = [];
-    state.payments = [];
-    state.tasks = [];
-    state.files = [];
-    state.scheduleExceptions = [];
-    state.templates = [];
+    clearClinicData();
     clearStoredGoogleToken();
     state.accessToken = "";
     throw new Error("החשבון המחובר לא מורשה להשתמש במערכת הזו.");
@@ -2908,6 +2983,121 @@ async function clearSheetRow(sheetName, rowNumber) {
     method: "POST",
     body: JSON.stringify({})
   });
+}
+
+function workflowCollections() {
+  return {
+    patients: state.patients,
+    sessions: state.sessions,
+    payments: state.payments,
+    tasks: state.tasks,
+    files: state.files,
+    schedule_exceptions: state.scheduleExceptions
+  };
+}
+
+function auditMutations(entry) {
+  try {
+    const rows = JSON.parse(entry?.mutations_json || "[]");
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+let activeAuditAction = false;
+
+async function appendAuditEntry(meta, mutations) {
+  const now = new Date().toISOString();
+  const entry = {
+    id: id(),
+    action_type: meta.actionType || "update",
+    entity_type: meta.entityType || "system",
+    entity_id: meta.entityId || mutations?.find((mutation) => mutation.after?.id)?.after?.id || mutations?.find((mutation) => mutation.before?.id)?.before?.id || "",
+    summary: meta.summary || "פעולה במערכת",
+    actor_email: state.googleUser?.email || "",
+    mutations_json: JSON.stringify(mutations || []),
+    undoable: meta.undoable === false ? "no" : "yes",
+    undone_at: "",
+    created_at: now
+  };
+  const result = await appendSheet("audit_log", entry);
+  entry._rowNumber = appendedRowNumber(result);
+  state.auditLog = [entry, ...state.auditLog].slice(0, 200);
+  state.lastUndoActionId = entry.undoable === "yes" && mutations.length ? entry.id : "";
+  return entry;
+}
+
+async function applyAuditMutations(mutations) {
+  for (const mutation of mutations) {
+    if (!mutation.rowNumber || !SHEETS[mutation.table]) throw new Error("רישום ה-Audit אינו מכיל מיקום שחזור תקין.");
+    if (mutation.after) await updateSheetRow(mutation.table, mutation.rowNumber, mutation.after);
+    else await clearSheetRow(mutation.table, mutation.rowNumber);
+  }
+}
+
+async function runAuditedAction(meta, work) {
+  if (activeAuditAction) return work();
+  activeAuditAction = true;
+  const before = WorkflowCore.snapshot(workflowCollections());
+  try {
+    const result = await work();
+    const after = WorkflowCore.snapshot(workflowCollections());
+    const mutations = WorkflowCore.diff(before, after);
+    await appendAuditEntry(meta, mutations);
+    return result;
+  } catch (error) {
+    const afterFailure = WorkflowCore.snapshot(workflowCollections());
+    const partialMutations = WorkflowCore.diff(before, afterFailure);
+    if (partialMutations.length && meta.undoable !== false) {
+      try {
+        await applyAuditMutations(WorkflowCore.inverse(partialMutations));
+        await loadData();
+      } catch (rollbackError) {
+        await appendAuditEntry(
+          { ...meta, actionType: "failed_partial", summary: `${meta.summary || "פעולה"} — נכשלה חלקית`, undoable: false },
+          partialMutations
+        ).catch(() => {});
+        throw new Error(`הפעולה נכשלה וגם ההחזרה לאחור נכשלה: ${rollbackError.message || rollbackError}`);
+      }
+      await appendAuditEntry(
+        { ...meta, actionType: "failed_rollback", summary: `${meta.summary || "פעולה"} — נכשלה והוחזרה לאחור`, undoable: false },
+        []
+      ).catch(() => {});
+    } else if (partialMutations.length) {
+      await appendAuditEntry(
+        { ...meta, actionType: "failed_partial", summary: `${meta.summary || "פעולה"} — נכשלה חלקית`, undoable: false },
+        partialMutations
+      ).catch(() => {});
+    }
+    throw error;
+  } finally {
+    activeAuditAction = false;
+  }
+}
+
+async function undoAuditAction(actionId) {
+  const entry = state.auditLog.find((item) => item.id === actionId);
+  if (!entry || entry.undoable !== "yes" || entry.undone_at) throw new Error("הפעולה אינה זמינה לביטול.");
+  const mutations = auditMutations(entry);
+  if (!Array.isArray(mutations) || !mutations.length) throw new Error("אין שינויי נתונים לביטול.");
+
+  await applyAuditMutations(WorkflowCore.inverse(mutations));
+
+  const updated = { ...entry, undone_at: new Date().toISOString() };
+  await updateSheetRow("audit_log", entry._rowNumber, updated);
+  await loadData();
+  await appendAuditEntry(
+    {
+      actionType: "undo",
+      entityType: entry.entity_type,
+      entityId: entry.entity_id,
+      summary: `ביטול: ${entry.summary}`,
+      undoable: false
+    },
+    []
+  );
+  state.lastUndoActionId = "";
 }
 
 async function checkStorageConnection() {
@@ -3590,13 +3780,14 @@ async function loadData() {
   }
   if (!state.config.googleSpreadsheetId) return;
   await ensureSpreadsheetSchema();
-  const [patients, sessions, payments, tasks, files, scheduleExceptions, templates] = await Promise.all([
+  const [patients, sessions, payments, tasks, files, scheduleExceptions, auditLog, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
     readSheet("payments"),
     readSheet("tasks"),
     readSheet("files"),
     readSheet("schedule_exceptions"),
+    readSheet("audit_log"),
     loadDriveTemplates().catch(() => [])
   ]);
   state.patients = patients.sort((a, b) => (a.child_name || "").localeCompare(b.child_name || "", "he"));
@@ -3607,6 +3798,10 @@ async function loadData() {
   state.scheduleExceptions = scheduleExceptions.sort((a, b) =>
     `${b.start_date || ""} ${b.created_at || ""}`.localeCompare(`${a.start_date || ""} ${a.created_at || ""}`)
   );
+  state.auditLog = auditLog.sort((a, b) => `${b.created_at || ""}`.localeCompare(`${a.created_at || ""}`));
+  state.lastUndoActionId = state.auditLog.find(
+    (entry) => entry.undoable === "yes" && !entry.undone_at && auditMutations(entry).length
+  )?.id || "";
   state.templates = templates.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
 }
 
@@ -3949,7 +4144,7 @@ function backupPayload() {
   return {
     exported_at: new Date().toISOString(),
     app: "clinic-manager",
-    version: "browser-storage-v1",
+    version: "browser-storage-v2",
     config: {
       googleDriveRootFolderId: state.config.googleDriveRootFolderId || "",
       googleTemplatesFolderId: state.config.googleTemplatesFolderId || "",
@@ -3965,7 +4160,8 @@ function backupPayload() {
       payments: state.payments.length,
       tasks: state.tasks.length,
       files: state.files.length,
-      schedule_exceptions: state.scheduleExceptions.length
+      schedule_exceptions: state.scheduleExceptions.length,
+      audit_log: state.auditLog.length
     },
     data: {
       patients: state.patients,
@@ -3973,7 +4169,8 @@ function backupPayload() {
       payments: state.payments,
       tasks: state.tasks,
       files: state.files,
-      schedule_exceptions: state.scheduleExceptions
+      schedule_exceptions: state.scheduleExceptions,
+      audit_log: state.auditLog
     }
   };
 }
@@ -4026,15 +4223,29 @@ async function restoreBackupFile(file) {
   if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני שחזור.");
 
   const payload = JSON.parse(await file.text());
-  if (payload?.app !== "clinic-manager" || !payload?.data) {
-    throw new Error("קובץ הגיבוי לא מתאים למערכת.");
-  }
-
-  await saveBackupToDrive().catch(() => {});
-  for (const tableName of Object.keys(SHEETS)) {
-    await replaceSheetData(tableName, backupRows(payload, tableName));
+  if (payload?.data && !Array.isArray(payload.data.audit_log)) payload.data.audit_log = [];
+  WorkflowCore.validateBackup(payload, Object.keys(SHEETS));
+  const rollbackPayload = backupPayload();
+  await saveBackupToDrive();
+  try {
+    for (const tableName of Object.keys(SHEETS)) {
+      await replaceSheetData(tableName, backupRows(payload, tableName));
+    }
+  } catch (restoreError) {
+    try {
+      for (const tableName of Object.keys(SHEETS)) {
+        await replaceSheetData(tableName, backupRows(rollbackPayload, tableName));
+      }
+    } catch (rollbackError) {
+      throw new Error(`השחזור נכשל וגם החזרת המצב הקודם נכשלה: ${rollbackError.message || rollbackError}`);
+    }
+    throw new Error(`השחזור נכשל והנתונים הקודמים הוחזרו: ${restoreError.message || restoreError}`);
   }
   await loadData();
+  await appendAuditEntry(
+    { actionType: "restore", entityType: "backup", summary: "שחזור מגיבוי מאומת", undoable: false },
+    []
+  );
   return Object.fromEntries(Object.keys(SHEETS).map((tableName) => [tableName, backupRows(payload, tableName).length]));
 }
 
@@ -4146,7 +4357,8 @@ async function createSystemTask(patientId, title, description = "", dueDate = ""
     due_date: dueDate || isoDate(new Date()),
     source: "auto",
     created_at: now,
-    updated_at: now
+    updated_at: now,
+    reminder_at: dueDate || isoDate(new Date())
   };
   const appendResult = await appendSheet("tasks", task);
   task._rowNumber = appendedRowNumber(appendResult);
@@ -4178,7 +4390,8 @@ async function saveTask(form) {
     due_date: data.due_date || "",
     source: existingTask?.source || "manual",
     created_at: existingTask?.created_at || now,
-    updated_at: now
+    updated_at: now,
+    reminder_at: data.reminder_at || data.due_date || ""
   };
 
   if (existingTask) {
@@ -4418,6 +4631,19 @@ function bindEvents() {
       });
       render();
     }
+    if (action === "undo-last-action") {
+      if (!window.confirm("לבטל את הפעולה ולשחזר את הנתונים הקודמים?")) return;
+      try {
+        await undoAuditAction(target.dataset.id || state.lastUndoActionId);
+        state.message = "הפעולה בוטלה והנתונים הקודמים שוחזרו.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "ביטול הפעולה נכשל.";
+        state.message = "";
+        render();
+      }
+    }
     if (action === "check-storage") {
       try {
         const folderName = await checkStorageConnection();
@@ -4589,7 +4815,10 @@ function bindEvents() {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק את התשלום?")) return;
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await deletePaymentRecord(target.dataset.id);
+        await runAuditedAction(
+          { actionType: "delete", entityType: "payment", entityId: target.dataset.id, summary: "מחיקת תשלום", undoable: false },
+          () => deletePaymentRecord(target.dataset.id)
+        );
         state.message = "התשלום נמחק מהמערכת.";
         state.error = "";
         render();
@@ -4603,7 +4832,10 @@ function bindEvents() {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק את קובץ הקבלה?")) return;
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await deletePaymentReceipt(target.dataset.id);
+        await runAuditedAction(
+          { actionType: "delete_receipt", entityType: "payment", entityId: target.dataset.id, summary: "מחיקת קובץ קבלה", undoable: false },
+          () => deletePaymentReceipt(target.dataset.id)
+        );
         state.message = "קובץ הקבלה נמחק ועודכן ברשומת התשלום.";
         state.error = "";
         render();
@@ -4616,7 +4848,10 @@ function bindEvents() {
     if (action === "set-payment-status") {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await setPaymentStatus(target.dataset.id, target.dataset.status || "unpaid");
+        await runAuditedAction(
+          { actionType: "status", entityType: "payment", entityId: target.dataset.id, summary: "עדכון סטטוס תשלום" },
+          () => setPaymentStatus(target.dataset.id, target.dataset.status || "unpaid")
+        );
         state.message = "סטטוס התשלום עודכן.";
         state.error = "";
         render();
@@ -4629,7 +4864,10 @@ function bindEvents() {
     if (action === "set-receipt-status") {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await setReceiptStatus(target.dataset.id, target.dataset.status || "issued");
+        await runAuditedAction(
+          { actionType: "status", entityType: "payment", entityId: target.dataset.id, summary: "עדכון סטטוס קבלה" },
+          () => setReceiptStatus(target.dataset.id, target.dataset.status || "issued")
+        );
         state.message = "סטטוס הקבלה עודכן.";
         state.error = "";
         render();
@@ -4666,7 +4904,10 @@ function bindEvents() {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המשימה?")) return;
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await deleteTaskRecord(target.dataset.id);
+        await runAuditedAction(
+          { actionType: "delete", entityType: "task", entityId: target.dataset.id, summary: "מחיקת משימה" },
+          () => deleteTaskRecord(target.dataset.id)
+        );
         state.message = "המשימה נמחקה.";
         state.error = "";
         render();
@@ -4680,7 +4921,10 @@ function bindEvents() {
       if (!window.confirm("למחוק את חריג היומן?")) return;
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await deleteScheduleException(target.dataset.id);
+        await runAuditedAction(
+          { actionType: "delete", entityType: "schedule_exception", entityId: target.dataset.id, summary: "מחיקת חריג יומן" },
+          () => deleteScheduleException(target.dataset.id)
+        );
         state.message = "חריג היומן נמחק.";
         state.error = "";
         render();
@@ -4695,7 +4939,10 @@ function bindEvents() {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
         lastCalendarSyncError = "";
-        await deleteSessionRecord(target.dataset.id);
+        await runAuditedAction(
+          { actionType: "delete", entityType: "session", entityId: target.dataset.id, summary: "מחיקת מפגש", undoable: false },
+          () => deleteSessionRecord(target.dataset.id)
+        );
         state.message = lastCalendarSyncError
           ? `המפגש נמחק מהמערכת. ${lastCalendarSyncError}`
           : "המפגש נמחק מהמערכת ומהיומן.";
@@ -4716,7 +4963,10 @@ function bindEvents() {
 
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await togglePatientArchive(target.dataset.id, shouldArchive);
+        await runAuditedAction(
+          { actionType: shouldArchive ? "archive" : "restore", entityType: "patient", entityId: target.dataset.id, summary: shouldArchive ? "העברת מטופל לארכיון" : "החזרת מטופל לפעילות" },
+          () => togglePatientArchive(target.dataset.id, shouldArchive)
+        );
         state.message = shouldArchive ? "המטופל הועבר לארכיון." : "המטופל הוחזר לפעילות.";
         render();
       } catch (error) {
@@ -4746,7 +4996,10 @@ function bindEvents() {
     if (action === "materialize-recurring") {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירת מפגש.");
-        await materializeRecurringSession(target.dataset.patientId, target.dataset.date);
+        await runAuditedAction(
+          { actionType: "create", entityType: "session", entityId: target.dataset.patientId, summary: "יצירת מפגש קבוע", undoable: false },
+          () => materializeRecurringSession(target.dataset.patientId, target.dataset.date)
+        );
         const syncMessages = [lastCalendarSyncError, lastDocumentSyncError].filter(Boolean);
         state.message = syncMessages.length
           ? `המפגש הקבוע נשמר במערכת. ${syncMessages.join(" ")}`
@@ -4763,7 +5016,10 @@ function bindEvents() {
       if (!window.confirm("לבטל את המפגש הקבוע רק בתאריך הזה?")) return;
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני ביטול מפגש.");
-        await cancelRecurringSession(target.dataset.patientId, target.dataset.date);
+        await runAuditedAction(
+          { actionType: "cancel", entityType: "schedule_exception", entityId: target.dataset.patientId, summary: "ביטול מפגש קבוע בתאריך", undoable: true },
+          () => cancelRecurringSession(target.dataset.patientId, target.dataset.date)
+        );
         state.message = "המפגש הקבוע בוטל לתאריך הזה בלבד.";
         state.error = "";
         render();
@@ -4812,7 +5068,10 @@ function bindEvents() {
     if (action === "create-drive-folder") {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await ensurePatientDriveFolder(target.dataset.id);
+        await runAuditedAction(
+          { actionType: "create_folder", entityType: "patient", entityId: target.dataset.id, summary: "יצירת תיקיית מטופל", undoable: false },
+          () => ensurePatientDriveFolder(target.dataset.id)
+        );
         state.message = "תיקיית המטופל נוצרה ונשמרה במערכת.";
         render();
       } catch (error) {
@@ -4823,7 +5082,10 @@ function bindEvents() {
     if (action === "sync-drive-files") {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const count = await syncPatientDriveFiles(target.dataset.id);
+        const count = await runAuditedAction(
+          { actionType: "sync", entityType: "file", entityId: target.dataset.id, summary: "סנכרון קבצים מ-Drive", undoable: false },
+          () => syncPatientDriveFiles(target.dataset.id)
+        );
         state.message = count
           ? `${count} קבצים חדשים נרשמו מתוך תיקיית המטופל.`
           : "לא נמצאו קבצים חדשים לייבוא מהתיקייה.";
@@ -4853,7 +5115,10 @@ function bindEvents() {
     if (action === "create-transcript-draft") {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת מסמך.");
-        const draft = await createRecordingTranscriptDraft(target.dataset.id);
+        const draft = await runAuditedAction(
+          { actionType: "create", entityType: "file", entityId: target.dataset.id, summary: "יצירת טיוטת תמלול", undoable: false },
+          () => createRecordingTranscriptDraft(target.dataset.id)
+        );
         state.message = `טיוטת התמלול נוצרה ונשמרה בקבצים: ${draft.name || "מסמך תמלול"}.`;
         state.error = "";
         render();
@@ -4868,7 +5133,10 @@ function bindEvents() {
 
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await deleteFileRecord(target.dataset.id);
+        await runAuditedAction(
+          { actionType: "delete", entityType: "file", entityId: target.dataset.id, summary: "מחיקת קובץ", undoable: false },
+          () => deleteFileRecord(target.dataset.id)
+        );
         state.message = "הקובץ נמחק מכרטיס המטופל ומהתיקייה בדרייב.";
         state.error = "";
         render();
@@ -4881,7 +5149,10 @@ function bindEvents() {
     if (action === "complete-task") {
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await completeTask(target.dataset.id);
+        await runAuditedAction(
+          { actionType: "complete", entityType: "task", entityId: target.dataset.id, summary: "סימון משימה כבוצעה" },
+          () => completeTask(target.dataset.id)
+        );
         state.message = "המשימה סומנה כבוצעה.";
         render();
       } catch (error) {
@@ -4955,7 +5226,10 @@ function bindEvents() {
 
       if (form.dataset.form === "patient") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const patient = await savePatient(form);
+        const patient = await runAuditedAction(
+          { actionType: form.dataset.id ? "update" : "create", entityType: "patient", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון פרטי מטופל" : "יצירת מטופל", undoable: Boolean(form.dataset.id) },
+          () => savePatient(form)
+        );
         state.currentPatientId = "";
         if (form.dataset.id) {
           state.message = patient.folderCreated
@@ -4968,7 +5242,10 @@ function bindEvents() {
 
       if (form.dataset.form === "session") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await saveSession(form);
+        await runAuditedAction(
+          { actionType: form.dataset.id ? "update" : "create", entityType: "session", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון מפגש" : "יצירת מפגש", undoable: false },
+          () => saveSession(form)
+        );
         const syncMessages = [lastCalendarSyncError, lastDocumentSyncError].filter(Boolean);
         state.message = syncMessages.length
           ? `המפגש נשמר במערכת. ${syncMessages.join(" ")}`
@@ -4977,32 +5254,47 @@ function bindEvents() {
 
       if (form.dataset.form === "payment") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await savePayment(form);
+        await runAuditedAction(
+          { actionType: form.dataset.id ? "update" : "create", entityType: "payment", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון תשלום" : "יצירת תשלום", undoable: !form.elements.receipt_upload?.files?.[0] },
+          () => savePayment(form)
+        );
         state.message = "התשלום נשמר במערכת.";
       }
 
       if (form.dataset.form === "task") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await saveTask(form);
+        await runAuditedAction(
+          { actionType: form.dataset.id ? "update" : "create", entityType: "task", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון משימה ותזכורת" : "יצירת משימה ותזכורת" },
+          () => saveTask(form)
+        );
         state.message = "המשימה נשמרה במערכת.";
       }
 
       if (form.dataset.form === "schedule-exception") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await saveScheduleException(form);
+        await runAuditedAction(
+          { actionType: "create", entityType: "schedule_exception", summary: "יצירת חריג יומן" },
+          () => saveScheduleException(form)
+        );
         state.message = "חריג היומן נשמר.";
       }
 
       if (form.dataset.form === "file") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
         const isEdit = Boolean(form.dataset.id);
-        await saveFile(form);
+        await runAuditedAction(
+          { actionType: isEdit ? "update" : "create", entityType: "file", entityId: form.dataset.id || "", summary: isEdit ? "עדכון קובץ" : "העלאת קובץ", undoable: false },
+          () => saveFile(form)
+        );
         state.message = isEdit ? "פרטי הקובץ עודכנו." : "הקובץ הועלה ונרשם בכרטיס המטופל.";
       }
 
       if (form.dataset.form === "template-copy") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await createFileFromTemplate(form);
+        await runAuditedAction(
+          { actionType: "create", entityType: "file", summary: "יצירת מסמך מתבנית", undoable: false },
+          () => createFileFromTemplate(form)
+        );
         state.message = "המסמך נוצר מתבנית, נשמר בתיקיית המטופל ונרשם בקבצים.";
       }
 

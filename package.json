@@ -1,6 +1,6 @@
 {
   "name": "clinic-manager",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -10,6 +10,8 @@
     "demo:server": "node scripts/local-server.mjs",
     "check:static": "node scripts/check-project.mjs",
     "check:security": "node scripts/check-browser-security.mjs",
+    "test:workflows": "node scripts/test-workflows.mjs",
+    "release:check": "npm run check:static && npm run check:security && npm run test:workflows && npm run lint",
     "lint": "eslint .",
     "hash-password": "node scripts/hash-password.mjs",
     "reset-password": "node scripts/reset-password.mjs",

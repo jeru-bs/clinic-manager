@@ -20,6 +20,12 @@ const checks = [
   ["Verified Google email required", app.includes("profile?.email_verified !== true")],
   ["Automatic session restoration", app.includes("async function restoreGoogleSession()")],
   ["Explicit device disconnect", app.includes('action === "disconnect-google"')],
+  [
+    "Sensitive state cleared on disconnect and auth failure",
+    app.includes("function clearClinicData()") &&
+      app.includes("state.auditLog = []") &&
+      app.includes("clearClinicData();")
+  ],
   ["Public Drive access audit", app.includes("async function runSharingSecurityAudit()")],
   [
     "Automatic public permission removal",
