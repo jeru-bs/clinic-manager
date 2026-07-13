@@ -370,6 +370,28 @@ p {
   padding: 12px 16px;
 }
 
+.panel-head.count-only {
+  justify-content: flex-end;
+  min-height: 0;
+}
+
+.settings-help {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  margin-top: 0.8rem;
+  padding-top: 0.75rem;
+}
+
+.settings-help summary {
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.settings-help p {
+  margin: 0.65rem 0 0;
+}
+
 .panel-head h2 {
   margin: 0;
   font-size: 1.05rem;

@@ -667,7 +667,6 @@ function accessGatePage() {
       <div class="empty">
         <div>
           <strong>${html(details)}</strong>
-          <p>הנתונים יוצגו רק אחרי זיהוי חשבון מורשה.</p>
           <a class="button secondary" href="#/settings">הגדרות</a>
         </div>
       </div>
@@ -698,7 +697,7 @@ function dashboardPage() {
   return shell(`
     ${header(
       "תמונת מצב יומית",
-      "מפגשים, משימות ותשלומים לטיפול.",
+      "",
       `<button class="button" data-action="open-patient-drawer" type="button">מטופל חדש +</button>`
     )}
     ${connectionBanner()}
@@ -733,14 +732,14 @@ function patientsPage() {
   return shell(`
     ${header(
       "מטופלים",
-      "רשימת מטופלים קיימים.",
+      "",
       `<button class="button" data-action="open-patient-drawer" type="button">הוסף מטופל +</button>
        <button class="button secondary" data-action="refresh" type="button">רענון</button>
        <a class="button yellow" href="#/settings">הגדרות</a>`
     )}
     ${connectionBanner()}
     <section class="panel">
-      <div class="panel-head"><h2>מטופלים קיימים</h2><span>${filteredPatients.length} מתוך ${state.patients.length} רשומות</span></div>
+      <div class="panel-head count-only"><span>${filteredPatients.length} מתוך ${state.patients.length}</span></div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -847,7 +846,7 @@ function profileTabs(activeTab) {
 function profileOverviewPanel(patient) {
   return `
     <article class="panel compact-panel">
-      <div class="panel-head"><h2>פרטים כלליים</h2><span>נתוני מטופל</span></div>
+      <div class="panel-head"><h2>פרטים כלליים</h2></div>
       <div class="detail-list detail-grid">
         ${detail("שם", patient.child_name)}
         ${detail("מוסד לימודים", patient.school_name)}
@@ -866,10 +865,10 @@ function settingsPage() {
     ? `<button class="button secondary" data-action="disconnect-google" type="button">התנתקות מהמכשיר</button>`
     : `<button class="button blue" data-action="connect-google" type="button">התחברות לאחסון</button>`;
   return shell(`
-    ${header("הגדרות", "חיבור הדפדפן לאחסון. פרטי החיבור נשמרים בדפדפן שלך.", connectionAction)}
+    ${header("הגדרות", "", connectionAction)}
     <section class="grid-two settings-grid">
       <article class="panel settings-panel">
-        <div class="panel-head"><h2>פרטי חיבור</h2><span>נשמר בדפדפן שלך</span></div>
+        <div class="panel-head"><h2>פרטי חיבור</h2></div>
         <form class="form-grid settings-form" data-form="settings">
           <div class="field settings-full">
             <label for="googleClientId">מזהה התחברות</label>
@@ -909,10 +908,8 @@ function settingsPage() {
         </form>
       </article>
       <article class="panel settings-panel settings-status-panel">
-        <div class="panel-head"><h2>מצב</h2><span>מערכת</span></div>
+        <div class="panel-head"><h2>מצב</h2></div>
         <div class="settings-card">
-          <p><strong>קוד:</strong> נטען מהאתר.</p>
-          <p><strong>נתונים:</strong> נשמרים באחסון המחובר.</p>
           <p><strong>חיבור:</strong> ${state.accessToken ? "מחובר כרגע." : "לא מחובר כרגע."}</p>
           <p><strong>חשבון:</strong> ${state.googleUser?.email ? html(state.googleUser.email) : "לא זוהה עדיין."}</p>
           <p><strong>הרשאה:</strong> ${state.accessToken && state.authChecked ? (isAuthorizedGoogleUser() ? "מורשה." : "לא מורשה.") : "תיבדק אחרי התחברות."}</p>
@@ -925,7 +922,6 @@ function settingsPage() {
             <span>Client ID בפועל</span>
             <input readonly value="${html(activeClientId)}" />
           </label>
-          <p class="settings-hint">אם מתקבלת שגיאת origin_mismatch, צריך להוסיף ב-Google Cloud בדיוק את המקור שמופיע כאן, תחת Authorized JavaScript origins של אותו Client ID.</p>
           <div class="diagnostic-actions settings-primary-actions">
             <button class="button blue" data-action="check-storage" type="button">בדיקת חיבור</button>
             <button class="button secondary" data-action="force-connect-google" type="button">התחברות מחדש עם הרשאות</button>
@@ -938,16 +934,20 @@ function settingsPage() {
             <a class="button yellow" href="${html(googleApiActivationUrl("calendar.googleapis.com"))}" target="_blank" rel="noopener">הפעלת יומן</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("docs.googleapis.com"))}" target="_blank" rel="noopener">הפעלת מסמכים</a>
           </div>
-          <p class="settings-hint">אם בדיקת החיבור נכשלת, מפעילים את שני הרכיבים, חוזרים לכאן ולוחצים התחברות מחדש עם הרשאות.</p>
+          <details class="settings-help">
+            <summary>עזרה בתקלות חיבור</summary>
+            <p>בשגיאת origin_mismatch יש להוסיף ב-Google Cloud את המקור שמופיע למעלה, תחת Authorized JavaScript origins של ה-Client ID.</p>
+            <p>אם בדיקת החיבור נכשלת, מפעילים את הרכיב המתאים וחוזרים להתחברות מחדש עם הרשאות.</p>
+          </details>
         </div>
       </article>
     </section>
     <section class="panel page-gap">
-      <div class="panel-head"><h2>יומן פעילות וביטול</h2><span>Audit מרכזי</span></div>
+      <div class="panel-head"><h2>יומן פעילות וביטול</h2></div>
       ${auditLogView()}
     </section>
     <section class="panel page-gap">
-      <div class="panel-head"><h2>גיבוי וייצוא</h2><span>שמירת עותק עבודה</span></div>
+      <div class="panel-head"><h2>גיבוי וייצוא</h2></div>
       <div class="toolbar">
         <button class="button blue" data-action="download-backup" type="button">הורדת גיבוי מלא</button>
         <button class="button" data-action="save-backup-drive" type="button">שמירת גיבוי באחסון</button>
@@ -972,7 +972,7 @@ function settingsPage() {
       </div>
     </section>
     <section class="panel page-gap">
-      <div class="panel-head"><h2>בדיקת תקינות נתונים</h2><span>גיליונות ועמודות</span></div>
+      <div class="panel-head"><h2>בדיקת תקינות נתונים</h2></div>
       <div class="toolbar">
         <button class="button blue" data-action="check-data-health" type="button">בדיקת תקינות</button>
         <button class="button yellow" data-action="repair-data-health" type="button">תיקון מבנה</button>
@@ -980,7 +980,7 @@ function settingsPage() {
       ${dataHealthView()}
     </section>
     <section class="panel page-gap">
-      <div class="panel-head"><h2>אבטחת שיתוף</h2><span>Google Drive ו-Sheets</span></div>
+      <div class="panel-head"><h2>אבטחת שיתוף</h2></div>
       <div class="toolbar">
         <button class="button blue" data-action="check-sharing-security" type="button">בדיקת הרשאות שיתוף</button>
         <button class="button yellow" data-action="repair-sharing-security" type="button">הסרת גישה ציבורית</button>
@@ -988,7 +988,7 @@ function settingsPage() {
       ${sharingSecurityView()}
     </section>
     <section class="panel page-gap">
-      <div class="panel-head"><h2>חריגי יומן</h2><span>ביטולים, חופשות וחגים</span></div>
+      <div class="panel-head"><h2>חריגי יומן</h2></div>
       <form class="inline-form schedule-exception-form" data-form="schedule-exception">
         <div class="field">
           <label>מטופל</label>
@@ -1332,7 +1332,7 @@ function sessionsPanel(items = state.sessions, patientId = "") {
   const patientMode = Boolean(patientId);
   return `
     <article class="panel ${patientMode ? "profile-wide" : ""}">
-      <div class="panel-head"><h2>${patientMode ? "תיעוד מפגש" : "מפגשים קרובים"}</h2><span>${patientMode ? "כתיבה והקלטה בתוך הכרטיס" : "היום והשבוע הקרוב"}</span></div>
+      <div class="panel-head"><h2>${patientMode ? "תיעוד מפגש" : "מפגשים קרובים"}</h2>${patientMode ? "" : "<span>היום והשבוע הקרוב</span>"}</div>
       ${patientMode ? recordingPanel(state.patients.find((patient) => patient.id === patientId) || { id: patientId }) : ""}
       ${patientId ? sessionForm(patientId) : ""}
       ${
@@ -1366,7 +1366,7 @@ function paymentsPanel(items = state.payments, patientId = "") {
   const rows = items.slice(0, 5);
   return `
     <article class="panel">
-      <div class="panel-head"><h2>תשלומים</h2><span>מעקב גבייה</span></div>
+      <div class="panel-head"><h2>תשלומים</h2></div>
       ${patientId ? paymentForm(patientId) : ""}
       ${
         rows.length
@@ -1421,7 +1421,7 @@ function calendarPage() {
   return shell(`
     ${header(
       "יומן",
-      "לוח שנה פעיל של מפגשים.",
+      "",
       `<button class="button secondary" data-action="calendar-prev" type="button">חודש קודם</button>
        <button class="button blue" data-action="calendar-today" type="button">היום</button>
        <button class="button secondary" data-action="calendar-next" type="button">חודש הבא</button>
@@ -1526,7 +1526,7 @@ function paymentsPage() {
   return shell(`
     ${header(
       "תשלומים",
-      "מעקב גבייה, תשלומים וקבלות.",
+      "",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
        <button class="button blue" data-action="export-receipts" type="button">ייצוא קבלות להכנה</button>
        <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
@@ -1538,7 +1538,7 @@ function paymentsPage() {
       <article class="metric teal-card"><strong>${receiptsToPrepare.length}</strong><span>קבלות להכנה</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>רשימת תשלומים</h2><span>${rows.length} רשומות</span></div>
+      <div class="panel-head count-only"><span>${rows.length} תשלומים</span></div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -1649,8 +1649,8 @@ function reportsPage() {
 
   return shell(`
     ${header(
-      "דוחות",
-      `סיכום עבודה לחודש ${monthLabel(month)} מתוך נתוני המערכת.`,
+      `דוחות · ${monthLabel(month)}`,
+      "",
       `<button class="button secondary" data-action="reports-prev" type="button">חודש קודם</button>
        <button class="button blue" data-action="reports-current" type="button">החודש</button>
        <button class="button secondary" data-action="reports-next" type="button">חודש הבא</button>
@@ -1971,7 +1971,7 @@ function tasksPage() {
   return shell(`
     ${header(
       "משימות",
-      "ניהול מעקבים, תזכורות ופעולות המשך.",
+      "",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
        <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
     )}
@@ -1982,12 +1982,12 @@ function tasksPage() {
       <article class="metric teal-card"><strong>${rows.length}</strong><span>סה"כ משימות</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>משימה חדשה</h2><span>נשמרת במערכת</span></div>
+      <div class="panel-head"><h2>משימה חדשה</h2></div>
       ${taskForm()}
     </section>
     ${taskFiltersPanel(rows.length, shownRows.length)}
     <section class="panel page-gap">
-      <div class="panel-head"><h2>רשימת משימות</h2><span>${shownRows.length} רשומות</span></div>
+      <div class="panel-head count-only"><span>${shownRows.length} משימות</span></div>
       ${tasksTable(shownRows)}
     </section>
   `);
@@ -2142,7 +2142,7 @@ function filesPanel(items = state.files, patient = null) {
   const rows = items.slice(0, 6);
   return `
     <article class="panel">
-      <div class="panel-head"><h2>קבצים</h2><span>אחסון</span></div>
+      <div class="panel-head"><h2>קבצים</h2></div>
       ${patient ? fileForm(patient.id) : ""}
       ${patient ? templateForm(patient.id) : ""}
       ${
@@ -2211,7 +2211,7 @@ function filesPage() {
   return shell(`
     ${header(
       "קבצים",
-      "קבצים שמורים לפי מטופל.",
+      "",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
        ${
          state.config.googleDriveRootFolderId
@@ -2226,12 +2226,12 @@ function filesPage() {
       <article class="metric purple-card"><strong>${state.patients.length}</strong><span>מטופלים במערכת</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>${state.currentFileId ? "עריכת קובץ" : "קובץ חדש"}</h2><span>העלאה לתיקיית המטופל</span></div>
+      <div class="panel-head"><h2>${state.currentFileId ? "עריכת קובץ" : "קובץ חדש"}</h2></div>
       ${fileForm()}
     </section>
     ${fileFiltersPanel(rows.length, shownRows.length)}
     <section class="panel page-gap">
-      <div class="panel-head"><h2>רשימת קבצים</h2><span>${shownRows.length} רשומות</span></div>
+      <div class="panel-head count-only"><span>${shownRows.length} קבצים</span></div>
       ${filesTable(shownRows)}
     </section>
   `);
