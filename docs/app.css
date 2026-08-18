@@ -1255,7 +1255,8 @@ th {
 }
 
 .calendar-event,
-.calendar-more {
+.calendar-more,
+.calendar-holiday {
   overflow: hidden;
   border-radius: 4px;
   background: #eef3ff;
@@ -1265,6 +1266,15 @@ th {
   padding: 2px 4px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.calendar-holiday {
+  background: #fff1c7;
+  color: #754f00;
+}
+
+.calendar-day.has-holiday {
+  background: #fffdf7;
 }
 
 .calendar-more {
@@ -1319,6 +1329,37 @@ th {
   display: grid;
   gap: 8px;
   padding: 12px;
+}
+
+.holiday-list {
+  display: grid;
+  gap: 8px;
+  padding: 12px 12px 0;
+}
+
+.holiday-note {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(209, 145, 0, 0.3);
+  border-radius: 4px;
+  background: #fff9e9;
+  color: var(--text);
+  padding: 10px 12px;
+  text-decoration: none;
+}
+
+.holiday-note:hover {
+  border-color: #d19100;
+}
+
+.holiday-note span,
+.hebcal-credit {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.hebcal-credit {
+  padding: 8px 12px 12px;
 }
 
 .exception-note {

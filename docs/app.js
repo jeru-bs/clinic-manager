@@ -103,6 +103,9 @@ const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
 const GOOGLE_CONSENT_KEY = "clinic-manager-google-consent";
 const GOOGLE_ACCOUNT_KEY = "clinic-manager-google-account";
 const SETTINGS_FILE_NAME = "clinic-manager-settings.json";
+const HEBCAL_API_URL = "https://www.hebcal.com/hebcal";
+const HEBCAL_CACHE_PREFIX = "clinic-manager-hebcal-israel";
+const HEBCAL_CACHE_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_SESSION_TYPES = ["טיפול", "הדרכת הורים", "שיחה", "אבחון"];
 const DEFAULT_SESSION_LOCATIONS = ["קליניקה", "בית ספר", "אונליין", "בית"];
 let googleTokenExpiresAt = 0;
@@ -126,6 +129,9 @@ const state = {
   tasks: [],
   files: [],
   scheduleExceptions: [],
+  israelHolidays: [],
+  israelHolidayYears: [],
+  israelHolidayError: "",
   auditLog: [],
   lastUndoActionId: "",
   templates: [],
@@ -169,6 +175,7 @@ let lastDocumentSyncError = "";
 let googleAuthInFlight = false;
 let lastGoogleRestoreAttempt = 0;
 let drawerReturnFocus = null;
+const loadingIsraelHolidayYears = new Set();
 
 function loadConfig() {
   const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
@@ -410,6 +417,116 @@ function calendarDays(monthValue) {
       inMonth: date.getMonth() === month - 1
     };
   });
+}
+
+function hebcalCacheKey(year) {
+  return `${HEBCAL_CACHE_PREFIX}-${year}`;
+}
+
+function normalizeIsraelHoliday(item) {
+  const sourceLink = String(item?.link || "");
+  const safeLink = /^https:\/\/(?:www\.)?hebcal\.com\//.test(sourceLink)
+    ? sourceLink
+    : "https://www.hebcal.com/";
+  return {
+    date: item?.date || "",
+    title: item?.hebrew || item?.title || "מועד ישראל",
+    memo: item?.memo || "",
+    link: safeLink,
+    subcat: item?.subcat || "",
+    yomtov: item?.yomtov === true
+  };
+}
+
+function cachedIsraelHolidays(year, allowExpired = false) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(hebcalCacheKey(year)) || "null");
+    if (!cached || !Array.isArray(cached.items)) return null;
+    if (!allowExpired && Date.now() - Number(cached.savedAt || 0) > HEBCAL_CACHE_MAX_AGE) return null;
+    return cached.items.map(normalizeIsraelHoliday).filter((item) => item.date);
+  } catch {
+    return null;
+  }
+}
+
+function storeIsraelHolidays(year, items) {
+  try {
+    localStorage.setItem(hebcalCacheKey(year), JSON.stringify({ savedAt: Date.now(), items }));
+  } catch {
+    // Calendar data can still be used for the current session when browser storage is full.
+  }
+}
+
+function mergeIsraelHolidays(year, items) {
+  state.israelHolidays = [
+    ...state.israelHolidays.filter((item) => !item.date.startsWith(`${year}-`)),
+    ...items
+  ].sort((a, b) => `${a.date} ${a.title}`.localeCompare(`${b.date} ${b.title}`, "he"));
+  state.israelHolidayYears = [...new Set([...state.israelHolidayYears, year])];
+}
+
+async function loadIsraelHolidaysForYear(year) {
+  if (state.israelHolidayYears.includes(year) || loadingIsraelHolidayYears.has(year)) return;
+  loadingIsraelHolidayYears.add(year);
+  const freshCache = cachedIsraelHolidays(year);
+
+  if (freshCache) {
+    mergeIsraelHolidays(year, freshCache);
+    loadingIsraelHolidayYears.delete(year);
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams({
+      v: "1",
+      cfg: "json",
+      start: `${year}-01-01`,
+      end: `${year}-12-31`,
+      i: "on",
+      lg: "he",
+      maj: "on",
+      min: "on",
+      mod: "on",
+      mf: "on"
+    });
+    const response = await fetch(`${HEBCAL_API_URL}?${params}`);
+    if (!response.ok) throw new Error(`Hebcal ${response.status}`);
+    const payload = await response.json();
+    const items = (payload.items || [])
+      .filter((item) => item.category === "holiday" && item.date)
+      .map(normalizeIsraelHoliday);
+    storeIsraelHolidays(year, items);
+    mergeIsraelHolidays(year, items);
+    state.israelHolidayError = "";
+  } catch {
+    const staleCache = cachedIsraelHolidays(year, true);
+    if (staleCache) {
+      mergeIsraelHolidays(year, staleCache);
+    } else {
+      mergeIsraelHolidays(year, []);
+      state.israelHolidayError = "לא היה ניתן לטעון את מועדי ישראל כרגע.";
+    }
+  } finally {
+    loadingIsraelHolidayYears.delete(year);
+  }
+}
+
+async function ensureIsraelHolidaysForMonth(monthValue) {
+  const years = [...new Set(calendarDays(monthValue).map((day) => Number(day.date.slice(0, 4))))];
+  const missingYears = years.filter(
+    (year) => !state.israelHolidayYears.includes(year) && !loadingIsraelHolidayYears.has(year)
+  );
+  if (!missingYears.length) return;
+  await Promise.all(missingYears.map(loadIsraelHolidaysForYear));
+  if (state.route.split("/")[0] === "calendar") render();
+}
+
+function israelHolidaysForDate(dateValue) {
+  return state.israelHolidays.filter((holiday) => holiday.date === dateValue);
+}
+
+function israelHolidayBlocksRecurring(dateValue) {
+  return israelHolidaysForDate(dateValue).find((holiday) => holiday.yomtov);
 }
 
 function dateFromInput(value) {
@@ -1416,6 +1533,7 @@ function calendarPage() {
   const rows = sessionsForDates(days.map((day) => day.date));
   const selectedSessions = rows.filter((session) => session.session_date === state.selectedCalendarDate);
   const selectedExceptions = scheduleExceptionsForDate(state.selectedCalendarDate);
+  const selectedHolidays = israelHolidaysForDate(state.selectedCalendarDate);
   const sessionsByDate = rows.reduce((acc, session) => {
     if (!session.session_date) return acc;
     acc[session.session_date] = [...(acc[session.session_date] || []), session];
@@ -1446,11 +1564,17 @@ function calendarPage() {
           ${days
             .map((day) => {
               const daySessions = sessionsByDate[day.date] || [];
+              const dayHolidays = israelHolidaysForDate(day.date);
+              const holidayLabel = dayHolidays.map((holiday) => holiday.title).join(", ");
               return `
-                <button class="calendar-day ${day.inMonth ? "" : "muted"} ${day.date === today ? "today" : ""} ${day.date === state.selectedCalendarDate ? "selected" : ""} ${daySessions.length ? "has-events" : ""}" data-action="select-calendar-date" data-date="${html(day.date)}" type="button" aria-label="${html(`${formatDate(day.date)}: ${daySessions.length} מפגשים`)}">
+                <button class="calendar-day ${day.inMonth ? "" : "muted"} ${day.date === today ? "today" : ""} ${day.date === state.selectedCalendarDate ? "selected" : ""} ${daySessions.length ? "has-events" : ""} ${dayHolidays.length ? "has-holiday" : ""}" data-action="select-calendar-date" data-date="${html(day.date)}" type="button" aria-label="${html(`${formatDate(day.date)}: ${daySessions.length} מפגשים${holidayLabel ? `; ${holidayLabel}` : ""}`)}">
                   <span class="day-number">${Number(day.date.slice(8, 10))}</span>
                   ${daySessions.length ? `<span class="calendar-mobile-count" aria-hidden="true">${daySessions.length}</span>` : ""}
                   <span class="day-events">
+                    ${dayHolidays
+                      .slice(0, 1)
+                      .map((holiday) => `<span class="calendar-holiday">${html(holiday.title)}</span>`)
+                      .join("")}
                     ${daySessions
                       .slice(0, 1)
                       .map(
@@ -1472,8 +1596,21 @@ function calendarPage() {
       <aside class="panel day-panel">
         <div class="panel-head">
           <h2>${html(formatDate(state.selectedCalendarDate))}</h2>
-          <span>${selectedSessions.length} מפגשים${selectedExceptions.length ? `, ${selectedExceptions.length} חריגים` : ""}</span>
+          <span>${selectedSessions.length} מפגשים${selectedHolidays.length ? `, ${selectedHolidays.length} מועדים` : ""}${selectedExceptions.length ? `, ${selectedExceptions.length} חריגים` : ""}</span>
         </div>
+        ${
+          selectedHolidays.length
+            ? `<div class="holiday-list">${selectedHolidays
+                .map(
+                  (holiday) => `
+                    <a class="holiday-note" href="${html(holiday.link)}" target="_blank" rel="noopener">
+                      <strong>${html(holiday.title)}</strong>
+                      ${holiday.memo ? `<span>${html(holiday.memo)}</span>` : ""}
+                    </a>`
+                )
+                .join("")}</div>`
+            : ""
+        }
         ${
           selectedExceptions.length
             ? `<div class="exception-list">${selectedExceptions
@@ -1500,6 +1637,7 @@ function calendarPage() {
                 .join("")}</div>`
             : `<div class="empty">אין מפגשים ביום הזה.</div>`
         }
+        <div class="hebcal-credit">מועדי ישראל באדיבות <a href="https://www.hebcal.com/" target="_blank" rel="noopener">Hebcal</a>${state.israelHolidayError ? ` · ${html(state.israelHolidayError)}` : ""}</div>
       </aside>
     </section>
   `);
@@ -2402,7 +2540,10 @@ function scheduleExceptionsForDate(dateValue, patientId = "") {
 }
 
 function recurringBlockedByException(patientId, dateValue) {
-  return state.scheduleExceptions.find((exception) => exceptionApplies(exception, patientId, dateValue));
+  return (
+    state.scheduleExceptions.find((exception) => exceptionApplies(exception, patientId, dateValue)) ||
+    israelHolidayBlocksRecurring(dateValue)
+  );
 }
 
 async function saveScheduleException(form) {
@@ -5454,6 +5595,7 @@ function render() {
   document.getElementById("app").innerHTML =
     !isSettings && !canUseStorage() ? accessGatePage() : (pages[route] || dashboardPage)();
   scheduleMessageDismiss();
+  if (route === "calendar") ensureIsraelHolidaysForMonth(state.calendarMonth).catch(() => {});
 }
 
 function scheduleMessageDismiss() {

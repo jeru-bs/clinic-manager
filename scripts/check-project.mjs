@@ -94,6 +94,7 @@ for (const file of textFiles) {
 
 const browserAppSource = fs.readFileSync(path.join(root, "docs", "app.js"), "utf8");
 const browserCssSource = fs.readFileSync(path.join(root, "docs", "app.css"), "utf8");
+const browserHtmlSource = fs.readFileSync(path.join(root, "docs", "index.html"), "utf8");
 
 if (!browserAppSource.includes("daySessions.length > 1")) {
   uiRegressionFindings.push("calendar does not reveal additional sessions from the second meeting onward");
@@ -109,6 +110,14 @@ if (!browserAppSource.includes('role="dialog" aria-modal="true"')) {
 }
 if (!browserCssSource.includes(".calendar-mobile-count") || !browserCssSource.includes("height: 72px")) {
   uiRegressionFindings.push("mobile calendar or bottom navigation styles are missing");
+}
+if (
+  !browserAppSource.includes('i: "on"') ||
+  !browserAppSource.includes('lg: "he"') ||
+  !browserAppSource.includes("israelHolidayBlocksRecurring") ||
+  !browserHtmlSource.includes("https://www.hebcal.com")
+) {
+  uiRegressionFindings.push("the Israel holiday integration is incomplete");
 }
 
 const checks = [

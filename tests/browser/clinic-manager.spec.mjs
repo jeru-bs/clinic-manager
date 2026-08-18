@@ -38,3 +38,34 @@ test("settings remain readable and operable on the configured viewport", async (
     expect(overflow).toBeLessThanOrEqual(1);
   }
 });
+
+test("the Israel calendar requests and caches Hebrew Hebcal holidays", async ({ page }) => {
+  const year = new Date().getFullYear();
+  let requestedUrl = "";
+  await page.route("https://www.hebcal.com/hebcal?**", async (route) => {
+    requestedUrl = route.request().url();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [
+          {
+            date: `${year}-09-21`,
+            category: "holiday",
+            subcat: "major",
+            hebrew: "יום כיפור",
+            yomtov: true,
+            link: "https://www.hebcal.com/"
+          }
+        ]
+      })
+    });
+  });
+
+  await page.goto("/#/calendar");
+
+  await expect.poll(() => requestedUrl).toContain("i=on");
+  expect(requestedUrl).toContain("lg=he");
+  await expect
+    .poll(() => page.evaluate((key) => localStorage.getItem(key), `clinic-manager-hebcal-israel-${year}`))
+    .toContain("יום כיפור");
+});

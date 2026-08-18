@@ -46,6 +46,7 @@ Root Cause First means fix the structural cause before patching the visible symp
 - A session update must handle the stored session, linked calendar event, linked document status, payment linkage, and recurring-calendar projections together.
 - A patient update must preserve folder linkage and avoid creating a second folder unless that is an explicit migration.
 - A schedule exception must be stored in `schedule_exceptions`; calendar projections should derive from it instead of copying exception truth elsewhere.
+- Israel holiday dates are derived from Hebcal and cached locally; only events marked `yomtov` block recurring projections, while private closures remain in `schedule_exceptions`.
 - Audit and undo should record the same persisted operation boundary, not a partial UI state.
 - Any local repair should be idempotent: running it twice should not create duplicate rows, duplicate folders, or contradictory external state.
 
