@@ -72,6 +72,19 @@ const SHEETS = {
     "created_at",
     "updated_at"
   ],
+  contacts: [
+    "id",
+    "patient_id",
+    "contact_type",
+    "name",
+    "relationship",
+    "phone",
+    "email",
+    "organization",
+    "notes",
+    "created_at",
+    "updated_at"
+  ],
   schedule_exceptions: [
     "id",
     "patient_id",
@@ -102,6 +115,9 @@ const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
 const GOOGLE_CONSENT_KEY = "clinic-manager-google-consent";
 const GOOGLE_ACCOUNT_KEY = "clinic-manager-google-account";
+const SYNC_QUEUE_KEY = "clinic-manager-sync-queue-v1";
+const SYNC_STATE_KEY = "clinic-manager-sync-state-v1";
+const CALENDAR_PRIVACY_MIGRATION_KEY = "clinic-manager-calendar-privacy-v1";
 const SETTINGS_FILE_NAME = "clinic-manager-settings.json";
 const HEBCAL_API_URL = "https://www.hebcal.com/hebcal";
 const HEBCAL_CACHE_PREFIX = "clinic-manager-hebcal-israel";
@@ -121,6 +137,7 @@ const state = {
   currentPaymentId: "",
   currentTaskId: "",
   currentFileId: "",
+  currentContactId: "",
   message: "",
   error: "",
   patients: [],
@@ -128,6 +145,7 @@ const state = {
   payments: [],
   tasks: [],
   files: [],
+  contacts: [],
   scheduleExceptions: [],
   israelHolidays: [],
   israelHolidayYears: [],
@@ -138,6 +156,11 @@ const state = {
   dataHealth: null,
   sharingSecurity: null,
   storageReadySpreadsheetId: "",
+  syncQueue: loadSyncQueue(),
+  saveState: loadSyncState().saveState || "idle",
+  lastSavedAt: loadSyncState().lastSavedAt || "",
+  lastRefreshAt: loadSyncState().lastRefreshAt || "",
+  uploadProgress: null,
   patientFilter: {
     name: "",
     school: "",
@@ -176,6 +199,10 @@ let googleAuthInFlight = false;
 let lastGoogleRestoreAttempt = 0;
 let drawerReturnFocus = null;
 const loadingIsraelHolidayYears = new Set();
+let syncRetryTimer = null;
+let syncProcessing = false;
+let activeUploadRequest = null;
+let uploadCancelled = false;
 
 function loadConfig() {
   const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
@@ -232,6 +259,131 @@ function listText(savedValue, defaultValue, fallbackItems) {
 
 function mergeListText(...values) {
   return [...new Set(values.flatMap((value) => optionValues(value, [])))].join("\n");
+}
+
+function loadSyncQueue() {
+  try {
+    const queue = JSON.parse(localStorage.getItem(SYNC_QUEUE_KEY) || "[]");
+    return Array.isArray(queue) ? queue : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadSyncState() {
+  try {
+    return JSON.parse(localStorage.getItem(SYNC_STATE_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSyncState() {
+  localStorage.setItem(
+    SYNC_STATE_KEY,
+    JSON.stringify({
+      saveState: state.saveState,
+      lastSavedAt: state.lastSavedAt,
+      lastRefreshAt: state.lastRefreshAt
+    })
+  );
+  updateSyncIndicator();
+}
+
+function setSaveState(nextState) {
+  state.saveState = nextState;
+  if (nextState === "saved") state.lastSavedAt = new Date().toISOString();
+  saveSyncState();
+}
+
+function persistSyncQueue() {
+  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(state.syncQueue));
+  updateSyncIndicator();
+}
+
+function queueSyncWork(kind, entityId, payload = {}) {
+  const existing = state.syncQueue.find((item) => item.kind === kind && item.entityId === entityId);
+  const now = new Date().toISOString();
+  if (existing) {
+    existing.payload = payload;
+    existing.attempts = 0;
+    existing.nextAttemptAt = Date.now();
+    existing.lastError = "";
+    existing.updatedAt = now;
+  } else {
+    state.syncQueue.push({
+      id: id(),
+      kind,
+      entityId,
+      payload,
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+      lastError: "",
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+  state.saveState = "pending";
+  persistSyncQueue();
+  saveSyncState();
+  scheduleSyncRetry(1000);
+}
+
+function removeSyncWork(itemId) {
+  state.syncQueue = state.syncQueue.filter((item) => item.id !== itemId);
+  if (!state.syncQueue.length) setSaveState("saved");
+  persistSyncQueue();
+}
+
+function scheduleSyncRetry(delay = 5000) {
+  if (syncRetryTimer) window.clearTimeout(syncRetryTimer);
+  if (!state.syncQueue.length) return;
+  syncRetryTimer = window.setTimeout(() => processSyncQueue().catch(() => {}), delay);
+}
+
+function syncStatusLabel() {
+  if (syncProcessing) return "מסנכרן…";
+  if (state.syncQueue.length) return `${state.syncQueue.length} פעולות ממתינות לסנכרון`;
+  if (state.saveState === "saving") return "שומר…";
+  if (state.saveState === "error") return "לא נשמר";
+  if (state.lastSavedAt) return "נשמר";
+  return "מוכן";
+}
+
+function formatDateTime(value) {
+  if (!value) return "טרם בוצע";
+  return new Intl.DateTimeFormat("he-IL", { dateStyle: "short", timeStyle: "short" }).format(
+    new Date(value)
+  );
+}
+
+function updateSyncIndicator() {
+  const label = document.querySelector("[data-sync-label]");
+  const meta = document.querySelector("[data-sync-meta]");
+  const retry = document.querySelector('[data-action="retry-sync"]');
+  if (label) label.textContent = syncStatusLabel();
+  if (meta) meta.textContent = `רענון אחרון: ${formatDateTime(state.lastRefreshAt)}`;
+  if (retry) retry.hidden = !state.syncQueue.length;
+}
+
+function updateUploadProgress(loaded, total, label = "מעלה קובץ…") {
+  const percent = total ? Math.round((loaded / total) * 100) : 0;
+  state.uploadProgress = { loaded, total, percent, label };
+  const box = document.getElementById("uploadStatus");
+  if (!box) return;
+  box.hidden = false;
+  const labelElement = box.querySelector("[data-upload-label]");
+  const percentElement = box.querySelector("[data-upload-percent]");
+  const bar = box.querySelector("[data-upload-bar]");
+  if (labelElement) labelElement.textContent = label;
+  if (percentElement) percentElement.textContent = `${percent}%`;
+  if (bar) bar.style.width = `${percent}%`;
+}
+
+function clearUploadProgress() {
+  state.uploadProgress = null;
+  const box = document.getElementById("uploadStatus");
+  if (box) box.hidden = true;
 }
 
 function optionValues(value, fallbackItems) {
@@ -709,6 +861,29 @@ function activeKey() {
   return state.route || "dashboard";
 }
 
+function syncIndicator() {
+  return `
+    <div class="sync-indicator ${state.syncQueue.length ? "pending" : state.saveState}" id="syncStatus" role="status" aria-live="polite">
+      <strong data-sync-label>${html(syncStatusLabel())}</strong>
+      <span data-sync-meta>רענון אחרון: ${html(formatDateTime(state.lastRefreshAt))}</span>
+      <button class="button secondary table-button" data-action="retry-sync" type="button" ${state.syncQueue.length ? "" : "hidden"}>נסה שוב עכשיו</button>
+    </div>`;
+}
+
+function uploadProgressBar() {
+  const progress = state.uploadProgress;
+  const percent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
+  return `
+    <div class="upload-progress" id="uploadStatus" role="status" aria-live="polite" ${progress ? "" : "hidden"}>
+      <div class="upload-progress-copy">
+        <strong data-upload-label>${html(progress?.label || "מעלה קובץ…")}</strong>
+        <span data-upload-percent>${percent}%</span>
+      </div>
+      <div class="upload-track"><span data-upload-bar style="width:${percent}%"></span></div>
+      <button class="button danger table-button" data-action="cancel-upload" type="button">ביטול העלאה</button>
+    </div>`;
+}
+
 function shell(content) {
   const nav = [
     ["dashboard", "dashboard", "דשבורד"],
@@ -745,6 +920,8 @@ function shell(content) {
         }
       </aside>
       <main class="main">
+        ${syncIndicator()}
+        ${uploadProgressBar()}
         ${state.error ? `<div class="message error" role="alert" aria-live="assertive">${html(state.error)}</div>` : ""}
         ${state.message ? `<div class="message" role="status" aria-live="polite">${html(state.message)}${state.lastUndoActionId ? ` <button class="button secondary message-action" data-action="undo-last-action" data-id="${html(state.lastUndoActionId)}" type="button">ביטול הפעולה</button>` : ""}</div>` : ""}
         ${content}
@@ -918,6 +1095,7 @@ function profilePage(patientId) {
   const payments = state.payments.filter((payment) => payment.patient_id === patient.id);
   const tasks = state.tasks.filter((task) => task.patient_id === patient.id);
   const files = state.files.filter((file) => file.patient_id === patient.id);
+  const contacts = state.contacts.filter((contact) => contact.patient_id === patient.id);
   const tab = profileTabKey();
 
   return shell(`
@@ -934,19 +1112,21 @@ function profilePage(patientId) {
         ${tab === "payments" ? paymentsPanel(payments, patient.id) : ""}
         ${tab === "tasks" ? tasksPanel(tasks, patient.id) : ""}
         ${tab === "files" ? filesPanel(files, patient) : ""}
+        ${tab === "contacts" ? contactsPanel(contacts, patient.id) : ""}
       </section>
     </section>
   `);
 }
 
 function profileTabKey() {
-  const allowedTabs = ["overview", "documentation", "payments", "tasks", "files"];
+  const allowedTabs = ["overview", "contacts", "documentation", "payments", "tasks", "files"];
   return allowedTabs.includes(state.profileTab) ? state.profileTab : "overview";
 }
 
 function profileTabs(activeTab) {
   const tabs = [
     ["overview", "פרטים"],
+    ["contacts", "הורים ואנשי מקצוע"],
     ["documentation", "תיעוד מפגש"],
     ["payments", "תשלומים"],
     ["tasks", "משימות"],
@@ -1090,6 +1270,7 @@ function settingsPage() {
         ${detail("תשלומים", state.payments.length)}
         ${detail("משימות", state.tasks.length)}
         ${detail("קבצים", state.files.length)}
+        ${detail("הורים ואנשי מקצוע", state.contacts.length)}
         ${detail("תאריך גיבוי", formatDate(isoDate(new Date())))}
       </div>
     </section>
@@ -1901,6 +2082,100 @@ function patientOptions(selectedId = "") {
     .join("");
 }
 
+function contactTypeLabel(value) {
+  return value === "professional" ? "איש/אשת מקצוע" : "הורה או בן משפחה";
+}
+
+function contactForm(patientId) {
+  const edited = state.currentContactId
+    ? state.contacts.find(
+        (contact) => contact.id === state.currentContactId && contact.patient_id === patientId
+      )
+    : null;
+  return `
+    <form class="form-grid inline-form" data-form="contact" data-patient-id="${html(patientId)}" data-id="${html(edited?.id || "")}">
+      <div class="field">
+        <label for="contact_type">סוג קשר</label>
+        <select id="contact_type" name="contact_type">
+          <option value="parent" ${edited?.contact_type === "professional" ? "" : "selected"}>הורה או בן משפחה</option>
+          <option value="professional" ${edited?.contact_type === "professional" ? "selected" : ""}>איש/אשת מקצוע</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="contact_name">שם</label>
+        <input id="contact_name" name="name" required value="${html(edited?.name || "")}" />
+      </div>
+      <div class="field">
+        <label for="contact_relationship">קרבה או תפקיד</label>
+        <input id="contact_relationship" name="relationship" placeholder="למשל: אמא, קלינאית תקשורת" value="${html(edited?.relationship || "")}" />
+      </div>
+      <div class="field">
+        <label for="contact_organization">מסגרת או ארגון</label>
+        <input id="contact_organization" name="organization" value="${html(edited?.organization || "")}" />
+      </div>
+      <div class="field">
+        <label for="contact_phone">טלפון</label>
+        <input id="contact_phone" name="phone" inputmode="tel" value="${html(edited?.phone || "")}" />
+      </div>
+      <div class="field">
+        <label for="contact_email">אימייל</label>
+        <input id="contact_email" name="email" type="email" value="${html(edited?.email || "")}" />
+      </div>
+      <div class="field wide">
+        <label for="contact_notes">הערות</label>
+        <textarea id="contact_notes" name="notes">${html(edited?.notes || "")}</textarea>
+      </div>
+      <div class="toolbar wide">
+        <button class="button" type="submit">${edited ? "שמירת שינויים" : "הוספת איש קשר"}</button>
+        ${edited ? `<button class="button secondary" data-action="cancel-contact-edit" type="button">ביטול עריכה</button>` : ""}
+      </div>
+    </form>`;
+}
+
+function contactsTable(rows) {
+  return `
+    <div class="contact-cards">
+      ${rows
+        .map(
+          (contact) => `
+            <article class="contact-card">
+              <div class="contact-card-head">
+                <div>
+                  <span class="status-pill">${html(contactTypeLabel(contact.contact_type))}</span>
+                  <h3>${html(contact.name)}</h3>
+                  <p>${html([contact.relationship, contact.organization].filter(Boolean).join(" · ") || "ללא תפקיד או מסגרת")}</p>
+                </div>
+                <div class="actions">
+                  <button class="button secondary table-button" data-action="edit-contact" data-id="${html(contact.id)}" type="button">עריכה</button>
+                  <button class="button danger table-button" data-action="delete-contact" data-id="${html(contact.id)}" type="button">מחיקה</button>
+                </div>
+              </div>
+              <div class="contact-links">
+                ${contact.phone ? `<a href="tel:${html(contact.phone)}">${html(contact.phone)}</a>` : `<span>אין טלפון</span>`}
+                ${contact.email ? `<a href="mailto:${html(contact.email)}">${html(contact.email)}</a>` : `<span>אין אימייל</span>`}
+              </div>
+              ${contact.notes ? `<p class="contact-notes">${html(contact.notes)}</p>` : ""}
+            </article>`
+        )
+        .join("") || `<div class="empty">עדיין לא נוספו הורים או אנשי מקצוע.</div>`}
+    </div>`;
+}
+
+function contactsPanel(rows, patientId) {
+  const ordered = [...rows].sort((a, b) =>
+    `${a.contact_type || "parent"} ${a.name || ""}`.localeCompare(
+      `${b.contact_type || "parent"} ${b.name || ""}`,
+      "he"
+    )
+  );
+  return `
+    <article class="panel">
+      <div class="panel-head"><h2>הורים ואנשי מקצוע</h2><span>${ordered.length} אנשי קשר</span></div>
+      ${contactForm(patientId)}
+      ${contactsTable(ordered)}
+    </article>`;
+}
+
 function taskStatusLabel(value) {
   return {
     open: "פתוחה",
@@ -2661,8 +2936,9 @@ async function materializeRecurringSession(patientId, dateValue) {
   lastDocumentSyncError = "";
   try {
     session.calendar_event_id = await createCalendarEvent(session);
-  } catch (error) {
-    lastCalendarSyncError = error instanceof Error ? error.message : "סנכרון היומן נכשל.";
+  } catch {
+    queueSyncWork("calendar_upsert", session.id, {});
+    lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
   }
 
   const appendResult = await appendSheet("sessions", session);
@@ -2676,8 +2952,9 @@ async function materializeRecurringSession(patientId, dateValue) {
       if (session._rowNumber) await updateSheetRow("sessions", session._rowNumber, session);
       state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
     }
-  } catch (error) {
-    lastDocumentSyncError = error instanceof Error ? error.message : "יצירת מסמך התיעוד נכשל.";
+  } catch {
+    queueSyncWork("document_upsert", session.id, {});
+    lastDocumentSyncError = "מסמך התיעוד עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
   }
 
   state.sessions = state.sessions.sort((a, b) =>
@@ -2813,7 +3090,10 @@ async function connectGoogle(forceConsent = false, automatic = false) {
       state.authRestoring = false;
       state.message = "";
       const errorType = error?.type || "";
-      state.error = errorType === "popup_failed_to_open"
+      const errorDetails = `${errorType} ${error?.message || ""}`.toLowerCase();
+      state.error = errorDetails.includes("invalid_request")
+        ? "Google דחה את בקשת ההתחברות בגלל הגדרת הרשאות חסרה בפרויקט. מנהל המערכת צריך לעדכן את הרשאות Google ואז לנסות שוב."
+        : errorType === "popup_failed_to_open"
         ? "חלון Google נחסם על ידי הדפדפן. יש לאפשר חלונות קופצים לאתר ולנסות שוב."
         : errorType === "popup_closed"
           ? "חלון ההתחברות נסגר לפני שהאישור הושלם. אפשר ללחוץ שוב על התחברות."
@@ -2829,7 +3109,7 @@ async function connectGoogle(forceConsent = false, automatic = false) {
     tokenClient.requestAccessToken({
       prompt: forceConsent || localStorage.getItem(GOOGLE_CONSENT_KEY) !== "yes" ? "consent" : ""
     });
-  } catch (error) {
+  } catch {
     googleAuthInFlight = false;
     state.authRestoring = false;
     state.message = "";
@@ -2888,6 +3168,7 @@ function clearClinicData() {
   state.payments = [];
   state.tasks = [];
   state.files = [];
+  state.contacts = [];
   state.scheduleExceptions = [];
   state.auditLog = [];
   state.lastUndoActionId = "";
@@ -3246,6 +3527,7 @@ function workflowCollections() {
     payments: state.payments,
     tasks: state.tasks,
     files: state.files,
+    contacts: state.contacts,
     schedule_exceptions: state.scheduleExceptions
   };
 }
@@ -3295,14 +3577,16 @@ async function applyAuditMutations(mutations) {
 async function runAuditedAction(meta, work) {
   if (activeAuditAction) return work();
   activeAuditAction = true;
+  setSaveState("saving");
   const before = WorkflowCore.snapshot(workflowCollections());
   try {
     const result = await work();
     const after = WorkflowCore.snapshot(workflowCollections());
     const mutations = WorkflowCore.diff(before, after);
     await appendAuditEntry(meta, mutations);
+    setSaveState(state.syncQueue.length ? "pending" : "saved");
     return result;
-  } catch (error) {
+  } catch {
     const afterFailure = WorkflowCore.snapshot(workflowCollections());
     const partialMutations = WorkflowCore.diff(before, afterFailure);
     if (partialMutations.length && meta.undoable !== false) {
@@ -3326,6 +3610,7 @@ async function runAuditedAction(meta, work) {
         partialMutations
       ).catch(() => {});
     }
+    setSaveState(state.syncQueue.length ? "pending" : "error");
     throw error;
   } finally {
     activeAuditAction = false;
@@ -3388,15 +3673,12 @@ function addMinutes(timeValue, minutes) {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-async function createCalendarEvent(session) {
-  if (!session.session_date || !session.start_time) return "";
-  const calendarId = state.config.googleCalendarId || "primary";
+function privateCalendarEventBody(session) {
   const endTime = session.end_time || addMinutes(session.start_time, 50);
-  const patient = patientName(session.patient_id);
-  const body = {
-    summary: `${session.session_type || "מפגש"} - ${patient}`,
-    location: session.location || "",
-    description: session.summary || "",
+  return {
+    summary: "פגישה בקליניקה",
+    description: "",
+    visibility: "private",
     start: {
       dateTime: calendarDateTime(session.session_date, session.start_time),
       timeZone: "Asia/Jerusalem"
@@ -3406,6 +3688,12 @@ async function createCalendarEvent(session) {
       timeZone: "Asia/Jerusalem"
     }
   };
+}
+
+async function createCalendarEvent(session) {
+  if (!session.session_date || !session.start_time) return "";
+  const calendarId = state.config.googleCalendarId || "primary";
+  const body = privateCalendarEventBody(session);
   const result = await googleFetch(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
     {
@@ -3420,21 +3708,7 @@ async function updateCalendarEvent(session) {
   if (!session.calendar_event_id) return createCalendarEvent(session);
   if (!session.session_date || !session.start_time) return session.calendar_event_id;
   const calendarId = state.config.googleCalendarId || "primary";
-  const endTime = session.end_time || addMinutes(session.start_time, 50);
-  const patient = patientName(session.patient_id);
-  const body = {
-    summary: `${session.session_type || "מפגש"} - ${patient}`,
-    location: session.location || "",
-    description: session.summary || "",
-    start: {
-      dateTime: calendarDateTime(session.session_date, session.start_time),
-      timeZone: "Asia/Jerusalem"
-    },
-    end: {
-      dateTime: calendarDateTime(session.session_date, endTime),
-      timeZone: "Asia/Jerusalem"
-    }
-  };
+  const body = privateCalendarEventBody(session);
   const result = await googleFetch(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
       calendarId
@@ -3586,6 +3860,77 @@ async function updateSessionDocument(patientId, session) {
   return file?.drive_file_id || "";
 }
 
+async function persistSessionExternalId(session, field, value) {
+  if (!session?._rowNumber || session[field] === value) return;
+  const updated = { ...session, [field]: value, updated_at: new Date().toISOString() };
+  await updateSheetRow("sessions", session._rowNumber, updated, session);
+  state.sessions = state.sessions.map((item) => (item.id === session.id ? updated : item));
+}
+
+async function processSyncItem(item) {
+  if (item.kind === "calendar_delete") {
+    await deleteCalendarEvent(item.payload?.eventId || "");
+    return;
+  }
+
+  const session = state.sessions.find((row) => row.id === item.entityId);
+  if (!session) return;
+
+  if (item.kind === "calendar_upsert") {
+    const eventId = session.calendar_event_id
+      ? await updateCalendarEvent(session)
+      : await createCalendarEvent(session);
+    if (eventId) await persistSessionExternalId(session, "calendar_event_id", eventId);
+    return;
+  }
+
+  if (item.kind === "document_upsert") {
+    const documentId = await updateSessionDocument(session.patient_id, session);
+    if (documentId) await persistSessionExternalId(session, "document_file_id", documentId);
+  }
+}
+
+async function processSyncQueue(force = false) {
+  if (syncProcessing || !state.syncQueue.length || !canUseStorage() || !navigator.onLine) return;
+  syncProcessing = true;
+  updateSyncIndicator();
+  const now = Date.now();
+
+  try {
+    for (const item of [...state.syncQueue]) {
+      if (!force && Number(item.nextAttemptAt || 0) > now) continue;
+      try {
+        await processSyncItem(item);
+        removeSyncWork(item.id);
+      } catch (error) {
+        const current = state.syncQueue.find((row) => row.id === item.id);
+        if (!current) continue;
+        current.attempts = Number(current.attempts || 0) + 1;
+        current.lastError = error instanceof Error ? error.message : "הסנכרון נכשל.";
+        current.updatedAt = new Date().toISOString();
+        current.nextAttemptAt = Date.now() + Math.min(15 * 60_000, 5000 * 2 ** Math.min(current.attempts, 7));
+        state.saveState = "pending";
+        persistSyncQueue();
+      }
+    }
+  } finally {
+    syncProcessing = false;
+    updateSyncIndicator();
+    if (state.syncQueue.length) {
+      const nextAt = Math.min(...state.syncQueue.map((item) => Number(item.nextAttemptAt || Date.now() + 5000)));
+      scheduleSyncRetry(Math.max(1000, nextAt - Date.now()));
+    }
+  }
+}
+
+function queueCalendarPrivacyMigration() {
+  if (localStorage.getItem(CALENDAR_PRIVACY_MIGRATION_KEY) === "queued") return;
+  for (const session of state.sessions.filter((item) => item.calendar_event_id)) {
+    queueSyncWork("calendar_upsert", session.id, { reason: "privacy_cleanup" });
+  }
+  localStorage.setItem(CALENDAR_PRIVACY_MIGRATION_KEY, "queued");
+}
+
 function recordingTranscriptTitle(patient, recordingFile) {
   return `טיוטת תמלול - ${patient.child_name || patientName(recordingFile.patient_id)} - ${String(
     recordingFile.created_at || isoDate(new Date())
@@ -3712,41 +4057,134 @@ function fileNameWithFallback(customName, selectedFile) {
 }
 
 async function uploadDriveFile(folderId, selectedFile, fileName) {
-  const boundary = `clinic-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const metadata = {
     name: fileName || selectedFile.name,
     parents: [folderId]
   };
-  const body = new Blob(
-    [
-      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(
-        metadata
-      )}\r\n`,
-      `--${boundary}\r\nContent-Type: ${
-        selectedFile.type || "application/octet-stream"
-      }\r\n\r\n`,
-      selectedFile,
-      `\r\n--${boundary}--`
-    ],
-    { type: `multipart/related; boundary=${boundary}` }
-  );
-  const response = await fetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,createdTime",
+  uploadCancelled = false;
+  updateUploadProgress(0, selectedFile.size, `מעלה: ${metadata.name}`);
+  const sessionResponse = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,mimeType,webViewLink,createdTime",
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${state.accessToken}`
+        Authorization: `Bearer ${state.accessToken}`,
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": selectedFile.type || "application/octet-stream",
+        "X-Upload-Content-Length": String(selectedFile.size)
       },
-      body
+      body: JSON.stringify(metadata)
     }
   );
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(friendlyGoogleError(text, response.status));
+  if (!sessionResponse.ok) {
+    const text = await sessionResponse.text();
+    clearUploadProgress();
+    throw new Error(friendlyGoogleError(text, sessionResponse.status));
   }
 
-  return response.json();
+  const sessionUrl = sessionResponse.headers.get("Location");
+  if (!sessionUrl) {
+    clearUploadProgress();
+    throw new Error("Google לא החזיר כתובת להמשך ההעלאה.");
+  }
+
+  const chunkSize = 8 * 1024 * 1024;
+  let offset = 0;
+  let finalResult = null;
+
+  try {
+    if (selectedFile.size === 0) {
+      const emptyResult = await resumableUploadRequest(sessionUrl, new Blob([]), "bytes */0", 0, 0, metadata.name);
+      finalResult = JSON.parse(emptyResult.text || "{}");
+    }
+
+    while (offset < selectedFile.size) {
+      if (uploadCancelled) throw new DOMException("ההעלאה בוטלה.", "AbortError");
+      const chunkStart = offset;
+      const endExclusive = Math.min(selectedFile.size, offset + chunkSize);
+      const chunk = selectedFile.slice(offset, endExclusive);
+      let completed = false;
+
+      for (let attempt = 0; attempt < 4 && !completed; attempt += 1) {
+        try {
+          const result = await resumableUploadRequest(
+            sessionUrl,
+            chunk,
+            `bytes ${chunkStart}-${endExclusive - 1}/${selectedFile.size}`,
+            chunkStart,
+            selectedFile.size,
+            metadata.name
+          );
+          if ([200, 201].includes(result.status)) {
+            finalResult = JSON.parse(result.text || "{}");
+            offset = selectedFile.size;
+            completed = true;
+          } else if (result.status === 308) {
+            const lastByte = Number((result.range || "").match(/bytes=0-(\d+)/)?.[1] || -1);
+            offset = lastByte >= 0 ? lastByte + 1 : endExclusive;
+            completed = true;
+          } else {
+            throw new Error(friendlyGoogleError(result.text, result.status));
+          }
+        } catch (error) {
+          if (error?.name === "AbortError" || uploadCancelled) throw error;
+          if (attempt === 3) throw error;
+          await new Promise((resolve) => window.setTimeout(resolve, 1000 * 2 ** attempt));
+          const probe = await resumableUploadRequest(
+            sessionUrl,
+            null,
+            `bytes */${selectedFile.size}`,
+            offset,
+            selectedFile.size,
+            metadata.name
+          );
+          if ([200, 201].includes(probe.status)) {
+            finalResult = JSON.parse(probe.text || "{}");
+            offset = selectedFile.size;
+            completed = true;
+          } else if (probe.status === 308) {
+            const lastByte = Number((probe.range || "").match(/bytes=0-(\d+)/)?.[1] || -1);
+            offset = lastByte >= 0 ? lastByte + 1 : 0;
+            if (offset !== chunkStart) completed = true;
+          }
+        }
+      }
+    }
+    updateUploadProgress(selectedFile.size, selectedFile.size, "ההעלאה הושלמה");
+    return finalResult || {};
+  } catch (error) {
+    if (error?.name === "AbortError" || uploadCancelled) throw new Error("העלאת הקובץ בוטלה.");
+    throw error;
+  } finally {
+    activeUploadRequest = null;
+    window.setTimeout(clearUploadProgress, 800);
+  }
+}
+
+function resumableUploadRequest(sessionUrl, body, contentRange, progressBase, total, fileName) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    activeUploadRequest = request;
+    request.open("PUT", sessionUrl);
+    request.setRequestHeader("Authorization", `Bearer ${state.accessToken}`);
+    request.setRequestHeader("Content-Range", contentRange);
+    if (body) request.setRequestHeader("Content-Type", body.type || "application/octet-stream");
+    request.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      updateUploadProgress(progressBase + event.loaded, total, `מעלה: ${fileName}`);
+    });
+    request.addEventListener("load", () => {
+      resolve({
+        status: request.status,
+        text: request.responseText || "",
+        range: request.getResponseHeader("Range") || ""
+      });
+    });
+    request.addEventListener("error", () => reject(new Error("החיבור נקטע במהלך העלאת הקובץ.")));
+    request.addEventListener("abort", () => reject(new DOMException("ההעלאה בוטלה.", "AbortError")));
+    request.send(body || null);
+  });
 }
 
 async function appendFileRecord(file) {
@@ -4042,12 +4480,13 @@ async function loadData() {
   }
   if (!state.config.googleSpreadsheetId) return;
   await ensureSpreadsheetSchema();
-  const [patients, sessions, payments, tasks, files, scheduleExceptions, auditLog, templates] = await Promise.all([
+  const [patients, sessions, payments, tasks, files, contacts, scheduleExceptions, auditLog, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
     readSheet("payments"),
     readSheet("tasks"),
     readSheet("files"),
+    readSheet("contacts"),
     readSheet("schedule_exceptions"),
     readSheet("audit_log"),
     loadDriveTemplates().catch(() => [])
@@ -4057,6 +4496,7 @@ async function loadData() {
   state.payments = payments.sort((a, b) => `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`));
   state.tasks = tasks.sort((a, b) => `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`));
   state.files = files.sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+  state.contacts = contacts.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
   state.scheduleExceptions = scheduleExceptions.sort((a, b) =>
     `${b.start_date || ""} ${b.created_at || ""}`.localeCompare(`${a.start_date || ""} ${a.created_at || ""}`)
   );
@@ -4065,6 +4505,10 @@ async function loadData() {
     (entry) => entry.undoable === "yes" && !entry.undone_at && auditMutations(entry).length
   )?.id || "";
   state.templates = templates.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
+  state.lastRefreshAt = new Date().toISOString();
+  saveSyncState();
+  queueCalendarPrivacyMigration();
+  processSyncQueue().catch(() => {});
 }
 
 async function savePatient(form) {
@@ -4138,6 +4582,58 @@ async function togglePatientArchive(patientId, shouldArchive) {
   state.patients = state.patients.map((item) => (item.id === patientId ? updated : item));
 }
 
+async function saveContact(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || "";
+  const existingId = form.dataset.id || "";
+  const existing = existingId ? state.contacts.find((contact) => contact.id === existingId) : null;
+  if (!patientId || !state.patients.some((patient) => patient.id === patientId)) {
+    throw new Error("לא נמצא מטופל לשיוך איש הקשר.");
+  }
+  if (!String(data.name || "").trim()) throw new Error("שם איש הקשר הוא שדה חובה.");
+  if (existingId && !existing) throw new Error("איש הקשר לעריכה לא נמצא.");
+  if (existing && !existing._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת איש קשר.");
+  if (existing) await assertSheetRowCurrent("contacts", existing._rowNumber, existing);
+
+  const now = new Date().toISOString();
+  const contact = {
+    ...(existing || {}),
+    id: existing?.id || id(),
+    patient_id: patientId,
+    contact_type: data.contact_type === "professional" ? "professional" : "parent",
+    name: String(data.name || "").trim(),
+    relationship: String(data.relationship || "").trim(),
+    phone: String(data.phone || "").trim(),
+    email: String(data.email || "").trim(),
+    organization: String(data.organization || "").trim(),
+    notes: String(data.notes || "").trim(),
+    created_at: existing?.created_at || now,
+    updated_at: now
+  };
+
+  if (existing) {
+    await updateSheetRow("contacts", existing._rowNumber, contact, existing);
+    contact._rowNumber = existing._rowNumber;
+    state.contacts = state.contacts.map((item) => (item.id === contact.id ? contact : item));
+  } else {
+    const result = await appendSheet("contacts", contact);
+    contact._rowNumber = appendedRowNumber(result);
+    state.contacts = [...state.contacts, contact];
+  }
+  state.contacts = state.contacts.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
+  state.currentContactId = "";
+  return contact;
+}
+
+async function deleteContactRecord(contactId) {
+  const contact = state.contacts.find((item) => item.id === contactId);
+  if (!contact) throw new Error("איש הקשר לא נמצא.");
+  if (!contact._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת איש קשר.");
+  await clearSheetRow("contacts", contact._rowNumber, contact);
+  state.contacts = state.contacts.filter((item) => item.id !== contactId);
+  if (state.currentContactId === contactId) state.currentContactId = "";
+}
+
 async function saveSession(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || "";
@@ -4174,9 +4670,9 @@ async function saveSession(form) {
     session.calendar_event_id = existing
       ? await updateCalendarEvent(session)
       : await createCalendarEvent(session);
-  } catch (error) {
-    lastCalendarSyncError =
-      error instanceof Error ? error.message : "סנכרון היומן נכשל.";
+  } catch {
+    queueSyncWork("calendar_upsert", session.id, {});
+    lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
   }
 
   if (existing) {
@@ -4196,9 +4692,9 @@ async function saveSession(form) {
       if (session._rowNumber) await updateSheetRow("sessions", session._rowNumber, session);
       state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
     }
-  } catch (error) {
-    lastDocumentSyncError =
-      error instanceof Error ? error.message : "יצירת מסמך התיעוד נכשלה.";
+  } catch {
+    queueSyncWork("document_upsert", session.id, {});
+    lastDocumentSyncError = "מסמך התיעוד עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
   }
 
   state.sessions = state.sessions.sort((a, b) =>
@@ -4234,9 +4730,9 @@ async function deleteSessionRecord(sessionId) {
   if (session.calendar_event_id) {
     try {
       await deleteCalendarEvent(session.calendar_event_id);
-    } catch (error) {
-      lastCalendarSyncError =
-        error instanceof Error ? error.message : "מחיקת האירוע מהיומן נכשלה.";
+    } catch {
+      queueSyncWork("calendar_delete", session.id, { eventId: session.calendar_event_id });
+      lastCalendarSyncError = "מחיקת האירוע מהיומן ממתינה לסנכרון חוזר.";
     }
   }
 
@@ -4428,6 +4924,7 @@ function backupPayload() {
       payments: state.payments.length,
       tasks: state.tasks.length,
       files: state.files.length,
+      contacts: state.contacts.length,
       schedule_exceptions: state.scheduleExceptions.length,
       audit_log: state.auditLog.length
     },
@@ -4437,6 +4934,7 @@ function backupPayload() {
       payments: state.payments,
       tasks: state.tasks,
       files: state.files,
+      contacts: state.contacts,
       schedule_exceptions: state.scheduleExceptions,
       audit_log: state.auditLog
     }
@@ -4887,6 +5385,21 @@ function bindEvents() {
     if (!busyKey) return;
 
     try {
+    if (action === "cancel-upload") {
+      uploadCancelled = true;
+      activeUploadRequest?.abort();
+    }
+    if (action === "retry-sync") {
+      state.syncQueue.forEach((item) => {
+        item.nextAttemptAt = Date.now();
+      });
+      persistSyncQueue();
+      await processSyncQueue(true);
+      state.message = state.syncQueue.length
+        ? "חלק מהפעולות עדיין ממתינות; המערכת תמשיך לנסות אוטומטית."
+        : "כל הפעולות הסתנכרנו.";
+      render();
+    }
     if (action === "connect-google") await connectGoogle();
     if (action === "force-connect-google") await connectGoogle(true);
     if (action === "disconnect-google") disconnectGoogle();
@@ -5046,6 +5559,7 @@ function bindEvents() {
       state.currentPaymentId = "";
       state.currentTaskId = "";
       state.currentFileId = "";
+      state.currentContactId = "";
       navigate(`patients/${target.dataset.id}`);
     }
     if (action === "profile-tab") {
@@ -5054,6 +5568,7 @@ function bindEvents() {
       if (state.profileTab !== "payments") state.currentPaymentId = "";
       if (state.profileTab !== "tasks") state.currentTaskId = "";
       if (state.profileTab !== "files") state.currentFileId = "";
+      if (state.profileTab !== "contacts") state.currentContactId = "";
       render();
     }
     if (action === "edit-session") {
@@ -5168,6 +5683,38 @@ function bindEvents() {
     if (action === "cancel-task-edit") {
       state.currentTaskId = "";
       render();
+    }
+    if (action === "edit-contact") {
+      const contact = state.contacts.find((item) => item.id === target.dataset.id);
+      if (!contact) return;
+      state.currentContactId = contact.id;
+      state.profileTab = "contacts";
+      if (!state.route.startsWith(`patients/${contact.patient_id}`)) {
+        navigate(`patients/${contact.patient_id}`);
+      } else {
+        render();
+      }
+    }
+    if (action === "cancel-contact-edit") {
+      state.currentContactId = "";
+      render();
+    }
+    if (action === "delete-contact") {
+      if (!window.confirm("למחוק את איש הקשר?")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+        await runAuditedAction(
+          { actionType: "delete", entityType: "contact", entityId: target.dataset.id, summary: "מחיקת איש קשר" },
+          () => deleteContactRecord(target.dataset.id)
+        );
+        state.message = "איש הקשר נמחק.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "מחיקת איש הקשר נכשלה.";
+        state.message = "";
+        render();
+      }
     }
     if (action === "delete-task") {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המשימה?")) return;
@@ -5485,6 +6032,7 @@ function bindEvents() {
     if (!beginBusyForm(form)) return;
     state.error = "";
     state.message = "";
+    setSaveState("saving");
 
     try {
       if (form.dataset.form === "settings") {
@@ -5507,6 +6055,16 @@ function bindEvents() {
         } else {
           state.message = "המטופל נשמר במערכת ונוצרה לו תיקייה.";
         }
+      }
+
+      if (form.dataset.form === "contact") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        const isEdit = Boolean(form.dataset.id);
+        await runAuditedAction(
+          { actionType: isEdit ? "update" : "create", entityType: "contact", entityId: form.dataset.id || "", summary: isEdit ? "עדכון איש קשר" : "הוספת איש קשר" },
+          () => saveContact(form)
+        );
+        state.message = isEdit ? "פרטי איש הקשר עודכנו." : "איש הקשר נוסף לכרטיס המטופל.";
       }
 
       if (form.dataset.form === "session") {
@@ -5567,9 +6125,11 @@ function bindEvents() {
         state.message = "המסמך נוצר מתבנית, נשמר בתיקיית המטופל ונרשם בקבצים.";
       }
 
+      setSaveState(state.syncQueue.length ? "pending" : "saved");
       render();
     } catch (error) {
       state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
+      setSaveState(state.syncQueue.length ? "pending" : "error");
       render();
     } finally {
       endBusyForm(form);
@@ -5667,6 +6227,7 @@ function endBusyForm(form) {
 window.addEventListener("hashchange", render);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;
+  processSyncQueue().catch(() => {});
   if (state.accessToken && googleTokenExpiresAt && googleTokenExpiresAt - Date.now() <= 5 * 60_000) {
     connectGoogle(false, true);
     return;
@@ -5675,6 +6236,7 @@ document.addEventListener("visibilitychange", () => {
     restoreGoogleSession().catch(() => {});
   }
 });
+window.addEventListener("online", () => processSyncQueue(true).catch(() => {}));
 render();
 bindEvents();
 

@@ -32,6 +32,14 @@ const checks = [
     app.includes("async function repairSharingSecurity()") &&
       app.includes('permission.type === "anyone"') &&
       app.includes("const removedPublicPermissions = await repairSharingSecurity()")
+  ],
+  [
+    "Private calendar events without patient data",
+    app.includes("function privateCalendarEventBody(session)") &&
+      app.includes('summary: "פגישה בקליניקה"') &&
+      app.includes('description: ""') &&
+      app.includes('visibility: "private"') &&
+      app.includes("queueCalendarPrivacyMigration()")
   ]
 ];
 

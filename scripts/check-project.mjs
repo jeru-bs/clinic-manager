@@ -119,6 +119,38 @@ if (
 ) {
   uiRegressionFindings.push("the Israel holiday integration is incomplete");
 }
+if (
+  !browserAppSource.includes("function privateCalendarEventBody(session)") ||
+  !browserAppSource.includes('summary: "פגישה בקליניקה"') ||
+  !browserAppSource.includes('visibility: "private"') ||
+  !browserAppSource.includes('description: ""')
+) {
+  uiRegressionFindings.push("calendar events can expose patient or treatment details");
+}
+if (
+  !browserAppSource.includes("function queueSyncWork(") ||
+  !browserAppSource.includes("async function processSyncQueue(") ||
+  !browserAppSource.includes("SYNC_QUEUE_KEY") ||
+  !browserAppSource.includes('data-action="retry-sync"')
+) {
+  uiRegressionFindings.push("persistent retryable synchronization is missing");
+}
+if (
+  !browserAppSource.includes("uploadType=resumable") ||
+  !browserAppSource.includes("Content-Range") ||
+  !browserAppSource.includes("updateUploadProgress") ||
+  !browserAppSource.includes('action === "cancel-upload"')
+) {
+  uiRegressionFindings.push("resumable upload progress or cancellation is missing");
+}
+if (
+  !browserAppSource.includes("contacts: [") ||
+  !browserAppSource.includes('data-form="contact"') ||
+  !browserAppSource.includes("async function saveContact(") ||
+  !browserAppSource.includes("async function deleteContactRecord(")
+) {
+  uiRegressionFindings.push("parent and professional contact management is incomplete");
+}
 
 const checks = [
   ["Alias imports", missingImports],

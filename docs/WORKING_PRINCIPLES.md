@@ -24,12 +24,13 @@ This file is the compact operating contract for future work on this project. Rea
 
 SSOT means single source of truth: one owner for each business fact, and every screen or workflow reads from and writes through that owner.
 
-- Google Sheets is the persisted SSOT for business records: `patients`, `sessions`, `payments`, `tasks`, `files`, and `schedule_exceptions`.
+- Google Sheets is the persisted SSOT for business records: `patients`, `contacts`, `sessions`, `payments`, `tasks`, `files`, and `schedule_exceptions`.
 - The `SHEETS` constant at the top of `docs/app.js` is the schema SSOT for those persisted tables.
 - Google Drive is the persisted SSOT for patient folders, uploaded files, generated documents, templates, backups, and shared settings files.
 - Google Calendar is the external SSOT for synced calendar events, but the app record keeps the linkage by storing `calendar_event_id`.
 - Runtime state in `state` is only an in-memory projection. It must be refreshed or updated after persisted writes.
 - Browser localStorage is only local configuration/cache. It is not the business-data SSOT.
+- The local sync queue stores only retry instructions for external side effects; it never replaces the Google Sheets business record.
 
 ## Root Cause First
 
@@ -45,6 +46,9 @@ Root Cause First means fix the structural cause before patching the visible symp
 - A task update must go through one task workflow that also handles reminders, audit entries, undo snapshots, and derived UI state.
 - A session update must handle the stored session, linked calendar event, linked document status, payment linkage, and recurring-calendar projections together.
 - A patient update must preserve folder linkage and avoid creating a second folder unless that is an explicit migration.
+- Parent and professional contacts belong to the `contacts` sheet and always reference one patient by `patient_id`.
+- Calendar events must remain private and generic: no patient name, treatment notes, session type, or location may be sent to Google Calendar.
+- File uploads use Google Drive resumable sessions and must expose progress and cancellation in the UI.
 - A schedule exception must be stored in `schedule_exceptions`; calendar projections should derive from it instead of copying exception truth elsewhere.
 - Israel holiday dates are derived from Hebcal and cached locally; only events marked `yomtov` block recurring projections, while private closures remain in `schedule_exceptions`.
 - Audit and undo should record the same persisted operation boundary, not a partial UI state.

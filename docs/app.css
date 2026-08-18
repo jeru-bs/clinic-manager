@@ -18,8 +18,133 @@
   --shadow: 0 14px 40px rgba(26, 31, 50, 0.08);
 }
 
+.sync-indicator,
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid #dce3ec;
+  border-radius: 12px;
+  background: #fff;
+  color: #3e4756;
+  font-size: 0.86rem;
+}
+
+.sync-indicator strong {
+  color: #176b45;
+}
+
+.sync-indicator.pending strong,
+.sync-indicator.saving strong {
+  color: #97620b;
+}
+
+.sync-indicator.error strong {
+  color: #a52a2a;
+}
+
+.sync-indicator [data-sync-meta] {
+  margin-inline-end: auto;
+  color: #687085;
+}
+
+.upload-progress {
+  flex-wrap: wrap;
+  border-color: #c8d8ef;
+  background: #f7faff;
+}
+
+.upload-progress-copy {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.upload-track {
+  flex: 1;
+  min-width: 180px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dfe7f2;
+}
+
+.upload-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 160ms ease;
+}
+
+.contact-cards {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.contact-card {
+  padding: 16px;
+  border: 1px solid #e1e6ed;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.contact-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.contact-card h3 {
+  margin: 8px 0 2px;
+}
+
+.contact-card p {
+  margin: 0;
+  color: #687085;
+}
+
+.contact-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 12px;
+}
+
+.contact-links a {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.contact-notes {
+  margin-top: 12px !important;
+  padding-top: 10px;
+  border-top: 1px solid #edf0f4;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 620px) {
+  .sync-indicator,
+  .contact-card-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sync-indicator [data-sync-meta] {
+    margin-inline-end: 0;
+  }
+}
+
 * {
   box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 body {
