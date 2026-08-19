@@ -8,7 +8,9 @@ const checks = [
     "Content Security Policy",
     index.includes('http-equiv="Content-Security-Policy"') &&
       index.includes("object-src 'none'") &&
-      index.includes("base-uri 'self'")
+      index.includes("base-uri 'self'") &&
+      index.includes("https://forms.googleapis.com") &&
+      index.includes("https://docs.googleapis.com")
   ],
   ["No referrer leakage", index.includes('name="referrer" content="no-referrer"')],
   [

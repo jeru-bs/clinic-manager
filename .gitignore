@@ -23,6 +23,7 @@ pnpm-debug.log*
 # browser tests
 test-results
 playwright-report
+tmp
 
 # os/editor
 .DS_Store

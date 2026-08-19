@@ -85,6 +85,79 @@ const SHEETS = {
     "created_at",
     "updated_at"
   ],
+  goals: [
+    "id",
+    "patient_id",
+    "title",
+    "description",
+    "status",
+    "progress",
+    "target_date",
+    "note",
+    "legacy_source",
+    "created_at",
+    "updated_at"
+  ],
+  goal_updates: [
+    "id",
+    "goal_id",
+    "patient_id",
+    "session_id",
+    "progress",
+    "status",
+    "note",
+    "created_at",
+    "updated_at"
+  ],
+  questionnaire_templates: [
+    "id",
+    "name",
+    "audience",
+    "questions_json",
+    "active",
+    "created_at",
+    "updated_at"
+  ],
+  questionnaire_assignments: [
+    "id",
+    "patient_id",
+    "contact_id",
+    "template_id",
+    "form_id",
+    "responder_url",
+    "status",
+    "sent_at",
+    "due_date",
+    "responded_at",
+    "last_response_id",
+    "created_at",
+    "updated_at"
+  ],
+  questionnaire_responses: [
+    "id",
+    "assignment_id",
+    "patient_id",
+    "contact_id",
+    "response_id",
+    "submitted_at",
+    "answers_json",
+    "reviewed_at",
+    "created_at",
+    "updated_at"
+  ],
+  clinical_reports: [
+    "id",
+    "patient_id",
+    "report_type",
+    "title",
+    "period_start",
+    "period_end",
+    "content",
+    "document_file_id",
+    "pdf_file_id",
+    "created_at",
+    "updated_at"
+  ],
   schedule_exceptions: [
     "id",
     "patient_id",
@@ -124,6 +197,43 @@ const HEBCAL_CACHE_PREFIX = "clinic-manager-hebcal-israel";
 const HEBCAL_CACHE_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_SESSION_TYPES = ["טיפול", "הדרכת הורים", "שיחה", "אבחון"];
 const DEFAULT_SESSION_LOCATIONS = ["קליניקה", "בית ספר", "אונליין", "בית"];
+const DEFAULT_QUESTIONNAIRE_TEMPLATES = [
+  {
+    id: "default-parent-questionnaire",
+    name: "שאלון הורים",
+    audience: "parent",
+    questions: [
+      { title: "שם ממלא השאלון", type: "short", required: true },
+      { title: "הקשר לילד", type: "short", required: true },
+      { title: "מהן החוזקות ותחומי העניין המרכזיים?", type: "paragraph", required: false },
+      { title: "מהם הקשיים או החששות העיקריים כעת?", type: "paragraph", required: true },
+      { title: "כיצד הקשיים משפיעים על התפקוד בבית, בלימודים או בחברה?", type: "paragraph", required: false },
+      { title: "אילו שינויים נצפו לאחרונה?", type: "paragraph", required: false },
+      { title: "מהן הציפיות והמטרות מהטיפול?", type: "paragraph", required: false },
+      { title: "מידע נוסף שחשוב שנדע", type: "paragraph", required: false }
+    ]
+  },
+  {
+    id: "default-professional-questionnaire",
+    name: "שאלון איש מקצוע",
+    audience: "professional",
+    questions: [
+      { title: "שם, תפקיד ומסגרת", type: "short", required: true },
+      { title: "באיזה הקשר ובאיזו תדירות מתקיים הקשר עם הילד?", type: "paragraph", required: true },
+      { title: "אילו חוזקות בולטות נצפו?", type: "paragraph", required: false },
+      { title: "אילו קשיים נצפו ומה השפעתם התפקודית?", type: "paragraph", required: true },
+      { title: "אילו אסטרטגיות או התאמות נוסו עד כה?", type: "paragraph", required: false },
+      { title: "מה הייתה התגובה לאסטרטגיות שנוסו?", type: "paragraph", required: false },
+      { title: "מהן העדיפויות המומלצות להמשך?", type: "paragraph", required: false },
+      { title: "מידע נוסף שחשוב שנדע", type: "paragraph", required: false }
+    ]
+  }
+];
+const REPORT_TYPES = {
+  assessment: "דוח אבחון",
+  progress: "דוח התקדמות",
+  summary: "דוח סיכום טיפול"
+};
 let googleTokenExpiresAt = 0;
 let googleRefreshTimer = null;
 const state = {
@@ -138,6 +248,8 @@ const state = {
   currentTaskId: "",
   currentFileId: "",
   currentContactId: "",
+  currentGoalId: "",
+  currentQuestionnaireTemplateId: "",
   message: "",
   error: "",
   patients: [],
@@ -146,6 +258,13 @@ const state = {
   tasks: [],
   files: [],
   contacts: [],
+  goals: [],
+  goalUpdates: [],
+  questionnaireTemplates: [],
+  questionnaireAssignments: [],
+  questionnaireResponses: [],
+  clinicalReports: [],
+  questionnaireSyncStarted: {},
   scheduleExceptions: [],
   israelHolidays: [],
   israelHolidayYears: [],
@@ -1096,6 +1215,9 @@ function profilePage(patientId) {
   const tasks = state.tasks.filter((task) => task.patient_id === patient.id);
   const files = state.files.filter((file) => file.patient_id === patient.id);
   const contacts = state.contacts.filter((contact) => contact.patient_id === patient.id);
+  const goals = state.goals.filter((goal) => goal.patient_id === patient.id);
+  const assignments = state.questionnaireAssignments.filter((assignment) => assignment.patient_id === patient.id);
+  const clinicalReports = state.clinicalReports.filter((report) => report.patient_id === patient.id);
   const tab = profileTabKey();
 
   return shell(`
@@ -1113,13 +1235,16 @@ function profilePage(patientId) {
         ${tab === "tasks" ? tasksPanel(tasks, patient.id) : ""}
         ${tab === "files" ? filesPanel(files, patient) : ""}
         ${tab === "contacts" ? contactsPanel(contacts, patient.id) : ""}
+        ${tab === "goals" ? goalsPanel(goals, patient.id) : ""}
+        ${tab === "questionnaires" ? questionnairesPanel(assignments, patient.id) : ""}
+        ${tab === "clinical-reports" ? clinicalReportsPanel(clinicalReports, patient.id) : ""}
       </section>
     </section>
   `);
 }
 
 function profileTabKey() {
-  const allowedTabs = ["overview", "contacts", "documentation", "payments", "tasks", "files"];
+  const allowedTabs = ["overview", "contacts", "goals", "questionnaires", "documentation", "clinical-reports", "payments", "tasks", "files"];
   return allowedTabs.includes(state.profileTab) ? state.profileTab : "overview";
 }
 
@@ -1127,7 +1252,10 @@ function profileTabs(activeTab) {
   const tabs = [
     ["overview", "פרטים"],
     ["contacts", "הורים ואנשי מקצוע"],
+    ["goals", "מטרות"],
+    ["questionnaires", "שאלונים"],
     ["documentation", "תיעוד מפגש"],
+    ["clinical-reports", "דוחות טיפוליים"],
     ["payments", "תשלומים"],
     ["tasks", "משימות"],
     ["files", "קבצים"]
@@ -1158,6 +1286,155 @@ function profileOverviewPanel(patient) {
         ${detail("מחיר קבוע", patient.fixed_price)}
       </div>
     </article>`;
+}
+
+function safeJson(value, fallback = []) {
+  try {
+    const parsed = JSON.parse(value || "");
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function goalStatusLabel(value) {
+  return { planned: "מתוכננת", active: "פעילה", achieved: "הושגה", paused: "הושהתה" }[value] || "פעילה";
+}
+
+function goalsPanel(goals, patientId) {
+  const editedGoal = state.currentGoalId ? goals.find((goal) => goal.id === state.currentGoalId) : null;
+  const ordered = [...goals].sort((a, b) => `${a.status === "active" ? "0" : "1"}${b.updated_at || ""}`.localeCompare(`${b.status === "active" ? "0" : "1"}${a.updated_at || ""}`));
+  return `
+    <section class="grid-two profile-grid">
+      <article class="panel">
+        <div class="panel-head"><h2>${editedGoal ? "עריכת מטרה" : "מטרה חדשה"}</h2></div>
+        <form class="form-grid inline-form" data-form="goal" data-patient-id="${html(patientId)}" data-id="${html(editedGoal?.id || "")}">
+          <div class="field wide"><label for="goal_title">כותרת</label><input id="goal_title" name="title" required value="${html(editedGoal?.title || "")}" /></div>
+          <div class="field wide"><label for="goal_description">פירוט</label><textarea id="goal_description" name="description">${html(editedGoal?.description || "")}</textarea></div>
+          <div class="field"><label for="goal_status">מצב</label><select id="goal_status" name="status">
+            ${["planned", "active", "achieved", "paused"].map((value) => `<option value="${value}" ${value === (editedGoal?.status || "active") ? "selected" : ""}>${goalStatusLabel(value)}</option>`).join("")}
+          </select></div>
+          <div class="field"><label for="goal_progress">התקדמות</label><input id="goal_progress" name="progress" type="number" min="0" max="100" value="${html(editedGoal?.progress || "0")}" /></div>
+          <div class="field"><label for="goal_target_date">תאריך יעד</label><input class="picker-input" data-date-input id="goal_target_date" name="target_date" readonly value="${html(editedGoal?.target_date || "")}" /></div>
+          <div class="field wide"><label for="goal_note">הערה</label><textarea id="goal_note" name="note">${html(editedGoal?.note || "")}</textarea></div>
+          <div class="toolbar wide"><button class="button" type="submit">${editedGoal ? "עדכון מטרה" : "שמירת מטרה"}</button>${editedGoal ? `<button class="button secondary" data-action="cancel-goal-edit" type="button">ביטול</button>` : ""}</div>
+        </form>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>מטרות טיפול</h2><span>${ordered.length} מטרות</span></div>
+        <div class="report-list">
+          ${ordered.map((goal) => {
+            const updates = state.goalUpdates.filter((update) => update.goal_id === goal.id).sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
+            return `<article class="report-item">
+              <strong>${html(goal.title)}</strong>
+              <span>${html(goalStatusLabel(goal.status))} · ${html(goal.progress || "0")}%${goal.target_date ? ` · יעד ${html(formatDate(goal.target_date))}` : ""}</span>
+              ${goal.description ? `<p>${html(goal.description)}</p>` : ""}
+              ${updates[0] ? `<small>עדכון אחרון: ${html(updates[0].progress || "0")}%${updates[0].note ? ` · ${html(updates[0].note)}` : ""}</small>` : ""}
+              <button class="button secondary table-button" data-action="edit-goal" data-id="${html(goal.id)}" type="button">עריכה</button>
+            </article>`;
+          }).join("") || `<div class="empty">עדיין לא הוגדרו מטרות טיפול.</div>`}
+        </div>
+      </article>
+    </section>`;
+}
+
+function questionnaireStatusLabel(value) {
+  return { draft: "טיוטה", sent: "נשלח", completed: "הושלם", closed: "נסגר" }[value] || "טיוטה";
+}
+
+function questionnaireAnswersView(assignment) {
+  const response = state.questionnaireResponses.find((item) => item.assignment_id === assignment.id);
+  const answers = safeJson(response?.answers_json, []);
+  if (!answers.length) return "";
+  return `<details class="settings-help"><summary>הצגת תשובות</summary>${answers.map((answer) => `<p><strong>${html(answer.question || "שאלה")}</strong><br />${html(answer.answer || "-")}</p>`).join("")}</details>`;
+}
+
+function questionnairesPanel(assignments, patientId) {
+  const contacts = state.contacts.filter((contact) => contact.patient_id === patientId);
+  const activeTemplates = state.questionnaireTemplates.filter((template) => template.active !== "no");
+  const selectedTemplate = state.questionnaireTemplates.find((template) => template.id === state.currentQuestionnaireTemplateId) || activeTemplates[0] || state.questionnaireTemplates[0];
+  const questionsText = safeJson(selectedTemplate?.questions_json, []).map((question) => question.title || "").join("\n");
+  return `
+    <section class="grid-two profile-grid">
+      <article class="panel">
+        <div class="panel-head"><h2>שליחת שאלון</h2></div>
+        <form class="form-grid inline-form" data-form="questionnaire-assignment" data-patient-id="${html(patientId)}">
+          <div class="field wide"><label for="questionnaire_contact">נמען</label><select id="questionnaire_contact" name="contact_id" required><option value="">בחירה</option>${contacts.map((contact) => `<option value="${html(contact.id)}">${html(contact.name)} · ${html(contact.relationship || contact.contact_type || "")}</option>`).join("")}</select></div>
+          <div class="field wide"><label for="questionnaire_template">תבנית</label><select id="questionnaire_template" name="template_id" required><option value="">בחירה</option>${activeTemplates.map((template) => `<option value="${html(template.id)}">${html(template.name)}</option>`).join("")}</select></div>
+          <div class="field"><label for="questionnaire_due">מועד רצוי</label><input class="picker-input" data-date-input id="questionnaire_due" name="due_date" readonly /></div>
+          <div class="toolbar wide"><button class="button blue" type="submit" ${contacts.length && activeTemplates.length ? "" : "disabled"}>יצירת שאלון וקישור</button></div>
+        </form>
+        ${!contacts.length ? `<div class="empty">כדי לשלוח שאלון צריך להוסיף קודם הורה או איש מקצוע.</div>` : ""}
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>תבניות שאלון</h2></div>
+        <div class="field"><label for="questionnaire_template_editor_select">בחירת תבנית לעריכה</label><select id="questionnaire_template_editor_select" data-questionnaire-template-select>${state.questionnaireTemplates.map((template) => `<option value="${html(template.id)}" ${template.id === selectedTemplate?.id ? "selected" : ""}>${html(template.name)}</option>`).join("")}</select></div>
+        <form class="form-grid inline-form" data-form="questionnaire-template" data-id="${html(selectedTemplate?.id || "")}">
+          <div class="field"><label for="questionnaire_template_name">שם</label><input id="questionnaire_template_name" name="name" required value="${html(selectedTemplate?.name || "")}" /></div>
+          <div class="field"><label for="questionnaire_audience">מיועד ל</label><select id="questionnaire_audience" name="audience"><option value="parent" ${selectedTemplate?.audience === "parent" ? "selected" : ""}>הורים</option><option value="professional" ${selectedTemplate?.audience === "professional" ? "selected" : ""}>אנשי מקצוע</option></select></div>
+          <div class="field wide"><label for="questionnaire_questions">שאלות — שאלה אחת בכל שורה</label><textarea id="questionnaire_questions" name="questions_text" rows="10">${html(questionsText)}</textarea></div>
+          <div class="toolbar wide"><button class="button" type="submit">שמירת תבנית</button></div>
+        </form>
+      </article>
+    </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>שאלונים שנשלחו</h2><button class="button secondary" data-action="sync-questionnaires" data-patient-id="${html(patientId)}" type="button">רענון תשובות</button></div>
+      <div class="report-list">${[...assignments].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`)).map((assignment) => {
+        const contact = state.contacts.find((item) => item.id === assignment.contact_id);
+        const template = state.questionnaireTemplates.find((item) => item.id === assignment.template_id);
+        return `<article class="report-item"><strong>${html(template?.name || "שאלון")}</strong><span>${html(contact?.name || "נמען לא ידוע")} · ${html(questionnaireStatusLabel(assignment.status))}</span>
+          <div class="toolbar"><button class="button green table-button" data-action="send-questionnaire-whatsapp" data-id="${html(assignment.id)}" type="button" ${contact?.phone && assignment.responder_url ? "" : "disabled"}>WhatsApp</button><button class="button secondary table-button" data-action="send-questionnaire-email" data-id="${html(assignment.id)}" type="button" ${contact?.email && assignment.responder_url ? "" : "disabled"}>מייל</button>${assignment.responder_url ? `<a class="button secondary table-button" href="${html(assignment.responder_url)}" target="_blank" rel="noopener">פתיחת טופס</a>` : ""}</div>${questionnaireAnswersView(assignment)}</article>`;
+      }).join("") || `<div class="empty">עדיין לא נשלחו שאלונים.</div>`}</div>
+    </section>`;
+}
+
+function reportTypeLabel(value) {
+  return REPORT_TYPES[value] || REPORT_TYPES.progress;
+}
+
+function clinicalReportDraft(patientId, reportType = "progress", start = "", end = "") {
+  const patient = state.patients.find((item) => item.id === patientId);
+  const sessions = state.sessions.filter((session) => session.patient_id === patientId && (!start || session.session_date >= start) && (!end || session.session_date <= end));
+  const goals = state.goals.filter((goal) => goal.patient_id === patientId);
+  const responses = state.questionnaireResponses.filter((response) => response.patient_id === patientId);
+  const lines = [
+    reportTypeLabel(reportType),
+    `שם המטופל: ${patient?.child_name || ""}`,
+    `סוג טיפול: ${patient?.treatment_type || ""}`,
+    start || end ? `תקופה: ${start ? formatDate(start) : ""} - ${end ? formatDate(end) : ""}` : "",
+    "",
+    "מטרות טיפול:",
+    ...goals.map((goal) => `- ${goal.title}: ${goalStatusLabel(goal.status)}, התקדמות ${goal.progress || 0}%${goal.description ? ` — ${goal.description}` : ""}`),
+    "",
+    "מהלך הטיפול:",
+    ...sessions.map((session) => `${formatDate(session.session_date)} — ${session.summary || "לא נכתב סיכום"}`),
+    "",
+    "מידע משאלונים:",
+    ...responses.flatMap((response) => safeJson(response.answers_json, []).map((answer) => `- ${answer.question}: ${answer.answer || "-"}`)),
+    "",
+    reportType === "assessment" ? "ממצאי האבחון והמלצות:" : reportType === "summary" ? "סיכום והמלצות להמשך:" : "הערכת התקדמות והמלצות להמשך:",
+    ""
+  ];
+  return lines.filter((line, index) => line || index > 0).join("\n");
+}
+
+function clinicalReportsPanel(reports, patientId) {
+  return `
+    <section class="grid-two profile-grid">
+      <article class="panel"><div class="panel-head"><h2>הפקת דוח טיפולי</h2></div>
+        <form class="form-grid inline-form" data-form="clinical-report" data-patient-id="${html(patientId)}">
+          <div class="field"><label for="clinical_report_type">סוג דוח</label><select id="clinical_report_type" name="report_type">${Object.entries(REPORT_TYPES).map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></div>
+          <div class="field"><label for="clinical_report_title">כותרת</label><input id="clinical_report_title" name="title" placeholder="תיווצר אוטומטית אם יישאר ריק" /></div>
+          <div class="field"><label for="clinical_period_start">מתאריך</label><input class="picker-input" data-date-input id="clinical_period_start" name="period_start" readonly /></div>
+          <div class="field"><label for="clinical_period_end">עד תאריך</label><input class="picker-input" data-date-input id="clinical_period_end" name="period_end" readonly /></div>
+          <div class="field wide"><label for="clinical_report_content">תוכן לעריכה</label><textarea id="clinical_report_content" name="content" rows="18">${html(clinicalReportDraft(patientId))}</textarea><small>הערות פנימיות אינן נכללות בטיוטה.</small></div>
+          <div class="toolbar wide"><button class="button blue" type="submit">יצירת Google Doc ו-PDF</button></div>
+        </form>
+      </article>
+      <article class="panel"><div class="panel-head"><h2>דוחות שהופקו</h2><span>${reports.length}</span></div><div class="report-list">
+        ${[...reports].sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`)).map((report) => `<article class="report-item"><strong>${html(report.title || reportTypeLabel(report.report_type))}</strong><span>${html(reportTypeLabel(report.report_type))} · ${html(formatDate((report.created_at || "").slice(0, 10)))}</span><div class="toolbar">${report.document_file_id ? `<a class="button secondary table-button" href="${html(driveFileUrl(report.document_file_id))}" target="_blank" rel="noopener">Google Doc</a>` : ""}${report.pdf_file_id ? `<a class="button secondary table-button" href="${html(driveFileUrl(report.pdf_file_id))}" target="_blank" rel="noopener">PDF</a>` : ""}</div></article>`).join("") || `<div class="empty">עדיין לא הופקו דוחות טיפוליים.</div>`}
+      </div></article>
+    </section>`;
 }
 
 function settingsPage() {
@@ -1235,6 +1512,7 @@ function settingsPage() {
             <a class="button yellow" href="${html(googleApiActivationUrl("drive.googleapis.com"))}" target="_blank" rel="noopener">הפעלת אחסון קבצים</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("calendar.googleapis.com"))}" target="_blank" rel="noopener">הפעלת יומן</a>
             <a class="button yellow" href="${html(googleApiActivationUrl("docs.googleapis.com"))}" target="_blank" rel="noopener">הפעלת מסמכים</a>
+            <a class="button yellow" href="${html(googleApiActivationUrl("forms.googleapis.com"))}" target="_blank" rel="noopener">הפעלת שאלונים</a>
           </div>
           <details class="settings-help">
             <summary>עזרה בתקלות חיבור</summary>
@@ -1543,6 +1821,14 @@ function sessionForm(patientId) {
         <label for="sensitive_notes">הערות פנימיות</label>
         <textarea id="sensitive_notes" name="sensitive_notes" placeholder="מידע פנימי שאינו מיועד לשיתוף">${html(editedSession?.sensitive_notes || "")}</textarea>
       </div>
+      ${state.goals.filter((goal) => goal.patient_id === patientId && ["planned", "active"].includes(goal.status)).map((goal) => `
+        <fieldset class="field wide goal-session-update">
+          <legend>${html(goal.title)}</legend>
+          <div class="form-grid">
+            <div class="field"><label for="goal_progress_${html(goal.id)}">התקדמות במפגש</label><input id="goal_progress_${html(goal.id)}" name="goal_progress_${html(goal.id)}" type="number" min="0" max="100" value="${html(goal.progress || "0")}" /></div>
+            <div class="field"><label for="goal_note_${html(goal.id)}">הערת התקדמות</label><input id="goal_note_${html(goal.id)}" name="goal_note_${html(goal.id)}" /></div>
+          </div>
+        </fieldset>`).join("")}
       <div class="toolbar wide">
         <button class="button" type="submit">${editedSession ? "עדכון מפגש" : "שמירת מפגש"}</button>
         ${editedSession ? `<button class="button secondary" data-action="cancel-session-edit" type="button">ביטול עריכה</button>` : ""}
@@ -3060,7 +3346,7 @@ async function connectGoogle(forceConsent = false, automatic = false) {
   const tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: state.config.googleClientId,
     scope:
-      "openid email profile https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/documents",
+      "openid email profile https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/forms.responses.readonly",
     callback: async (response) => {
       googleAuthInFlight = false;
       state.authRestoring = false;
@@ -3169,6 +3455,12 @@ function clearClinicData() {
   state.tasks = [];
   state.files = [];
   state.contacts = [];
+  state.goals = [];
+  state.goalUpdates = [];
+  state.questionnaireTemplates = [];
+  state.questionnaireAssignments = [];
+  state.questionnaireResponses = [];
+  state.clinicalReports = [];
   state.scheduleExceptions = [];
   state.auditLog = [];
   state.lastUndoActionId = "";
@@ -3220,6 +3512,10 @@ function friendlyGoogleError(text, status) {
     return "רכיב המסמכים לא פעיל בפרויקט החיבור. צריך להפעיל את Google Docs API ואז להתחבר מחדש עם הרשאות.";
   }
 
+  if (combined.includes("forms.googleapis.com") || combined.includes("google forms api")) {
+    return "רכיב השאלונים לא פעיל בפרויקט החיבור. צריך להפעיל את Google Forms API ואז להתחבר מחדש עם הרשאות.";
+  }
+
   if (status === 401 || combined.includes("invalid credentials")) {
     clearStoredGoogleToken();
     state.accessToken = "";
@@ -3267,6 +3563,19 @@ async function googleFetch(url, options = {}) {
   }
 
   return response.status === 204 ? null : response.json();
+}
+
+async function googleFetchBlob(url, options = {}) {
+  if (!state.accessToken) throw new Error("לא מחוברים לאחסון.");
+  const response = await fetch(url, {
+    ...options,
+    headers: { Authorization: `Bearer ${state.accessToken}`, ...(options.headers || {}) }
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(friendlyGoogleError(text, response.status));
+  }
+  return response.blob();
 }
 
 async function loadGoogleUser() {
@@ -3438,6 +3747,49 @@ async function ensureSpreadsheetSchema() {
   state.storageReadySpreadsheetId = spreadsheetId;
 }
 
+async function seedQuestionnaireTemplates() {
+  if (state.questionnaireTemplates.length) return;
+  for (const template of DEFAULT_QUESTIONNAIRE_TEMPLATES) {
+    const now = new Date().toISOString();
+    const record = {
+      id: template.id,
+      name: template.name,
+      audience: template.audience,
+      questions_json: JSON.stringify(template.questions),
+      active: "yes",
+      created_at: now,
+      updated_at: now
+    };
+    const result = await appendSheet("questionnaire_templates", record);
+    record._rowNumber = appendedRowNumber(result);
+    state.questionnaireTemplates.push(record);
+  }
+}
+
+async function migrateLegacyGoals() {
+  for (const patient of state.patients) {
+    const legacyText = String(patient.treatment_goals || "").trim();
+    if (!legacyText || state.goals.some((goal) => goal.patient_id === patient.id && goal.legacy_source === "patients.treatment_goals")) continue;
+    const now = new Date().toISOString();
+    const goal = {
+      id: `legacy-goal-${patient.id}`,
+      patient_id: patient.id,
+      title: "מטרות קיימות",
+      description: legacyText,
+      status: "active",
+      progress: "0",
+      target_date: "",
+      note: "הועבר מהשדה הישן ללא מחיקת המקור.",
+      legacy_source: "patients.treatment_goals",
+      created_at: patient.created_at || now,
+      updated_at: now
+    };
+    const result = await appendSheet("goals", goal);
+    goal._rowNumber = appendedRowNumber(result);
+    state.goals.push(goal);
+  }
+}
+
 async function appendSheet(sheetName, record) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
@@ -3474,6 +3826,11 @@ async function readSheetRow(sheetName, rowNumber) {
 function stateCollectionName(sheetName) {
   if (sheetName === "schedule_exceptions") return "scheduleExceptions";
   if (sheetName === "audit_log") return "auditLog";
+  if (sheetName === "goal_updates") return "goalUpdates";
+  if (sheetName === "questionnaire_templates") return "questionnaireTemplates";
+  if (sheetName === "questionnaire_assignments") return "questionnaireAssignments";
+  if (sheetName === "questionnaire_responses") return "questionnaireResponses";
+  if (sheetName === "clinical_reports") return "clinicalReports";
   return sheetName;
 }
 
@@ -3528,6 +3885,12 @@ function workflowCollections() {
     tasks: state.tasks,
     files: state.files,
     contacts: state.contacts,
+    goals: state.goals,
+    goal_updates: state.goalUpdates,
+    questionnaire_templates: state.questionnaireTemplates,
+    questionnaire_assignments: state.questionnaireAssignments,
+    questionnaire_responses: state.questionnaireResponses,
+    clinical_reports: state.clinicalReports,
     schedule_exceptions: state.scheduleExceptions
   };
 }
@@ -3586,7 +3949,7 @@ async function runAuditedAction(meta, work) {
     await appendAuditEntry(meta, mutations);
     setSaveState(state.syncQueue.length ? "pending" : "saved");
     return result;
-  } catch {
+  } catch (error) {
     const afterFailure = WorkflowCore.snapshot(workflowCollections());
     const partialMutations = WorkflowCore.diff(before, afterFailure);
     if (partialMutations.length && meta.undoable !== false) {
@@ -4480,13 +4843,19 @@ async function loadData() {
   }
   if (!state.config.googleSpreadsheetId) return;
   await ensureSpreadsheetSchema();
-  const [patients, sessions, payments, tasks, files, contacts, scheduleExceptions, auditLog, templates] = await Promise.all([
+  const [patients, sessions, payments, tasks, files, contacts, goals, goalUpdates, questionnaireTemplates, questionnaireAssignments, questionnaireResponses, clinicalReports, scheduleExceptions, auditLog, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
     readSheet("payments"),
     readSheet("tasks"),
     readSheet("files"),
     readSheet("contacts"),
+    readSheet("goals"),
+    readSheet("goal_updates"),
+    readSheet("questionnaire_templates"),
+    readSheet("questionnaire_assignments"),
+    readSheet("questionnaire_responses"),
+    readSheet("clinical_reports"),
     readSheet("schedule_exceptions"),
     readSheet("audit_log"),
     loadDriveTemplates().catch(() => [])
@@ -4497,6 +4866,12 @@ async function loadData() {
   state.tasks = tasks.sort((a, b) => `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`));
   state.files = files.sort((a, b) => `${b.created_at}`.localeCompare(`${a.created_at}`));
   state.contacts = contacts.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
+  state.goals = goals.sort((a, b) => `${b.updated_at || ""}`.localeCompare(`${a.updated_at || ""}`));
+  state.goalUpdates = goalUpdates.sort((a, b) => `${b.created_at || ""}`.localeCompare(`${a.created_at || ""}`));
+  state.questionnaireTemplates = questionnaireTemplates;
+  state.questionnaireAssignments = questionnaireAssignments.sort((a, b) => `${b.created_at || ""}`.localeCompare(`${a.created_at || ""}`));
+  state.questionnaireResponses = questionnaireResponses.sort((a, b) => `${b.submitted_at || ""}`.localeCompare(`${a.submitted_at || ""}`));
+  state.clinicalReports = clinicalReports.sort((a, b) => `${b.created_at || ""}`.localeCompare(`${a.created_at || ""}`));
   state.scheduleExceptions = scheduleExceptions.sort((a, b) =>
     `${b.start_date || ""} ${b.created_at || ""}`.localeCompare(`${a.start_date || ""} ${a.created_at || ""}`)
   );
@@ -4505,6 +4880,8 @@ async function loadData() {
     (entry) => entry.undoable === "yes" && !entry.undone_at && auditMutations(entry).length
   )?.id || "";
   state.templates = templates.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
+  await seedQuestionnaireTemplates();
+  await migrateLegacyGoals();
   state.lastRefreshAt = new Date().toISOString();
   saveSyncState();
   queueCalendarPrivacyMigration();
@@ -4634,6 +5011,227 @@ async function deleteContactRecord(contactId) {
   if (state.currentContactId === contactId) state.currentContactId = "";
 }
 
+async function saveGoal(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || "";
+  const existing = form.dataset.id ? state.goals.find((goal) => goal.id === form.dataset.id) : null;
+  if (!patientId || !String(data.title || "").trim()) throw new Error("כותרת המטרה היא שדה חובה.");
+  const progress = Math.max(0, Math.min(100, Number(data.progress) || 0));
+  const now = new Date().toISOString();
+  const goal = {
+    ...(existing || {}),
+    id: existing?.id || id(), patient_id: patientId, title: String(data.title).trim(),
+    description: data.description || "", status: progress >= 100 ? "achieved" : data.status || "active",
+    progress: String(progress), target_date: data.target_date || "", note: data.note || "",
+    legacy_source: existing?.legacy_source || "", created_at: existing?.created_at || now, updated_at: now
+  };
+  if (existing) {
+    if (!existing._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת המטרה.");
+    await updateSheetRow("goals", existing._rowNumber, goal, existing);
+    goal._rowNumber = existing._rowNumber;
+    state.goals = state.goals.map((item) => item.id === goal.id ? goal : item);
+  } else {
+    const result = await appendSheet("goals", goal);
+    goal._rowNumber = appendedRowNumber(result);
+    state.goals = [goal, ...state.goals];
+  }
+  state.currentGoalId = "";
+  return goal;
+}
+
+async function saveQuestionnaireTemplate(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const existing = form.dataset.id ? state.questionnaireTemplates.find((template) => template.id === form.dataset.id) : null;
+  const questions = String(data.questions_text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((title) => ({ title, type: "paragraph", required: false }));
+  if (!String(data.name || "").trim() || !questions.length) throw new Error("צריך להגדיר שם ולפחות שאלה אחת.");
+  const now = new Date().toISOString();
+  const template = {
+    ...(existing || {}), id: existing?.id || id(), name: String(data.name).trim(), audience: data.audience || "parent",
+    questions_json: JSON.stringify(questions), active: existing?.active || "yes", created_at: existing?.created_at || now, updated_at: now
+  };
+  if (existing) {
+    if (!existing._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת התבנית.");
+    await updateSheetRow("questionnaire_templates", existing._rowNumber, template, existing);
+    template._rowNumber = existing._rowNumber;
+    state.questionnaireTemplates = state.questionnaireTemplates.map((item) => item.id === template.id ? template : item);
+  } else {
+    const result = await appendSheet("questionnaire_templates", template);
+    template._rowNumber = appendedRowNumber(result);
+    state.questionnaireTemplates.push(template);
+  }
+  return template;
+}
+
+async function moveDriveFileToFolder(fileId, folderId) {
+  const file = await googleFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=parents`, { headers: {} });
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
+  url.searchParams.set("addParents", folderId);
+  if (file.parents?.length) url.searchParams.set("removeParents", file.parents.join(","));
+  url.searchParams.set("fields", "id,parents");
+  await googleFetch(url.toString(), { method: "PATCH", body: JSON.stringify({}) });
+}
+
+function formQuestionRequest(question, index) {
+  return {
+    createItem: {
+      item: {
+        title: question.title,
+        questionItem: {
+          question: {
+            required: Boolean(question.required),
+            textQuestion: { paragraph: question.type !== "short" }
+          }
+        }
+      },
+      location: { index }
+    }
+  };
+}
+
+async function createQuestionnaireAssignment(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || "";
+  const contact = state.contacts.find((item) => item.id === data.contact_id && item.patient_id === patientId);
+  const template = state.questionnaireTemplates.find((item) => item.id === data.template_id);
+  if (!contact || !template) throw new Error("צריך לבחור נמען ותבנית שאלון.");
+  const patient = await ensurePatientDriveFolder(patientId);
+  const created = await googleFetch("https://forms.googleapis.com/v1/forms?unpublished=true", {
+    method: "POST", body: JSON.stringify({ info: { title: template.name, documentTitle: `${template.name} - ${isoDate(new Date())}` } })
+  });
+  const questions = safeJson(template.questions_json, []);
+  await googleFetch(`https://forms.googleapis.com/v1/forms/${encodeURIComponent(created.formId)}:batchUpdate`, {
+    method: "POST", body: JSON.stringify({ requests: questions.map(formQuestionRequest) })
+  });
+  await googleFetch(`https://forms.googleapis.com/v1/forms/${encodeURIComponent(created.formId)}:setPublishSettings`, {
+    method: "POST", body: JSON.stringify({ publishSettings: { publishState: { isPublished: true, isAcceptingResponses: true } } })
+  });
+  await moveDriveFileToFolder(created.formId, patient.drive_folder_id);
+  const published = await googleFetch(`https://forms.googleapis.com/v1/forms/${encodeURIComponent(created.formId)}`, { headers: {} });
+  const now = new Date().toISOString();
+  const assignment = {
+    id: id(), patient_id: patientId, contact_id: contact.id, template_id: template.id, form_id: created.formId,
+    responder_url: published.responderUri || `https://docs.google.com/forms/d/${created.formId}/viewform`, status: "draft",
+    sent_at: "", due_date: data.due_date || "", responded_at: "", last_response_id: "", created_at: now, updated_at: now
+  };
+  const result = await appendSheet("questionnaire_assignments", assignment);
+  assignment._rowNumber = appendedRowNumber(result);
+  state.questionnaireAssignments = [assignment, ...state.questionnaireAssignments];
+  return assignment;
+}
+
+function questionnaireMessage(assignment) {
+  const template = state.questionnaireTemplates.find((item) => item.id === assignment.template_id);
+  return `שלום, מצורף ${template?.name || "שאלון"} לקראת המשך העבודה. ניתן למלא בקישור: ${assignment.responder_url}`;
+}
+
+async function markQuestionnaireSent(assignment) {
+  if (!assignment._rowNumber || assignment.status !== "draft") return assignment;
+  const updated = { ...assignment, status: "sent", sent_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  await updateSheetRow("questionnaire_assignments", assignment._rowNumber, updated, assignment);
+  state.questionnaireAssignments = state.questionnaireAssignments.map((item) => item.id === assignment.id ? updated : item);
+  return updated;
+}
+
+async function syncQuestionnaireAssignment(assignment) {
+  if (!assignment.form_id || assignment.status === "completed") return false;
+  const responsesResult = await googleFetch(`https://forms.googleapis.com/v1/forms/${encodeURIComponent(assignment.form_id)}/responses`, { headers: {} });
+  const responses = responsesResult.responses || [];
+  const response = responses.sort((a, b) => `${b.lastSubmittedTime || b.createTime || ""}`.localeCompare(`${a.lastSubmittedTime || a.createTime || ""}`))[0];
+  if (!response || state.questionnaireResponses.some((item) => item.response_id === response.responseId)) return false;
+  const formDefinition = await googleFetch(`https://forms.googleapis.com/v1/forms/${encodeURIComponent(assignment.form_id)}`, { headers: {} });
+  const titleById = Object.fromEntries((formDefinition.items || []).map((item) => [item.questionItem?.question?.questionId || item.itemId, item.title || "שאלה"]));
+  const answers = Object.entries(response.answers || {}).map(([itemId, answer]) => ({
+    question: titleById[itemId] || "שאלה",
+    answer: (answer.textAnswers?.answers || []).map((item) => item.value).join(", ")
+  }));
+  const now = new Date().toISOString();
+  const record = {
+    id: id(), assignment_id: assignment.id, patient_id: assignment.patient_id, contact_id: assignment.contact_id,
+    response_id: response.responseId, submitted_at: response.lastSubmittedTime || response.createTime || now,
+    answers_json: JSON.stringify(answers), reviewed_at: "", created_at: now, updated_at: now
+  };
+  const result = await appendSheet("questionnaire_responses", record);
+  record._rowNumber = appendedRowNumber(result);
+  state.questionnaireResponses = [record, ...state.questionnaireResponses];
+  const updated = { ...assignment, status: "completed", responded_at: record.submitted_at, last_response_id: response.responseId, updated_at: now };
+  await updateSheetRow("questionnaire_assignments", assignment._rowNumber, updated, assignment);
+  state.questionnaireAssignments = state.questionnaireAssignments.map((item) => item.id === assignment.id ? updated : item);
+  await googleFetch(`https://forms.googleapis.com/v1/forms/${encodeURIComponent(assignment.form_id)}:setPublishSettings`, {
+    method: "POST", body: JSON.stringify({ publishSettings: { publishState: { isPublished: true, isAcceptingResponses: false } } })
+  });
+  return true;
+}
+
+async function syncQuestionnaires(patientId) {
+  let imported = 0;
+  const pending = state.questionnaireAssignments.filter((assignment) => assignment.patient_id === patientId && !["completed", "closed"].includes(assignment.status));
+  for (const assignment of pending) if (await syncQuestionnaireAssignment(assignment)) imported += 1;
+  return imported;
+}
+
+async function createClinicalReport(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const patientId = form.dataset.patientId || "";
+  const patient = await ensurePatientDriveFolder(patientId);
+  const reportType = data.report_type || "progress";
+  const content = String(data.content || "").trim() || clinicalReportDraft(patientId, reportType, data.period_start, data.period_end);
+  const now = new Date().toISOString();
+  const title = String(data.title || "").trim() || `${reportTypeLabel(reportType)} - ${patient.child_name || "מטופל"} - ${isoDate(new Date())}`;
+  const documentFile = await googleFetch("https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,createdTime", {
+    method: "POST", body: JSON.stringify({ name: title, mimeType: "application/vnd.google-apps.document", parents: [patient.drive_folder_id] })
+  });
+  await googleFetch(`https://docs.googleapis.com/v1/documents/${encodeURIComponent(documentFile.id)}:batchUpdate`, {
+    method: "POST", body: JSON.stringify({ requests: [{ insertText: { location: { index: 1 }, text: content } }] })
+  });
+  await appendFileRecord({
+    id: id(), patient_id: patientId, drive_file_id: documentFile.id, drive_folder_id: patient.drive_folder_id,
+    name: title, file_type: "document", url: documentFile.webViewLink || driveFileUrl(documentFile.id),
+    created_at: documentFile.createdTime || now, updated_at: now
+  });
+  const pdfBlob = await googleFetchBlob(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(documentFile.id)}/export?mimeType=${encodeURIComponent("application/pdf")}`);
+  const pdfFile = new File([pdfBlob], `${title}.pdf`, { type: "application/pdf" });
+  const uploadedPdf = await uploadDriveFile(patient.drive_folder_id, pdfFile, pdfFile.name);
+  await appendFileRecord({
+    id: id(), patient_id: patientId, drive_file_id: uploadedPdf.id, drive_folder_id: patient.drive_folder_id,
+    name: uploadedPdf.name || pdfFile.name, file_type: "document", url: uploadedPdf.webViewLink || driveFileUrl(uploadedPdf.id),
+    created_at: uploadedPdf.createdTime || now, updated_at: now
+  });
+  const report = {
+    id: id(), patient_id: patientId, report_type: reportType, title, period_start: data.period_start || "", period_end: data.period_end || "",
+    content, document_file_id: documentFile.id, pdf_file_id: uploadedPdf.id, created_at: now, updated_at: now
+  };
+  const result = await appendSheet("clinical_reports", report);
+  report._rowNumber = appendedRowNumber(result);
+  state.clinicalReports = [report, ...state.clinicalReports];
+  return report;
+}
+
+async function saveSessionGoalUpdates(form, session) {
+  const patientGoals = state.goals.filter((goal) => goal.patient_id === session.patient_id && ["planned", "active"].includes(goal.status));
+  for (const goal of patientGoals) {
+    const progressField = form.elements[`goal_progress_${goal.id}`];
+    const noteField = form.elements[`goal_note_${goal.id}`];
+    if (!progressField) continue;
+    const progress = Math.max(0, Math.min(100, Number(progressField.value) || 0));
+    const note = String(noteField?.value || "").trim();
+    if (!note && progress === Number(goal.progress || 0)) continue;
+    const now = new Date().toISOString();
+    const update = {
+      id: id(), goal_id: goal.id, patient_id: goal.patient_id, session_id: session.id,
+      progress: String(progress), status: progress >= 100 ? "achieved" : "active", note,
+      created_at: now, updated_at: now
+    };
+    const result = await appendSheet("goal_updates", update);
+    update._rowNumber = appendedRowNumber(result);
+    state.goalUpdates = [update, ...state.goalUpdates];
+    if (goal._rowNumber) {
+      const updatedGoal = { ...goal, progress: String(progress), status: update.status, updated_at: now };
+      await updateSheetRow("goals", goal._rowNumber, updatedGoal, goal);
+      state.goals = state.goals.map((item) => item.id === goal.id ? updatedGoal : item);
+    }
+  }
+}
+
 async function saveSession(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || "";
@@ -4702,9 +5300,12 @@ async function saveSession(form) {
   );
   state.currentSessionId = "";
 
+  await saveSessionGoalUpdates(form, session);
+
   if (!session.summary?.trim()) {
     await createSystemTask(patientId, "השלמת תיעוד מפגש", `מפגש מתאריך ${formatDate(session.session_date)} נשמר ללא סיכום.`, session.session_date);
   }
+  return session;
 }
 
 async function unlinkSessionPayments(sessionId) {
@@ -4908,7 +5509,7 @@ function backupPayload() {
   return {
     exported_at: new Date().toISOString(),
     app: "clinic-manager",
-    version: "browser-storage-v2",
+    version: "browser-storage-v3-clinical",
     config: {
       googleDriveRootFolderId: state.config.googleDriveRootFolderId || "",
       googleTemplatesFolderId: state.config.googleTemplatesFolderId || "",
@@ -4925,6 +5526,12 @@ function backupPayload() {
       tasks: state.tasks.length,
       files: state.files.length,
       contacts: state.contacts.length,
+      goals: state.goals.length,
+      goal_updates: state.goalUpdates.length,
+      questionnaire_templates: state.questionnaireTemplates.length,
+      questionnaire_assignments: state.questionnaireAssignments.length,
+      questionnaire_responses: state.questionnaireResponses.length,
+      clinical_reports: state.clinicalReports.length,
       schedule_exceptions: state.scheduleExceptions.length,
       audit_log: state.auditLog.length
     },
@@ -4935,6 +5542,12 @@ function backupPayload() {
       tasks: state.tasks,
       files: state.files,
       contacts: state.contacts,
+      goals: state.goals,
+      goal_updates: state.goalUpdates,
+      questionnaire_templates: state.questionnaireTemplates,
+      questionnaire_assignments: state.questionnaireAssignments,
+      questionnaire_responses: state.questionnaireResponses,
+      clinical_reports: state.clinicalReports,
       schedule_exceptions: state.scheduleExceptions,
       audit_log: state.auditLog
     }
@@ -4989,6 +5602,9 @@ async function restoreBackupFile(file) {
   if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני שחזור.");
 
   const payload = JSON.parse(await file.text());
+  for (const tableName of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports"]) {
+    if (payload?.data && !Array.isArray(payload.data[tableName])) payload.data[tableName] = [];
+  }
   if (payload?.data && !Array.isArray(payload.data.audit_log)) payload.data.audit_log = [];
   WorkflowCore.validateBackup(payload, Object.keys(SHEETS));
   const rollbackPayload = backupPayload();
@@ -5560,6 +6176,7 @@ function bindEvents() {
       state.currentTaskId = "";
       state.currentFileId = "";
       state.currentContactId = "";
+      state.currentGoalId = "";
       navigate(`patients/${target.dataset.id}`);
     }
     if (action === "profile-tab") {
@@ -5569,7 +6186,47 @@ function bindEvents() {
       if (state.profileTab !== "tasks") state.currentTaskId = "";
       if (state.profileTab !== "files") state.currentFileId = "";
       if (state.profileTab !== "contacts") state.currentContactId = "";
+      if (state.profileTab !== "goals") state.currentGoalId = "";
       render();
+    }
+    if (action === "edit-goal") {
+      state.currentGoalId = target.dataset.id || "";
+      state.profileTab = "goals";
+      render();
+    }
+    if (action === "cancel-goal-edit") {
+      state.currentGoalId = "";
+      render();
+    }
+    if (action === "send-questionnaire-whatsapp" || action === "send-questionnaire-email") {
+      try {
+        const assignment = state.questionnaireAssignments.find((item) => item.id === target.dataset.id);
+        const contact = assignment && state.contacts.find((item) => item.id === assignment.contact_id);
+        if (!assignment || !contact) throw new Error("השאלון או איש הקשר לא נמצאו.");
+        const message = questionnaireMessage(assignment);
+        const destination = action === "send-questionnaire-whatsapp"
+          ? `https://wa.me/${String(contact.phone || "").replace(/\D/g, "")}?text=${encodeURIComponent(message)}`
+          : `mailto:${encodeURIComponent(contact.email || "")}?subject=${encodeURIComponent("שאלון לקראת המשך העבודה")}&body=${encodeURIComponent(message)}`;
+        window.open(destination, "_blank", "noopener");
+        await markQuestionnaireSent(assignment);
+        state.message = "נפתח חלון השליחה עם קישור השאלון.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "פתיחת השליחה נכשלה.";
+        render();
+      }
+    }
+    if (action === "sync-questionnaires") {
+      try {
+        const imported = await syncQuestionnaires(target.dataset.patientId || "");
+        state.message = imported ? `נקלטו ${imported} תשובות חדשות.` : "לא נמצאו תשובות חדשות.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "רענון השאלונים נכשל.";
+        render();
+      }
     }
     if (action === "edit-session") {
       state.currentSessionId = target.dataset.id || "";
@@ -6011,6 +6668,25 @@ function bindEvents() {
   });
 
   document.addEventListener("change", (event) => {
+    const questionnaireTemplateSelect = event.target.closest("[data-questionnaire-template-select]");
+    if (questionnaireTemplateSelect) {
+      state.currentQuestionnaireTemplateId = questionnaireTemplateSelect.value || "";
+      render();
+      return;
+    }
+    const reportForm = event.target.closest('form[data-form="clinical-report"]');
+    if (reportForm && ["report_type", "period_start", "period_end"].includes(event.target.name)) {
+      const content = reportForm.elements.content;
+      if (content) {
+        content.value = clinicalReportDraft(
+          reportForm.dataset.patientId || "",
+          reportForm.elements.report_type?.value || "progress",
+          reportForm.elements.period_start?.value || "",
+          reportForm.elements.period_end?.value || ""
+        );
+      }
+      return;
+    }
     const fileFilter = event.target.closest("[data-file-filter]");
     if (fileFilter) {
       state.fileFilter[fileFilter.dataset.fileFilter] = fileFilter.value;
@@ -6065,6 +6741,40 @@ function bindEvents() {
           () => saveContact(form)
         );
         state.message = isEdit ? "פרטי איש הקשר עודכנו." : "איש הקשר נוסף לכרטיס המטופל.";
+      }
+
+      if (form.dataset.form === "goal") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        const isEdit = Boolean(form.dataset.id);
+        await runAuditedAction(
+          { actionType: isEdit ? "update" : "create", entityType: "goal", entityId: form.dataset.id || "", summary: isEdit ? "עדכון מטרת טיפול" : "יצירת מטרת טיפול" },
+          () => saveGoal(form)
+        );
+        state.message = isEdit ? "מטרת הטיפול עודכנה." : "מטרת הטיפול נשמרה.";
+      }
+
+      if (form.dataset.form === "questionnaire-template") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        await saveQuestionnaireTemplate(form);
+        state.message = "תבנית השאלון נשמרה.";
+      }
+
+      if (form.dataset.form === "questionnaire-assignment") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת שאלון.");
+        await runAuditedAction(
+          { actionType: "create", entityType: "questionnaire", summary: "יצירת שאלון לנמען", undoable: false },
+          () => createQuestionnaireAssignment(form)
+        );
+        state.message = "השאלון נוצר. אפשר לשלוח אותו ב-WhatsApp או במייל.";
+      }
+
+      if (form.dataset.form === "clinical-report") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני הפקת דוח.");
+        await runAuditedAction(
+          { actionType: "create", entityType: "clinical_report", summary: "הפקת דוח טיפולי", undoable: false },
+          () => createClinicalReport(form)
+        );
+        state.message = "הדוח הופק ונשמר כ-Google Doc וכ-PDF בתיק המטופל.";
       }
 
       if (form.dataset.form === "session") {
@@ -6156,6 +6866,15 @@ function render() {
     !isSettings && !canUseStorage() ? accessGatePage() : (pages[route] || dashboardPage)();
   scheduleMessageDismiss();
   if (route === "calendar") ensureIsraelHolidaysForMonth(state.calendarMonth).catch(() => {});
+  if (route === "patients" && idPart && state.profileTab === "questionnaires" && !state.questionnaireSyncStarted[idPart]) {
+    state.questionnaireSyncStarted[idPart] = true;
+    syncQuestionnaires(idPart).then((imported) => {
+      if (imported) {
+        state.message = `נקלטו ${imported} תשובות חדשות.`;
+        render();
+      }
+    }).catch(() => {});
+  }
 }
 
 function scheduleMessageDismiss() {

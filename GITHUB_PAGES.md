@@ -13,6 +13,8 @@ The browser app is intended for GitHub Pages:
 
 Create a Google OAuth client for a web application and add the final GitHub Pages URL as an authorized JavaScript origin.
 
+In the same Google Cloud project, enable Google Sheets API, Google Drive API, Google Calendar API, Google Docs API and Google Forms API. Existing users must disconnect and reconnect once after version 1.1.0 so Google can grant the Forms response-reading scope.
+
 Then open the app, go to `הגדרות`, and fill:
 
 - `Google Client ID`
@@ -29,7 +31,7 @@ Before publishing, run from the repository root:
 npm.cmd run release:check
 ```
 
-The production entry point is `docs/index.html`. The release must not include `.env.local`, access tokens, backup files, or patient data.
+The production entry point is `docs/index.html`. The release must not include `.env.local`, access tokens, questionnaire responses, clinical reports, backup files, or patient data.
 
 ## GitHub setting
 

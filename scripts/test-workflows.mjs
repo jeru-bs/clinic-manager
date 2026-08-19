@@ -7,6 +7,10 @@ const context = { globalThis: {} };
 vm.runInNewContext(source, context);
 const core = context.globalThis.CLINIC_WORKFLOW_CORE;
 
+for (const table of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports"]) {
+  assert.ok(core.TABLES.includes(table), `${table} must participate in audit snapshots and backup validation`);
+}
+
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }

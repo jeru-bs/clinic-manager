@@ -151,6 +151,30 @@ if (
 ) {
   uiRegressionFindings.push("parent and professional contact management is incomplete");
 }
+if (
+  !browserAppSource.includes("goals: [") ||
+  !browserAppSource.includes('data-form="goal"') ||
+  !browserAppSource.includes("async function saveSessionGoalUpdates(") ||
+  !browserAppSource.includes("async function migrateLegacyGoals(")
+) {
+  uiRegressionFindings.push("structured treatment goals or legacy migration are incomplete");
+}
+if (
+  !browserAppSource.includes("questionnaire_templates: [") ||
+  !browserAppSource.includes("https://forms.googleapis.com/v1/forms") ||
+  !browserAppSource.includes("async function syncQuestionnaireAssignment(") ||
+  !browserAppSource.includes("forms.responses.readonly")
+) {
+  uiRegressionFindings.push("Google Forms questionnaires or response import are incomplete");
+}
+if (
+  !browserAppSource.includes("clinical_reports: [") ||
+  !browserAppSource.includes('data-form="clinical-report"') ||
+  !browserAppSource.includes("async function createClinicalReport(") ||
+  !browserAppSource.includes("application/pdf")
+) {
+  uiRegressionFindings.push("clinical Google Doc and PDF reports are incomplete");
+}
 
 const checks = [
   ["Alias imports", missingImports],

@@ -1,7 +1,21 @@
 (function exposeWorkflowCore(root) {
   "use strict";
 
-  const TABLES = ["patients", "sessions", "payments", "tasks", "files", "schedule_exceptions"];
+  const TABLES = [
+    "patients",
+    "sessions",
+    "payments",
+    "tasks",
+    "files",
+    "contacts",
+    "goals",
+    "goal_updates",
+    "questionnaire_templates",
+    "questionnaire_assignments",
+    "questionnaire_responses",
+    "clinical_reports",
+    "schedule_exceptions"
+  ];
 
   function cleanRecord(record) {
     if (!record) return null;
