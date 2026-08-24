@@ -340,9 +340,9 @@ function loadConfig() {
       saved.googleCalendarId || configDefaults.googleCalendarId || "primary",
     googleSpreadsheetId:
       saved.googleSpreadsheetId || configDefaults.googleSpreadsheetId || "",
-    allowedUserEmails: mergeListText(
-      configDefaults.allowedUserEmails,
-      saved.allowedUserEmails
+    allowedUserEmails: savedListText(
+      saved.allowedUserEmails,
+      configDefaults.allowedUserEmails
     ),
     sessionTypes: listText(saved.sessionTypes, configDefaults.sessionTypes, DEFAULT_SESSION_TYPES),
     sessionLocations: listText(
@@ -378,6 +378,14 @@ function listText(savedValue, defaultValue, fallbackItems) {
 
 function mergeListText(...values) {
   return [...new Set(values.flatMap((value) => optionValues(value, [])))].join("\n");
+}
+
+// A saved allowlist is authoritative: defaults apply only when no value was ever
+// saved, so an email removed from the allowlist cannot return after reload.
+function savedListText(savedValue, defaultValue) {
+  if (Array.isArray(savedValue)) return savedValue.join("\n");
+  if (typeof savedValue === "string") return savedValue;
+  return mergeListText(defaultValue);
 }
 
 function loadSyncQueue() {
@@ -3395,7 +3403,7 @@ async function connectGoogle(forceConsent = false, automatic = false) {
     tokenClient.requestAccessToken({
       prompt: forceConsent || localStorage.getItem(GOOGLE_CONSENT_KEY) !== "yes" ? "consent" : ""
     });
-  } catch {
+  } catch (error) {
     googleAuthInFlight = false;
     state.authRestoring = false;
     state.message = "";
@@ -3613,11 +3621,23 @@ async function loadGoogleUser() {
   return state.googleUser;
 }
 
+// A1-notation letter for a 1-based column index; String.fromCharCode(64 + n)
+// breaks beyond column 26 (Z).
+function columnLetter(count) {
+  let letter = "";
+  let remaining = count;
+  while (remaining > 0) {
+    letter = String.fromCharCode(65 + ((remaining - 1) % 26)) + letter;
+    remaining = Math.floor((remaining - 1) / 26);
+  }
+  return letter;
+}
+
 async function readSheet(sheetName) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   if (!spreadsheetId) return [];
   const columns = SHEETS[sheetName];
-  const range = `${sheetName}!A2:${String.fromCharCode(64 + columns.length)}`;
+  const range = `${sheetName}!A2:${columnLetter(columns.length)}`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
   const result = await googleFetch(url);
   return (result.values || [])
@@ -3652,7 +3672,7 @@ async function readSheetHeader(sheetName) {
 async function writeSheetHeader(sheetName) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
-  const range = `${sheetName}!A1:${String.fromCharCode(64 + columns.length)}1`;
+  const range = `${sheetName}!A1:${columnLetter(columns.length)}1`;
   const url = new URL(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`
   );
@@ -3714,9 +3734,20 @@ async function runDataHealthCheck({ repair = false } = {}) {
     let header = await readSheetHeader(sheet).catch(() => []);
     let row = healthRow(sheet, existingSheets, header);
     if (repair && !row.ok) {
-      await writeSheetHeader(sheet);
-      header = await readSheetHeader(sheet).catch(() => []);
-      row = healthRow(sheet, existingSheets, header);
+      // Repair may only write a header into an empty header row (a new sheet).
+      // A mismatched existing header is reported and never rewritten, because
+      // rewriting headers without migrating the data rows corrupts alignment.
+      const headerIsEmpty = !header.some((cell) => String(cell ?? "").trim());
+      if (headerIsEmpty) {
+        await writeSheetHeader(sheet);
+        header = await readSheetHeader(sheet).catch(() => []);
+        row = healthRow(sheet, existingSheets, header);
+      } else {
+        row = {
+          ...row,
+          message: `${row.message} לא בוצע תיקון אוטומטי כדי לא לפגוע בנתונים קיימים – יש לתקן את שורת הכותרות ידנית.`
+        };
+      }
     }
     results.push(row);
   }
@@ -3793,7 +3824,7 @@ async function migrateLegacyGoals() {
 async function appendSheet(sheetName, record) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
-  const range = `${sheetName}!A:${String.fromCharCode(64 + columns.length)}`;
+  const range = `${sheetName}!A:${columnLetter(columns.length)}`;
   const url = new URL(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:append`
   );
@@ -3815,7 +3846,7 @@ function appendedRowNumber(result) {
 async function readSheetRow(sheetName, rowNumber) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
-  const range = `${sheetName}!A${rowNumber}:${String.fromCharCode(64 + columns.length)}${rowNumber}`;
+  const range = `${sheetName}!A${rowNumber}:${columnLetter(columns.length)}${rowNumber}`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
   const result = await googleFetch(url);
   const row = result.values?.[0];
@@ -3853,7 +3884,7 @@ async function updateSheetRow(sheetName, rowNumber, record, expectedRecord = rec
   await assertSheetRowCurrent(sheetName, rowNumber, expectedRecord);
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
-  const range = `${sheetName}!A${rowNumber}:${String.fromCharCode(64 + columns.length)}${rowNumber}`;
+  const range = `${sheetName}!A${rowNumber}:${columnLetter(columns.length)}${rowNumber}`;
   const url = new URL(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`
   );
@@ -3869,7 +3900,7 @@ async function clearSheetRow(sheetName, rowNumber, expectedRecord) {
   await assertSheetRowCurrent(sheetName, rowNumber, expectedRecord);
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
-  const range = `${sheetName}!A${rowNumber}:${String.fromCharCode(64 + columns.length)}${rowNumber}`;
+  const range = `${sheetName}!A${rowNumber}:${columnLetter(columns.length)}${rowNumber}`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:clear`;
   await googleFetch(url, {
     method: "POST",
@@ -4727,9 +4758,9 @@ async function loadRemoteSettings() {
   saveConfig({
     ...state.config,
     ...remoteConfig,
-    allowedUserEmails: mergeListText(
-      configDefaults.allowedUserEmails,
-      remoteConfig.allowedUserEmails
+    allowedUserEmails: savedListText(
+      remoteConfig.allowedUserEmails,
+      state.config.allowedUserEmails
     ),
     sessionTypes: listText(remoteConfig.sessionTypes, state.config.sessionTypes, DEFAULT_SESSION_TYPES),
     sessionLocations: listText(
@@ -5582,7 +5613,7 @@ function backupRows(payload, tableName) {
 async function clearSheetData(sheetName) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
-  const range = `${sheetName}!A2:${String.fromCharCode(64 + columns.length)}`;
+  const range = `${sheetName}!A2:${columnLetter(columns.length)}`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:clear`;
   await googleFetch(url, {
     method: "POST",

@@ -1,14 +1,9 @@
-import { dirname } from "path";
-import { fileURLToPath } from "url";
-import { FlatCompat } from "@eslint/eslintrc";
+import js from "@eslint/js";
+import globals from "globals";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const compat = new FlatCompat({
-  baseDirectory: __dirname
-});
-
+// Lint covers the active static app (docs/), its scripts and tests. The legacy
+// Next.js implementation in src/ is an inactive reference and is not linted:
+// its lint presets required the removed Next.js toolchain.
 const eslintConfig = [
   {
     ignores: [
@@ -18,10 +13,22 @@ const eslintConfig = [
       "build/**",
       "work/**",
       "outputs/**",
-      "tsconfig.tsbuildinfo"
+      "tsconfig.tsbuildinfo",
+      "src/**"
     ]
   },
-  ...compat.extends("next/core-web-vitals", "next/typescript")
+  js.configs.recommended,
+  {
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+        google: "readonly"
+      }
+    }
+  }
 ];
 
 export default eslintConfig;
