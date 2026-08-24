@@ -14,7 +14,8 @@
     "questionnaire_assignments",
     "questionnaire_responses",
     "clinical_reports",
-    "schedule_exceptions"
+    "schedule_exceptions",
+    "business_records"
   ];
 
   function cleanRecord(record) {

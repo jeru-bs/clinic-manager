@@ -168,6 +168,20 @@ const SHEETS = {
     "created_at",
     "updated_at"
   ],
+  business_records: [
+    "id",
+    "document_date",
+    "record_type",
+    "amount",
+    "drive_file_id",
+    "drive_folder_id",
+    "file_name",
+    "file_url",
+    "source",
+    "payment_id",
+    "created_at",
+    "updated_at"
+  ],
   audit_log: [
     "id",
     "action_type",
@@ -183,6 +197,7 @@ const SHEETS = {
 };
 
 const WorkflowCore = window.CLINIC_WORKFLOW_CORE;
+const BusinessCore = window.CLINIC_BUSINESS_CORE;
 
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
@@ -250,6 +265,7 @@ const state = {
   currentContactId: "",
   currentGoalId: "",
   currentQuestionnaireTemplateId: "",
+  currentBusinessRecordId: "",
   message: "",
   error: "",
   patients: [],
@@ -264,6 +280,7 @@ const state = {
   questionnaireAssignments: [],
   questionnaireResponses: [],
   clinicalReports: [],
+  businessRecords: [],
   questionnaireSyncStarted: {},
   scheduleExceptions: [],
   israelHolidays: [],
@@ -297,6 +314,13 @@ const state = {
     text: ""
   },
   profileTab: "overview",
+  businessView: {
+    year: isoDate(new Date()).slice(0, 4),
+    period: window.CLINIC_BUSINESS_CORE.periodForDate(isoDate(new Date()))?.key || "01-02",
+    rangeStart: "",
+    rangeEnd: "",
+    range: null
+  },
   calendarMonth: isoDate(new Date()).slice(0, 7),
   selectedCalendarDate: isoDate(new Date()),
   reportMonth: isoDate(new Date()).slice(0, 7),
@@ -975,6 +999,7 @@ function icon(name) {
     calendar: `<svg ${common}><rect height="16" rx="2" width="18" x="3" y="5"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M3 10h18"/></svg>`,
     tasks: `<svg ${common}><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6l1 1 2-2"/><path d="M4 12l1 1 2-2"/><path d="M4 18l1 1 2-2"/></svg>`,
     payments: `<svg ${common}><rect height="14" rx="2" width="18" x="3" y="5"/><path d="M3 10h18"/><path d="M7 15h4"/></svg>`,
+    business: `<svg ${common}><rect height="13" rx="2" width="18" x="3" y="7"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M3 12h18"/></svg>`,
     reports: `<svg ${common}><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16V9"/><path d="M13 16V7"/><path d="M18 16v-5"/></svg>`,
     files: `<svg ${common}><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg>`,
     settings: `<svg ${common}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.8 1.8 0 0 0 .4 2l.1.1-2 3.4-.2-.1a1.8 1.8 0 0 0-2.1.4l-.1.1h-4l-.1-.1a1.8 1.8 0 0 0-2.1-.4l-.2.1-2-3.4.1-.1a1.8 1.8 0 0 0 .4-2"/></svg>`
@@ -1018,6 +1043,7 @@ function shell(content) {
     ["calendar", "calendar", "יומן"],
     ["tasks", "tasks", "משימות"],
     ["payments", "payments", "תשלומים"],
+    ["business", "business", "ניהול עסק"],
     ["reports", "reports", "דוחות"],
     ["files", "files", "קבצים"],
     ["settings", "settings", "הגדרות"]
@@ -2940,6 +2966,191 @@ function filesPage() {
   `);
 }
 
+function formatAgorotAmount(agorot) {
+  return new Intl.NumberFormat("he-IL", {
+    currency: "ILS",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    style: "currency"
+  }).format(Number(BusinessCore.agorotToAmountText(agorot)));
+}
+
+function formatBusinessAmount(amountText) {
+  const agorot = BusinessCore.parseAmountToAgorot(amountText);
+  if (agorot === null) return amountText || "-";
+  return formatAgorotAmount(agorot);
+}
+
+function businessTypeLabel(recordType) {
+  if (recordType === "income") return "הכנסה";
+  if (recordType === "expense") return "הוצאה";
+  return recordType || "-";
+}
+
+function businessRecordYears() {
+  const years = new Set([isoDate(new Date()).slice(0, 4), state.businessView.year]);
+  for (const record of state.businessRecords) {
+    const period = BusinessCore.periodForDate(record.document_date);
+    if (period) years.add(period.year);
+  }
+  return [...years].filter(Boolean).sort((a, b) => b.localeCompare(a));
+}
+
+function businessRecordForm() {
+  const today = isoDate(new Date());
+  const edited = state.currentBusinessRecordId
+    ? state.businessRecords.find((record) => record.id === state.currentBusinessRecordId)
+    : null;
+  return `
+    <form class="form-grid inline-form" data-form="business-record" data-id="${html(edited?.id || "")}">
+      <div class="field wide">
+        <label for="business_document_date">תאריך המסמך</label>
+        <input class="picker-input" data-date-input id="business_document_date" name="document_date" readonly required type="text" value="${html(edited?.document_date || today)}" />
+      </div>
+      <div class="field wide">
+        <label for="business_record_type">סוג</label>
+        <select id="business_record_type" name="record_type" required>
+          <option value="" disabled ${edited ? "" : "selected"}>בחירת סוג</option>
+          <option value="income" ${edited?.record_type === "income" ? "selected" : ""}>הכנסה</option>
+          <option value="expense" ${edited?.record_type === "expense" ? "selected" : ""}>הוצאה</option>
+        </select>
+      </div>
+      <div class="field wide">
+        <label for="business_amount">סכום בשקלים</label>
+        <input id="business_amount" name="amount" inputmode="decimal" required placeholder="לדוגמה: 250 או 250.50" value="${html(edited?.amount || "")}" />
+      </div>
+      <div class="field wide">
+        ${
+          edited
+            ? `<label for="business_document_link">קובץ המסמך</label>
+               <small id="business_document_link"><a href="${html(edited.file_url || driveFileUrl(edited.drive_file_id))}" target="_blank" rel="noopener">${html(edited.file_name || "פתיחת המסמך")}</a> — בעריכה משנים תאריך, סוג וסכום בלבד; הקובץ עובר אוטומטית לתיקיית התקופה המתאימה.</small>`
+            : `<label for="business_document">קובץ המסמך</label>
+               <input id="business_document" name="business_document" type="file" required />`
+        }
+      </div>
+      <div class="toolbar wide">
+        <button class="button" type="submit">${edited ? "עדכון רשומה" : "העלאה ושמירה"}</button>
+        ${edited ? `<button class="button secondary" data-action="cancel-business-edit" type="button">ביטול עריכה</button>` : ""}
+      </div>
+    </form>`;
+}
+
+function businessRecordsTable(records) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>תאריך</th><th>סוג</th><th>סכום</th><th>קובץ</th><th>פעולות</th></tr></thead>
+        <tbody>
+          ${
+            records.length
+              ? records
+                  .map(
+                    (record) => `
+                    <tr>
+                      <td>${html(formatDate(record.document_date))}</td>
+                      <td>${html(businessTypeLabel(record.record_type))}</td>
+                      <td>${html(formatBusinessAmount(record.amount))}</td>
+                      <td>${html(record.file_name || "-")}</td>
+                      <td>
+                        <div class="actions">
+                          ${
+                            record.drive_file_id
+                              ? `<a class="button secondary table-button" href="${html(record.file_url || driveFileUrl(record.drive_file_id))}" target="_blank" rel="noopener">פתיחת מסמך</a>`
+                              : ""
+                          }
+                          <button class="button secondary table-button" data-action="edit-business-record" data-id="${html(record.id)}" type="button">עריכה</button>
+                          <button class="button danger table-button" data-action="delete-business-record" data-id="${html(record.id)}" type="button">מחיקה</button>
+                        </div>
+                      </td>
+                    </tr>`
+                  )
+                  .join("")
+              : `<tr><td colspan="5"><div class="empty">אין רשומות בתקופה שנבחרה. אפשר להעלות מסמך ראשון בטופס למעלה.</div></td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function businessPage() {
+  const view = state.businessView;
+  const period = BusinessCore.PERIODS.find((item) => item.key === view.period) || BusinessCore.PERIODS[0];
+  const periodRecords = sortBusinessRecords(
+    BusinessCore.recordsInPeriod(state.businessRecords, view.year, period.key)
+  );
+  const totals = BusinessCore.summarizeRecords(periodRecords);
+  const range = view.range;
+
+  return shell(`
+    ${header(
+      "ניהול עסק",
+      "מעקב הכנסות והוצאות עם תיוק מסמכים לפי תקופות דו-חודשיות",
+      `<button class="button secondary" data-action="refresh" type="button">רענון</button>`
+    )}
+    ${connectionBanner()}
+    <section class="panel">
+      <div class="panel-head"><h2>בחירת תקופה</h2></div>
+      <div class="form-grid">
+        <div class="field">
+          <label for="business_year">שנה</label>
+          <select data-business-filter="year" id="business_year">
+            ${businessRecordYears()
+              .map((year) => `<option value="${html(year)}" ${year === view.year ? "selected" : ""}>${html(year)}</option>`)
+              .join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label for="business_period">תקופה</label>
+          <select data-business-filter="period" id="business_period">
+            ${BusinessCore.PERIODS.map(
+              (item) => `<option value="${html(item.key)}" ${item.key === period.key ? "selected" : ""}>${html(item.label)}</option>`
+            ).join("")}
+          </select>
+        </div>
+      </div>
+    </section>
+    <section class="metric-row">
+      <article class="metric teal-card"><strong>${html(formatAgorotAmount(totals.incomeAgorot))}</strong><span>הכנסות בתקופה</span></article>
+      <article class="metric pink-card"><strong>${html(formatAgorotAmount(totals.expenseAgorot))}</strong><span>הוצאות בתקופה</span></article>
+      <article class="metric blue-card"><strong>${html(formatAgorotAmount(totals.balanceAgorot))}</strong><span>מאזן בתקופה</span></article>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>${state.currentBusinessRecordId ? "עריכת רשומה" : "מסמך חדש"}</h2></div>
+      ${businessRecordForm()}
+    </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>רשומות ${html(period.label)} ${html(view.year)}</h2><span>${periodRecords.length} רשומות</span></div>
+      ${businessRecordsTable(periodRecords)}
+    </section>
+    <section class="panel page-gap">
+      <div class="panel-head"><h2>סיכום לפי טווח תאריכים</h2><span>החישוב מוצג על המסך בלבד</span></div>
+      <form class="form-grid inline-form" data-form="business-range">
+        <div class="field">
+          <label for="business_range_start">מתאריך</label>
+          <input class="picker-input" data-date-input id="business_range_start" name="range_start" readonly type="text" value="${html(view.rangeStart)}" />
+        </div>
+        <div class="field">
+          <label for="business_range_end">עד תאריך</label>
+          <input class="picker-input" data-date-input id="business_range_end" name="range_end" readonly type="text" value="${html(view.rangeEnd)}" />
+        </div>
+        <div class="toolbar wide">
+          <button class="button" type="submit">חישוב סיכום</button>
+        </div>
+      </form>
+      ${
+        range
+          ? `<section class="metric-row">
+              <article class="metric teal-card"><strong>${html(formatAgorotAmount(range.incomeAgorot))}</strong><span>הכנסות בטווח</span></article>
+              <article class="metric pink-card"><strong>${html(formatAgorotAmount(range.expenseAgorot))}</strong><span>הוצאות בטווח</span></article>
+              <article class="metric blue-card"><strong>${html(formatAgorotAmount(range.balanceAgorot))}</strong><span>מאזן בטווח</span></article>
+            </section>
+            <p>נמצאו ${range.count} רשומות בין ${html(formatDate(range.start))} ל-${html(formatDate(range.end))} (כולל שני התאריכים).</p>`
+          : ""
+      }
+    </section>
+  `);
+}
+
 function openPatientDrawer(target) {
   drawerReturnFocus = { patientId: target.dataset.id || "" };
   state.currentPatientId = target.dataset.id || "";
@@ -3469,6 +3680,7 @@ function clearClinicData() {
   state.questionnaireAssignments = [];
   state.questionnaireResponses = [];
   state.clinicalReports = [];
+  state.businessRecords = [];
   state.scheduleExceptions = [];
   state.auditLog = [];
   state.lastUndoActionId = "";
@@ -3862,6 +4074,7 @@ function stateCollectionName(sheetName) {
   if (sheetName === "questionnaire_assignments") return "questionnaireAssignments";
   if (sheetName === "questionnaire_responses") return "questionnaireResponses";
   if (sheetName === "clinical_reports") return "clinicalReports";
+  if (sheetName === "business_records") return "businessRecords";
   return sheetName;
 }
 
@@ -3922,7 +4135,8 @@ function workflowCollections() {
     questionnaire_assignments: state.questionnaireAssignments,
     questionnaire_responses: state.questionnaireResponses,
     clinical_reports: state.clinicalReports,
-    schedule_exceptions: state.scheduleExceptions
+    schedule_exceptions: state.scheduleExceptions,
+    business_records: state.businessRecords
   };
 }
 
@@ -4643,6 +4857,209 @@ async function moveDriveFile(fileId, oldFolderId, newFolderId) {
   await googleFetch(url.toString(), { method: "PATCH" });
 }
 
+async function untrashDriveFile(fileId) {
+  if (!fileId) return;
+  await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,trashed`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ trashed: false })
+    }
+  );
+}
+
+function escapeDriveQueryValue(value) {
+  return String(value || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+async function findDriveChildFolder(parentId, name) {
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set(
+    "q",
+    `name = '${escapeDriveQueryValue(name)}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+  );
+  url.searchParams.set("fields", "files(id,name)");
+  url.searchParams.set("pageSize", "10");
+  const result = await googleFetch(url.toString(), { headers: {} });
+  return (result.files || []).find((file) => file.name === name) || null;
+}
+
+async function createDriveChildFolder(parentId, name) {
+  return googleFetch("https://www.googleapis.com/drive/v3/files?fields=id,name", {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+      parents: [parentId]
+    })
+  });
+}
+
+async function ensureDriveChildFolder(parentId, name) {
+  const existing = await findDriveChildFolder(parentId, name);
+  if (existing?.id) return existing;
+  const created = await createDriveChildFolder(parentId, name);
+  if (!created?.id) throw new Error(`יצירת תיקיית "${name}" באחסון נכשלה.`);
+  return created;
+}
+
+async function ensureBusinessPeriodFolder(dateValue) {
+  const rootId = state.config.googleDriveRootFolderId || "";
+  if (!rootId) throw new Error("לא הוגדרה תיקיית אחסון ראשית במסך ההגדרות.");
+  const period = BusinessCore.periodForDate(dateValue);
+  if (!period) throw new Error("תאריך המסמך אינו תקין.");
+  const businessFolder = await ensureDriveChildFolder(rootId, BusinessCore.BUSINESS_ROOT_FOLDER_NAME);
+  const yearFolder = await ensureDriveChildFolder(businessFolder.id, period.year);
+  const periodFolder = await ensureDriveChildFolder(yearFolder.id, period.label);
+  return {
+    id: periodFolder.id,
+    path: `${BusinessCore.BUSINESS_ROOT_FOLDER_NAME}/${period.year}/${period.label}`
+  };
+}
+
+function sortBusinessRecords(records) {
+  return [...records].sort((a, b) =>
+    `${b.document_date || ""} ${b.created_at || ""}`.localeCompare(`${a.document_date || ""} ${a.created_at || ""}`)
+  );
+}
+
+async function saveBusinessRecord(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const existingId = form.dataset.id || "";
+  const existing = existingId ? state.businessRecords.find((record) => record.id === existingId) : null;
+  if (existingId && !existing) throw new Error("הרשומה לעריכה לא נמצאה.");
+
+  const validated = BusinessCore.validateRecordInput({
+    document_date: data.document_date || "",
+    record_type: data.record_type || "",
+    amount: data.amount || ""
+  });
+  if (validated.error) throw new Error(validated.error);
+
+  if (existing) return updateBusinessRecord(existing, data, validated);
+  return createBusinessRecord(form, data, validated);
+}
+
+async function createBusinessRecord(form, data, validated) {
+  const selectedFile = form.elements.business_document?.files?.[0];
+  if (!selectedFile) throw new Error("צריך לבחור קובץ מסמך להעלאה.");
+
+  const folder = await ensureBusinessPeriodFolder(data.document_date);
+  const uploaded = await uploadDriveFile(folder.id, selectedFile, selectedFile.name);
+  if (!uploaded?.id) throw new Error("העלאת המסמך לאחסון נכשלה.");
+
+  const now = new Date().toISOString();
+  const record = {
+    id: id(),
+    document_date: data.document_date,
+    record_type: data.record_type,
+    amount: validated.amount,
+    drive_file_id: uploaded.id,
+    drive_folder_id: folder.id,
+    file_name: uploaded.name || selectedFile.name,
+    file_url: uploaded.webViewLink || driveFileUrl(uploaded.id),
+    source: "manual",
+    payment_id: "",
+    created_at: now,
+    updated_at: now
+  };
+  try {
+    const result = await appendSheet("business_records", record);
+    record._rowNumber = appendedRowNumber(result);
+  } catch (persistError) {
+    try {
+      await trashDriveFile(uploaded.id);
+    } catch {
+      throw new Error(
+        `שמירת הרשומה נכשלה וגם העברת הקובץ שהועלה לאשפה נכשלה. יש לבדוק את הקובץ "${record.file_name}" באחסון. שגיאה: ${persistError.message || persistError}`
+      );
+    }
+    throw new Error(
+      `שמירת הרשומה נכשלה. הקובץ שהועלה הועבר לאשפה ואפשר לנסות שוב. שגיאה: ${persistError.message || persistError}`
+    );
+  }
+  state.businessRecords = sortBusinessRecords([record, ...state.businessRecords]);
+  state.currentBusinessRecordId = "";
+  const period = BusinessCore.periodForDate(record.document_date);
+  if (period) state.businessView = { ...state.businessView, year: period.year, period: period.key };
+  return record;
+}
+
+async function updateBusinessRecord(existing, data, validated) {
+  if (!existing._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת הרשומה.");
+  await assertSheetRowCurrent("business_records", existing._rowNumber, existing);
+
+  const currentPeriod = BusinessCore.periodForDate(existing.document_date);
+  const nextPeriod = BusinessCore.periodForDate(data.document_date);
+  let folderId = existing.drive_folder_id || "";
+  let movedFromFolderId = "";
+  const periodChanged =
+    !currentPeriod || currentPeriod.year !== nextPeriod.year || currentPeriod.key !== nextPeriod.key;
+  if (existing.drive_file_id && periodChanged) {
+    const folder = await ensureBusinessPeriodFolder(data.document_date);
+    if (folder.id && folder.id !== folderId) {
+      await moveDriveFile(existing.drive_file_id, folderId, folder.id);
+      movedFromFolderId = folderId;
+      folderId = folder.id;
+    }
+  }
+
+  const updated = {
+    ...existing,
+    document_date: data.document_date,
+    record_type: data.record_type,
+    amount: validated.amount,
+    drive_folder_id: folderId,
+    updated_at: new Date().toISOString()
+  };
+  try {
+    await updateSheetRow("business_records", existing._rowNumber, updated, existing);
+  } catch (persistError) {
+    if (movedFromFolderId) {
+      try {
+        await moveDriveFile(existing.drive_file_id, folderId, movedFromFolderId);
+      } catch {
+        throw new Error(
+          `עדכון הרשומה נכשל והקובץ נשאר בתיקיית התקופה החדשה. יש לרענן נתונים ולנסות שוב. שגיאה: ${persistError.message || persistError}`
+        );
+      }
+    }
+    throw persistError;
+  }
+  state.businessRecords = sortBusinessRecords(
+    state.businessRecords.map((item) => (item.id === updated.id ? updated : item))
+  );
+  state.currentBusinessRecordId = "";
+  const period = BusinessCore.periodForDate(updated.document_date);
+  if (period) state.businessView = { ...state.businessView, year: period.year, period: period.key };
+  return updated;
+}
+
+async function deleteBusinessRecordEntry(recordId) {
+  const record = state.businessRecords.find((item) => item.id === recordId);
+  if (!record) throw new Error("הרשומה לא נמצאה.");
+  if (!record._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת הרשומה.");
+
+  await assertSheetRowCurrent("business_records", record._rowNumber, record);
+  if (record.drive_file_id) await trashDriveFile(record.drive_file_id);
+  try {
+    await clearSheetRow("business_records", record._rowNumber, record);
+  } catch (clearError) {
+    if (record.drive_file_id) {
+      try {
+        await untrashDriveFile(record.drive_file_id);
+      } catch {
+        throw new Error(
+          `מחיקת הרשומה נכשלה והקובץ נשאר באשפה של האחסון. אפשר לשחזר אותו ידנית מהאשפה. שגיאה: ${clearError.message || clearError}`
+        );
+      }
+    }
+    throw clearError;
+  }
+  state.businessRecords = state.businessRecords.filter((item) => item.id !== recordId);
+  if (state.currentBusinessRecordId === recordId) state.currentBusinessRecordId = "";
+}
+
 async function updateLinkedFileReferences(oldDriveFileId, newDriveFileId = "") {
   if (!oldDriveFileId) return;
   const now = new Date().toISOString();
@@ -4874,7 +5291,7 @@ async function loadData() {
   }
   if (!state.config.googleSpreadsheetId) return;
   await ensureSpreadsheetSchema();
-  const [patients, sessions, payments, tasks, files, contacts, goals, goalUpdates, questionnaireTemplates, questionnaireAssignments, questionnaireResponses, clinicalReports, scheduleExceptions, auditLog, templates] = await Promise.all([
+  const [patients, sessions, payments, tasks, files, contacts, goals, goalUpdates, questionnaireTemplates, questionnaireAssignments, questionnaireResponses, clinicalReports, businessRecords, scheduleExceptions, auditLog, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
     readSheet("payments"),
@@ -4887,6 +5304,7 @@ async function loadData() {
     readSheet("questionnaire_assignments"),
     readSheet("questionnaire_responses"),
     readSheet("clinical_reports"),
+    readSheet("business_records"),
     readSheet("schedule_exceptions"),
     readSheet("audit_log"),
     loadDriveTemplates().catch(() => [])
@@ -4903,6 +5321,9 @@ async function loadData() {
   state.questionnaireAssignments = questionnaireAssignments.sort((a, b) => `${b.created_at || ""}`.localeCompare(`${a.created_at || ""}`));
   state.questionnaireResponses = questionnaireResponses.sort((a, b) => `${b.submitted_at || ""}`.localeCompare(`${a.submitted_at || ""}`));
   state.clinicalReports = clinicalReports.sort((a, b) => `${b.created_at || ""}`.localeCompare(`${a.created_at || ""}`));
+  state.businessRecords = businessRecords.sort((a, b) =>
+    `${b.document_date || ""} ${b.created_at || ""}`.localeCompare(`${a.document_date || ""} ${a.created_at || ""}`)
+  );
   state.scheduleExceptions = scheduleExceptions.sort((a, b) =>
     `${b.start_date || ""} ${b.created_at || ""}`.localeCompare(`${a.start_date || ""} ${a.created_at || ""}`)
   );
@@ -5563,6 +5984,7 @@ function backupPayload() {
       questionnaire_assignments: state.questionnaireAssignments.length,
       questionnaire_responses: state.questionnaireResponses.length,
       clinical_reports: state.clinicalReports.length,
+      business_records: state.businessRecords.length,
       schedule_exceptions: state.scheduleExceptions.length,
       audit_log: state.auditLog.length
     },
@@ -5579,6 +6001,7 @@ function backupPayload() {
       questionnaire_assignments: state.questionnaireAssignments,
       questionnaire_responses: state.questionnaireResponses,
       clinical_reports: state.clinicalReports,
+      business_records: state.businessRecords,
       schedule_exceptions: state.scheduleExceptions,
       audit_log: state.auditLog
     }
@@ -5633,7 +6056,7 @@ async function restoreBackupFile(file) {
   if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני שחזור.");
 
   const payload = JSON.parse(await file.text());
-  for (const tableName of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports"]) {
+  for (const tableName of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports", "business_records"]) {
     if (payload?.data && !Array.isArray(payload.data[tableName])) payload.data[tableName] = [];
   }
   if (payload?.data && !Array.isArray(payload.data.audit_log)) payload.data.audit_log = [];
@@ -6283,6 +6706,37 @@ function bindEvents() {
       state.currentPaymentId = "";
       render();
     }
+    if (action === "edit-business-record") {
+      const record = state.businessRecords.find((item) => item.id === target.dataset.id);
+      if (record) {
+        state.currentBusinessRecordId = record.id;
+        const period = BusinessCore.periodForDate(record.document_date);
+        if (period) state.businessView = { ...state.businessView, year: period.year, period: period.key };
+        render();
+      }
+    }
+    if (action === "cancel-business-edit") {
+      state.currentBusinessRecordId = "";
+      render();
+    }
+    if (action === "delete-business-record") {
+      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את הרשומה? קובץ המסמך יועבר לאשפה.")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+        await runAuditedAction(
+          { actionType: "delete", entityType: "business_record", entityId: target.dataset.id, summary: "מחיקת רשומת עסק", undoable: false },
+          () => deleteBusinessRecordEntry(target.dataset.id)
+        );
+        if (state.currentBusinessRecordId === target.dataset.id) state.currentBusinessRecordId = "";
+        state.message = "הרשומה נמחקה וקובץ המסמך הועבר לאשפה.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "מחיקת הרשומה נכשלה.";
+        state.message = "";
+        render();
+      }
+    }
     if (action === "delete-payment") {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק את התשלום?")) return;
       try {
@@ -6718,6 +7172,12 @@ function bindEvents() {
       }
       return;
     }
+    const businessFilter = event.target.closest("[data-business-filter]");
+    if (businessFilter) {
+      state.businessView = { ...state.businessView, [businessFilter.dataset.businessFilter]: businessFilter.value };
+      if (state.route === "business") render();
+      return;
+    }
     const fileFilter = event.target.closest("[data-file-filter]");
     if (fileFilter) {
       state.fileFilter[fileFilter.dataset.fileFilter] = fileFilter.value;
@@ -6736,6 +7196,28 @@ function bindEvents() {
     const form = event.target;
     if (!form.matches("[data-form]")) return;
     event.preventDefault();
+    if (form.dataset.form === "business-range") {
+      const rangeStart = form.elements.range_start?.value || "";
+      const rangeEnd = form.elements.range_end?.value || "";
+      state.businessView = { ...state.businessView, rangeStart, rangeEnd };
+      if (!BusinessCore.isValidIsoDate(rangeStart) || !BusinessCore.isValidIsoDate(rangeEnd)) {
+        state.error = "יש לבחור תאריך התחלה ותאריך סיום תקינים לחישוב הטווח.";
+        state.message = "";
+      } else if (rangeStart > rangeEnd) {
+        state.error = "תאריך ההתחלה חייב להיות לפני תאריך הסיום או שווה לו.";
+        state.message = "";
+      } else {
+        const rangeRecords = BusinessCore.recordsInRange(state.businessRecords, rangeStart, rangeEnd);
+        state.businessView = {
+          ...state.businessView,
+          range: { ...BusinessCore.summarizeRecords(rangeRecords), start: rangeStart, end: rangeEnd, count: rangeRecords.length }
+        };
+        state.error = "";
+        state.message = "";
+      }
+      render();
+      return;
+    }
     if (!beginBusyForm(form)) return;
     state.error = "";
     state.message = "";
@@ -6746,6 +7228,22 @@ function bindEvents() {
         saveConfig(Object.fromEntries(new FormData(form).entries()));
         await saveRemoteSettings();
         state.message = "ההגדרות נשמרו.";
+      }
+
+      if (form.dataset.form === "business-record") {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        const isEdit = Boolean(form.dataset.id);
+        await runAuditedAction(
+          {
+            actionType: isEdit ? "update" : "create",
+            entityType: "business_record",
+            entityId: form.dataset.id || "",
+            summary: isEdit ? "עדכון רשומת עסק" : "יצירת רשומת עסק",
+            undoable: false
+          },
+          () => saveBusinessRecord(form)
+        );
+        state.message = isEdit ? "רשומת העסק עודכנה." : "המסמך הועלה והרשומה נשמרה.";
       }
 
       if (form.dataset.form === "patient") {
@@ -6888,6 +7386,7 @@ function render() {
     calendar: calendarPage,
     tasks: tasksPage,
     payments: paymentsPage,
+    business: businessPage,
     reports: reportsPage,
     files: filesPage,
     settings: settingsPage

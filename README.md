@@ -68,6 +68,7 @@ https://drive.google.com/drive/folders/16XWqhBGBZ053aRGPmuWTv0MOsM-d7JfV
 - `questionnaire_responses`
 - `clinical_reports`
 - `schedule_exceptions`
+- `business_records`
 - `audit_log`
 
 מבנה העמודות מוגדר ב-`docs/app.js` בתחילת הקובץ ומתועד גם ב-`docs/DATA_MODEL.md`.
