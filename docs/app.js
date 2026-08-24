@@ -182,6 +182,25 @@ const SHEETS = {
     "created_at",
     "updated_at"
   ],
+  session_charges: [
+    "id",
+    "session_id",
+    "patient_id",
+    "session_date",
+    "amount",
+    "created_at",
+    "updated_at"
+  ],
+  payment_allocations: [
+    "id",
+    "payment_id",
+    "charge_id",
+    "session_id",
+    "patient_id",
+    "amount",
+    "created_at",
+    "updated_at"
+  ],
   audit_log: [
     "id",
     "action_type",
@@ -198,6 +217,7 @@ const SHEETS = {
 
 const WorkflowCore = window.CLINIC_WORKFLOW_CORE;
 const BusinessCore = window.CLINIC_BUSINESS_CORE;
+const PaymentsCore = window.CLINIC_PAYMENTS_CORE;
 
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
@@ -260,6 +280,7 @@ const state = {
   currentPatientId: "",
   currentSessionId: "",
   currentPaymentId: "",
+  currentChargeId: "",
   currentTaskId: "",
   currentFileId: "",
   currentContactId: "",
@@ -281,6 +302,8 @@ const state = {
   questionnaireResponses: [],
   clinicalReports: [],
   businessRecords: [],
+  sessionCharges: [],
+  paymentAllocations: [],
   questionnaireSyncStarted: {},
   scheduleExceptions: [],
   israelHolidays: [],
@@ -1875,28 +1898,48 @@ function paymentForm(patientId) {
   const editedPayment =
     state.currentPaymentId &&
     state.payments.find((payment) => payment.id === state.currentPaymentId && payment.patient_id === patientId);
-  const sessionOptions = state.sessions
-    .filter((session) => session.patient_id === patientId)
-    .sort((a, b) =>
-      `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
-    )
-    .map(
-      (session) =>
-        `<option value="${html(session.id)}" ${session.id === editedPayment?.session_id ? "selected" : ""}>${html(sessionLabel(session))}</option>`
-    )
+  const editedChargeIds = new Set(
+    editedPayment
+      ? state.paymentAllocations
+          .filter((allocation) => allocation.payment_id === editedPayment.id)
+          .map((allocation) => allocation.charge_id)
+      : []
+  );
+  const chargeBalancesForForm = patientChargeBalances(
+    patientId,
+    editedPayment
+      ? state.paymentAllocations.filter((allocation) => allocation.payment_id !== editedPayment.id)
+      : state.paymentAllocations
+  );
+  const chargeOptions = chargeBalancesForForm
+    .map((balance) => {
+      const selectable = balance.remainingAgorot > 0;
+      const details = [
+        formatDate(balance.sessionDate),
+        `חיוב ${formatAgorotAmount(balance.amountAgorot)}`,
+        `שולם ${formatAgorotAmount(balance.paidAgorot)}`,
+        `יתרה ${formatAgorotAmount(balance.remainingAgorot)}`,
+        chargeStatusLabel(balance.status)
+      ].join(" · ");
+      return `
+        <label class="charge-option">
+          <input type="checkbox" name="charge_ids" value="${html(balance.chargeId)}" data-charge-remaining="${balance.remainingAgorot}" ${editedChargeIds.has(balance.chargeId) ? "checked" : ""} ${selectable ? "" : "disabled"} />
+          <span>${html(details)}</span>
+        </label>`;
+    })
     .join("");
   const receiptFile = editedPayment?.receipt_file_id
     ? state.files.find((file) => file.drive_file_id === editedPayment.receipt_file_id)
     : null;
   return `
     <form class="form-grid inline-form" data-form="payment" data-patient-id="${html(patientId)}" data-id="${html(editedPayment?.id || "")}">
-      <div class="field wide">
-        <label for="payment_session_id">מפגש קשור</label>
-        <select id="payment_session_id" name="session_id">
-          <option value="">ללא שיוך למפגש</option>
-          ${sessionOptions}
-        </select>
-      </div>
+      <fieldset class="field wide" data-charge-select>
+        <legend>שיוך לחיובי טיפול</legend>
+        ${
+          chargeOptions ||
+          `<p class="empty">אין חיובי טיפול למטופל. חיוב נוצר אוטומטית בשמירת תיעוד מפגש.</p>`
+        }
+      </fieldset>
       <div class="field">
         <label for="amount">סכום</label>
         <input id="amount" name="amount" inputmode="decimal" required value="${html(editedPayment?.amount || "")}" />
@@ -1985,11 +2028,69 @@ function sessionsPanel(items = state.sessions, patientId = "") {
     </article>`;
 }
 
+function patientChargesSection(patientId) {
+  const balances = patientChargeBalances(patientId);
+  const outstandingAgorot = PaymentsCore.outstandingTotal(balances);
+  return `
+    <div class="metric-row">
+      <article class="metric pink-card"><strong>${html(formatAgorotAmount(outstandingAgorot))}</strong><span>יתרת חוב פתוחה</span></article>
+    </div>
+    <div class="panel-head"><h2>חיובי טיפול</h2><span>${balances.length} חיובים</span></div>
+    ${
+      balances.length
+        ? `<div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>תאריך מפגש</th>
+                  <th>סכום חיוב</th>
+                  <th>שולם</th>
+                  <th>יתרה</th>
+                  <th>סטטוס</th>
+                  <th>פעולות</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${balances
+                  .map(
+                    (balance) => `
+                    <tr>
+                      <td>${html(formatDate(balance.sessionDate))}</td>
+                      <td>${
+                        state.currentChargeId === balance.chargeId
+                          ? `<input type="text" inputmode="decimal" class="charge-amount-input" data-charge-amount-input value="${html(PaymentsCore.agorotToAmountText(balance.amountAgorot))}" aria-label="סכום חיוב חדש">`
+                          : html(formatAgorotAmount(balance.amountAgorot))
+                      }</td>
+                      <td>${html(formatAgorotAmount(balance.paidAgorot))}</td>
+                      <td>${html(formatAgorotAmount(balance.remainingAgorot))}</td>
+                      <td><span class="status-pill">${html(chargeStatusLabel(balance.status))}</span></td>
+                      <td>
+                        <div class="row-actions">
+                          ${
+                            state.currentChargeId === balance.chargeId
+                              ? `<button class="button table-button" data-action="save-charge-amount" data-id="${html(balance.chargeId)}" type="button">שמירת סכום</button>
+                                 <button class="button secondary table-button" data-action="cancel-charge-edit" type="button">חזרה</button>`
+                              : `<button class="button secondary table-button" data-action="edit-charge" data-id="${html(balance.chargeId)}" type="button">עריכת חיוב</button>
+                                 <button class="button danger table-button" data-action="cancel-charge" data-id="${html(balance.chargeId)}" type="button">ביטול חיוב</button>`
+                          }
+                        </div>
+                      </td>
+                    </tr>`
+                  )
+                  .join("")}
+              </tbody>
+            </table>
+          </div>`
+        : `<div class="empty">עדיין אין חיובי טיפול. חיוב נוצר אוטומטית בשמירת תיעוד מפגש.</div>`
+    }`;
+}
+
 function paymentsPanel(items = state.payments, patientId = "") {
   const rows = items.slice(0, 5);
   return `
     <article class="panel">
       <div class="panel-head"><h2>תשלומים</h2></div>
+      ${patientId ? patientChargesSection(patientId) : ""}
       ${patientId ? paymentForm(patientId) : ""}
       ${
         rows.length
@@ -2154,9 +2255,9 @@ function paymentsPage() {
   const paidTotal = rows
     .filter((payment) => payment.payment_status === "paid")
     .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
-  const openTotal = rows
-    .filter((payment) => payment.payment_status !== "paid")
-    .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+  const chargeBalanceRows = allChargeBalances();
+  const openChargeRows = chargeBalanceRows.filter((balance) => balance.remainingAgorot > 0);
+  const openAgorot = PaymentsCore.outstandingTotal(chargeBalanceRows);
 
   return shell(`
     ${header(
@@ -2169,10 +2270,44 @@ function paymentsPage() {
     ${connectionBanner()}
     <section class="metric-row">
       <article class="metric blue-card"><strong>${html(formatAmount(paidTotal))}</strong><span>שולם</span></article>
-      <article class="metric pink-card"><strong>${html(formatAmount(openTotal))}</strong><span>פתוח</span></article>
+      <article class="metric pink-card"><strong>${html(formatAgorotAmount(openAgorot))}</strong><span>פתוח</span></article>
       <article class="metric teal-card"><strong>${receiptsToPrepare.length}</strong><span>קבלות להכנה</span></article>
     </section>
     <section class="panel">
+      <div class="panel-head"><h2>חיובים פתוחים</h2><span>${openChargeRows.length} חיובים</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>מטופל</th>
+              <th>תאריך מפגש</th>
+              <th>סכום חיוב</th>
+              <th>שולם</th>
+              <th>יתרה</th>
+              <th>סטטוס</th>
+              <th>פעולות</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${openChargeRows
+              .map(
+                (balance) => `
+                <tr>
+                  <td><strong>${html(patientName(balance.patientId))}</strong></td>
+                  <td>${html(formatDate(balance.sessionDate))}</td>
+                  <td>${html(formatAgorotAmount(balance.amountAgorot))}</td>
+                  <td>${html(formatAgorotAmount(balance.paidAgorot))}</td>
+                  <td>${html(formatAgorotAmount(balance.remainingAgorot))}</td>
+                  <td><span class="status-pill">${html(chargeStatusLabel(balance.status))}</span></td>
+                  <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(balance.patientId)}" type="button">כרטיס</button></td>
+                </tr>`
+              )
+              .join("") || `<tr><td colspan="7"><div class="empty">אין חיובים פתוחים. חיוב נוצר אוטומטית בשמירת תיעוד מפגש.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel page-gap">
       <div class="panel-head count-only"><span>${rows.length} תשלומים</span></div>
       <div class="table-wrap">
         <table>
@@ -2981,6 +3116,27 @@ function formatBusinessAmount(amountText) {
   return formatAgorotAmount(agorot);
 }
 
+function chargeStatusLabel(status) {
+  if (status === "paid") return "שולם";
+  if (status === "partial") return "שולם חלקית";
+  return "פתוח";
+}
+
+function allChargeBalances() {
+  return PaymentsCore.chargeBalances(state.sessionCharges, state.paymentAllocations);
+}
+
+function patientChargeBalances(patientId, allocations = state.paymentAllocations) {
+  return PaymentsCore.chargeBalances(
+    state.sessionCharges.filter((charge) => charge.patient_id === patientId),
+    allocations
+  );
+}
+
+function sessionChargeForSession(sessionId) {
+  return state.sessionCharges.find((charge) => charge.session_id === sessionId) || null;
+}
+
 function businessTypeLabel(recordType) {
   if (recordType === "income") return "הכנסה";
   if (recordType === "expense") return "הוצאה";
@@ -3681,6 +3837,8 @@ function clearClinicData() {
   state.questionnaireResponses = [];
   state.clinicalReports = [];
   state.businessRecords = [];
+  state.sessionCharges = [];
+  state.paymentAllocations = [];
   state.scheduleExceptions = [];
   state.auditLog = [];
   state.lastUndoActionId = "";
@@ -4075,6 +4233,8 @@ function stateCollectionName(sheetName) {
   if (sheetName === "questionnaire_responses") return "questionnaireResponses";
   if (sheetName === "clinical_reports") return "clinicalReports";
   if (sheetName === "business_records") return "businessRecords";
+  if (sheetName === "session_charges") return "sessionCharges";
+  if (sheetName === "payment_allocations") return "paymentAllocations";
   return sheetName;
 }
 
@@ -4136,7 +4296,9 @@ function workflowCollections() {
     questionnaire_responses: state.questionnaireResponses,
     clinical_reports: state.clinicalReports,
     schedule_exceptions: state.scheduleExceptions,
-    business_records: state.businessRecords
+    business_records: state.businessRecords,
+    session_charges: state.sessionCharges,
+    payment_allocations: state.paymentAllocations
   };
 }
 
@@ -5291,7 +5453,7 @@ async function loadData() {
   }
   if (!state.config.googleSpreadsheetId) return;
   await ensureSpreadsheetSchema();
-  const [patients, sessions, payments, tasks, files, contacts, goals, goalUpdates, questionnaireTemplates, questionnaireAssignments, questionnaireResponses, clinicalReports, businessRecords, scheduleExceptions, auditLog, templates] = await Promise.all([
+  const [patients, sessions, payments, tasks, files, contacts, goals, goalUpdates, questionnaireTemplates, questionnaireAssignments, questionnaireResponses, clinicalReports, businessRecords, sessionCharges, paymentAllocations, scheduleExceptions, auditLog, templates] = await Promise.all([
     readSheet("patients"),
     readSheet("sessions"),
     readSheet("payments"),
@@ -5305,6 +5467,8 @@ async function loadData() {
     readSheet("questionnaire_responses"),
     readSheet("clinical_reports"),
     readSheet("business_records"),
+    readSheet("session_charges"),
+    readSheet("payment_allocations"),
     readSheet("schedule_exceptions"),
     readSheet("audit_log"),
     loadDriveTemplates().catch(() => [])
@@ -5323,6 +5487,12 @@ async function loadData() {
   state.clinicalReports = clinicalReports.sort((a, b) => `${b.created_at || ""}`.localeCompare(`${a.created_at || ""}`));
   state.businessRecords = businessRecords.sort((a, b) =>
     `${b.document_date || ""} ${b.created_at || ""}`.localeCompare(`${a.document_date || ""} ${a.created_at || ""}`)
+  );
+  state.sessionCharges = sessionCharges.sort((a, b) =>
+    `${b.session_date || ""} ${b.created_at || ""}`.localeCompare(`${a.session_date || ""} ${a.created_at || ""}`)
+  );
+  state.paymentAllocations = paymentAllocations.sort((a, b) =>
+    `${b.created_at || ""}`.localeCompare(`${a.created_at || ""}`)
   );
   state.scheduleExceptions = scheduleExceptions.sort((a, b) =>
     `${b.start_date || ""} ${b.created_at || ""}`.localeCompare(`${a.start_date || ""} ${a.created_at || ""}`)
@@ -5698,6 +5868,16 @@ async function saveSession(form) {
   if (existing && !existing._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת מפגש קיים.");
   if (existing) await assertSheetRowCurrent("sessions", existing._rowNumber, existing);
 
+  const chargeNeeded = Boolean(String(data.summary || "").trim()) && !(existing && sessionChargeForSession(existing.id));
+  let chargePriceAgorot = null;
+  if (chargeNeeded) {
+    const patient = state.patients.find((item) => item.id === patientId);
+    chargePriceAgorot = PaymentsCore.parseAmountToAgorot(patient?.fixed_price || "");
+    if (chargePriceAgorot === null) {
+      throw new Error("לא הוגדר מחיר טיפול קבוע תקין למטופל. יש להגדיר מחיר קבוע בכרטיס המטופל לפני שמירת תיעוד המפגש.");
+    }
+  }
+
   const now = new Date().toISOString();
   const session = {
     ...(existing || {}),
@@ -5733,6 +5913,21 @@ async function saveSession(form) {
     const appendResult = await appendSheet("sessions", session);
     session._rowNumber = appendedRowNumber(appendResult);
     state.sessions = [session, ...state.sessions];
+  }
+
+  if (chargeNeeded && !sessionChargeForSession(session.id)) {
+    const charge = {
+      id: id(),
+      session_id: session.id,
+      patient_id: session.patient_id,
+      session_date: session.session_date,
+      amount: PaymentsCore.agorotToAmountText(chargePriceAgorot),
+      created_at: now,
+      updated_at: now
+    };
+    const chargeResult = await appendSheet("session_charges", charge);
+    charge._rowNumber = appendedRowNumber(chargeResult);
+    state.sessionCharges = [charge, ...state.sessionCharges];
   }
 
   try {
@@ -5778,6 +5973,11 @@ async function deleteSessionRecord(sessionId) {
   const session = state.sessions.find((item) => item.id === sessionId);
   if (!session) throw new Error("המפגש לא נמצא.");
   if (!session._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת מפגש.");
+  const hasCharge = state.sessionCharges.some((charge) => charge.session_id === sessionId);
+  const hasAllocation = state.paymentAllocations.some((allocation) => allocation.session_id === sessionId);
+  if (hasCharge || hasAllocation) {
+    throw new Error("אי אפשר למחוק מפגש שיש לו חיוב טיפול או תשלום משויך. אפשר לעדכן את פרטי המפגש במקום למחוק אותו.");
+  }
 
   await assertSheetRowCurrent("sessions", session._rowNumber, session);
   if (session.calendar_event_id) {
@@ -5805,7 +6005,9 @@ async function deleteSessionRecord(sessionId) {
 }
 
 async function savePayment(form) {
-  const data = Object.fromEntries(new FormData(form).entries());
+  const formData = new FormData(form);
+  const data = Object.fromEntries(formData.entries());
+  const selectedChargeIds = formData.getAll("charge_ids").map(String).filter(Boolean);
   const patientId = form.dataset.patientId || "";
   const existingId = form.dataset.id || "";
   const existingPayment = existingId ? state.payments.find((payment) => payment.id === existingId) : null;
@@ -5817,6 +6019,36 @@ async function savePayment(form) {
   if (existingPayment && !existingPayment._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת התשלום.");
   if (existingPayment) await assertSheetRowCurrent("payments", existingPayment._rowNumber, existingPayment);
 
+  const previousAllocations = existingPayment
+    ? state.paymentAllocations.filter((allocation) => allocation.payment_id === existingPayment.id)
+    : [];
+  if (previousAllocations.some((allocation) => !allocation._rowNumber)) {
+    throw new Error("צריך לרענן נתונים לפני עדכון שיוך התשלום.");
+  }
+
+  let plannedAllocations = [];
+  if (selectedChargeIds.length) {
+    const amountAgorot = PaymentsCore.parseAmountToAgorot(data.amount);
+    if (amountAgorot === null) throw new Error("סכום התשלום אינו תקין. יש להזין סכום חיובי עם עד שתי ספרות אחרי הנקודה.");
+    const selectedCharges = state.sessionCharges.filter(
+      (charge) => charge.patient_id === patientId && selectedChargeIds.includes(charge.id)
+    );
+    if (selectedCharges.length !== selectedChargeIds.length) {
+      throw new Error("חלק מחיובי הטיפול שנבחרו לא נמצאו. יש לרענן נתונים ולנסות שוב.");
+    }
+    const otherAllocations = state.paymentAllocations.filter(
+      (allocation) => allocation.payment_id !== (existingPayment?.id || "")
+    );
+    const selectedBalances = PaymentsCore.chargeBalances(selectedCharges, otherAllocations);
+    if (selectedBalances.some((balance) => balance.remainingAgorot <= 0)) {
+      throw new Error("אחד מחיובי הטיפול שנבחרו כבר שולם במלואו. אפשר לשייך תשלום רק לחיובים פתוחים.");
+    }
+    const plan = PaymentsCore.planAllocations(selectedBalances, amountAgorot);
+    if (plan.error === "invalid_amount") throw new Error("סכום התשלום אינו תקין. יש להזין סכום חיובי עם עד שתי ספרות אחרי הנקודה.");
+    if (plan.error === "overpayment") throw new Error("סכום התשלום גבוה מסך היתרה הפתוחה של החיובים שנבחרו. יש להקטין את הסכום או לבחור חיובים נוספים.");
+    plannedAllocations = plan.allocations;
+  }
+
   const now = new Date().toISOString();
   const receiptFile = receiptUpload
     ? await uploadPatientFile(patientId, receiptUpload, "receipt", receiptUpload.name)
@@ -5824,11 +6056,17 @@ async function savePayment(form) {
   if (receiptFile && existingPayment?.receipt_file_id) {
     await deleteFileRecordByDriveId(existingPayment.receipt_file_id);
   }
+  const linkedSessionId =
+    selectedChargeIds.length === 1
+      ? plannedAllocations[0]?.sessionId || ""
+      : selectedChargeIds.length > 1
+        ? ""
+        : existingPayment?.session_id || "";
   const payment = {
     ...(existingPayment || {}),
     id: existingPayment?.id || id(),
     patient_id: patientId,
-    session_id: data.session_id || "",
+    session_id: linkedSessionId,
     amount: data.amount,
     payment_method: data.payment_method || "bank_transfer",
     payment_status: data.payment_status || "paid",
@@ -5842,11 +6080,58 @@ async function savePayment(form) {
 
   if (existingPayment) {
     await updateSheetRow("payments", existingPayment._rowNumber, payment);
+    payment._rowNumber = existingPayment._rowNumber;
     state.payments = state.payments.map((item) => (item.id === payment.id ? payment : item));
   } else {
     const appendResult = await appendSheet("payments", payment);
     payment._rowNumber = appendedRowNumber(appendResult);
     state.payments = [payment, ...state.payments];
+  }
+
+  const appendedAllocations = [];
+  const clearedAllocations = [];
+  try {
+    for (const planned of plannedAllocations) {
+      const allocation = {
+        id: id(),
+        payment_id: payment.id,
+        charge_id: planned.chargeId,
+        session_id: planned.sessionId,
+        patient_id: patientId,
+        amount: PaymentsCore.agorotToAmountText(planned.amountAgorot),
+        created_at: now,
+        updated_at: now
+      };
+      const allocationResult = await appendSheet("payment_allocations", allocation);
+      allocation._rowNumber = appendedRowNumber(allocationResult);
+      appendedAllocations.push(allocation);
+      state.paymentAllocations = [allocation, ...state.paymentAllocations];
+    }
+    for (const previous of previousAllocations) {
+      await clearSheetRow("payment_allocations", previous._rowNumber, previous);
+      clearedAllocations.push(previous);
+      state.paymentAllocations = state.paymentAllocations.filter((item) => item.id !== previous.id);
+    }
+  } catch (allocationError) {
+    for (const allocation of appendedAllocations) {
+      await clearSheetRow("payment_allocations", allocation._rowNumber, allocation).catch(() => {});
+      state.paymentAllocations = state.paymentAllocations.filter((item) => item.id !== allocation.id);
+    }
+    for (const previous of clearedAllocations) {
+      const restoredResult = await appendSheet("payment_allocations", WorkflowCore.cleanRecord(previous)).catch(() => null);
+      if (restoredResult) {
+        const restored = { ...WorkflowCore.cleanRecord(previous), _rowNumber: appendedRowNumber(restoredResult) };
+        state.paymentAllocations = [restored, ...state.paymentAllocations];
+      }
+    }
+    if (existingPayment) {
+      await updateSheetRow("payments", payment._rowNumber, existingPayment, payment).catch(() => {});
+      state.payments = state.payments.map((item) => (item.id === existingPayment.id ? existingPayment : item));
+    } else {
+      await clearSheetRow("payments", payment._rowNumber, payment).catch(() => {});
+      state.payments = state.payments.filter((item) => item.id !== payment.id);
+    }
+    throw new Error(`שמירת שיוך התשלום נכשלה והרשומות הוחזרו לאחור: ${allocationError.message || allocationError}`);
   }
   state.currentPaymentId = "";
   state.payments = state.payments.sort((a, b) =>
@@ -5876,11 +6161,63 @@ async function deletePaymentRecord(paymentId) {
   if (!payment) throw new Error("התשלום לא נמצא.");
   if (!payment._rowNumber) throw new Error("צריך לרענן נתונים לפני מחיקת התשלום.");
 
+  const paymentAllocations = state.paymentAllocations.filter((allocation) => allocation.payment_id === paymentId);
+  if (paymentAllocations.some((allocation) => !allocation._rowNumber)) {
+    throw new Error("צריך לרענן נתונים לפני מחיקת התשלום.");
+  }
+
   await assertSheetRowCurrent("payments", payment._rowNumber, payment);
   if (payment.receipt_file_id) await deleteFileRecordByDriveId(payment.receipt_file_id);
+  for (const allocation of paymentAllocations) {
+    await clearSheetRow("payment_allocations", allocation._rowNumber, allocation);
+    state.paymentAllocations = state.paymentAllocations.filter((item) => item.id !== allocation.id);
+  }
   await clearSheetRow("payments", payment._rowNumber, payment);
   state.payments = state.payments.filter((item) => item.id !== paymentId);
   if (state.currentPaymentId === paymentId) state.currentPaymentId = "";
+}
+
+function chargePaymentBlockError(charge) {
+  const hasAllocation = state.paymentAllocations.some((allocation) => allocation.charge_id === charge.id);
+  const hasLinkedPayment = state.payments.some((payment) => payment.session_id && payment.session_id === charge.session_id);
+  if (hasAllocation || hasLinkedPayment) {
+    return "לחיוב זה משויך תשלום. כדי לערוך או לבטל את החיוב יש למחוק קודם את התשלום המשויך.";
+  }
+  return "";
+}
+
+async function updateSessionChargeAmount(chargeId, amountText) {
+  const charge = state.sessionCharges.find((item) => item.id === chargeId);
+  if (!charge) throw new Error("חיוב הטיפול לא נמצא.");
+  if (!charge._rowNumber) throw new Error("צריך לרענן נתונים לפני עדכון החיוב.");
+  const blockError = chargePaymentBlockError(charge);
+  if (blockError) throw new Error(blockError);
+  const amountAgorot = PaymentsCore.parseAmountToAgorot(amountText);
+  if (amountAgorot === null) {
+    throw new Error("סכום החיוב אינו תקין. יש להזין סכום חיובי עם עד שתי ספרות אחרי הנקודה.");
+  }
+
+  await assertSheetRowCurrent("session_charges", charge._rowNumber, charge);
+  const updated = {
+    ...charge,
+    amount: PaymentsCore.agorotToAmountText(amountAgorot),
+    updated_at: new Date().toISOString()
+  };
+  await updateSheetRow("session_charges", charge._rowNumber, updated);
+  state.sessionCharges = state.sessionCharges.map((item) => (item.id === chargeId ? updated : item));
+}
+
+async function cancelSessionCharge(chargeId) {
+  const charge = state.sessionCharges.find((item) => item.id === chargeId);
+  if (!charge) throw new Error("חיוב הטיפול לא נמצא.");
+  if (!charge._rowNumber) throw new Error("צריך לרענן נתונים לפני ביטול החיוב.");
+  const blockError = chargePaymentBlockError(charge);
+  if (blockError) throw new Error(blockError);
+
+  await assertSheetRowCurrent("session_charges", charge._rowNumber, charge);
+  await clearSheetRow("session_charges", charge._rowNumber, charge);
+  state.sessionCharges = state.sessionCharges.filter((item) => item.id !== chargeId);
+  if (state.currentChargeId === chargeId) state.currentChargeId = "";
 }
 
 async function deletePaymentReceipt(paymentId) {
@@ -5985,6 +6322,8 @@ function backupPayload() {
       questionnaire_responses: state.questionnaireResponses.length,
       clinical_reports: state.clinicalReports.length,
       business_records: state.businessRecords.length,
+      session_charges: state.sessionCharges.length,
+      payment_allocations: state.paymentAllocations.length,
       schedule_exceptions: state.scheduleExceptions.length,
       audit_log: state.auditLog.length
     },
@@ -6002,6 +6341,8 @@ function backupPayload() {
       questionnaire_responses: state.questionnaireResponses,
       clinical_reports: state.clinicalReports,
       business_records: state.businessRecords,
+      session_charges: state.sessionCharges,
+      payment_allocations: state.paymentAllocations,
       schedule_exceptions: state.scheduleExceptions,
       audit_log: state.auditLog
     }
@@ -6056,7 +6397,7 @@ async function restoreBackupFile(file) {
   if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני שחזור.");
 
   const payload = JSON.parse(await file.text());
-  for (const tableName of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports", "business_records"]) {
+  for (const tableName of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports", "business_records", "session_charges", "payment_allocations"]) {
     if (payload?.data && !Array.isArray(payload.data[tableName])) payload.data[tableName] = [];
   }
   if (payload?.data && !Array.isArray(payload.data.audit_log)) payload.data.audit_log = [];
@@ -6754,6 +7095,61 @@ function bindEvents() {
         render();
       }
     }
+    if (action === "edit-charge") {
+      const charge = state.sessionCharges.find((item) => item.id === target.dataset.id);
+      if (!charge) return;
+      const blockError = chargePaymentBlockError(charge);
+      if (blockError) {
+        state.error = blockError;
+        state.message = "";
+        render();
+        return;
+      }
+      state.currentChargeId = charge.id;
+      state.error = "";
+      state.message = "";
+      render();
+    }
+    if (action === "cancel-charge-edit") {
+      state.currentChargeId = "";
+      render();
+    }
+    if (action === "save-charge-amount") {
+      const amountText = document.querySelector("[data-charge-amount-input]")?.value || "";
+      if (!window.confirm("האם לעדכן את סכום חיוב הטיפול? המחיר הקבוע בכרטיס המטופל לא ישתנה.")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        await runAuditedAction(
+          { actionType: "update", entityType: "session_charge", entityId: target.dataset.id, summary: "עדכון סכום חיוב טיפול" },
+          () => updateSessionChargeAmount(target.dataset.id, amountText)
+        );
+        state.currentChargeId = "";
+        state.message = "סכום החיוב עודכן.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "עדכון החיוב נכשל.";
+        state.message = "";
+        render();
+      }
+    }
+    if (action === "cancel-charge") {
+      if (!window.confirm("האם לבטל את חיוב הטיפול? החוב יוסר מהיתרות, ותיעוד המפגש יישאר במערכת ללא שינוי.")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני ביטול חיוב.");
+        await runAuditedAction(
+          { actionType: "delete", entityType: "session_charge", entityId: target.dataset.id, summary: "ביטול חיוב טיפול", undoable: false },
+          () => cancelSessionCharge(target.dataset.id)
+        );
+        state.message = "חיוב הטיפול בוטל והוסר מהיתרות.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "ביטול החיוב נכשל.";
+        state.message = "";
+        render();
+      }
+    }
     if (action === "delete-payment-receipt") {
       if (!window.confirm("האם את בטוחה שאת רוצה למחוק את קובץ הקבלה?")) return;
       try {
@@ -7153,6 +7549,17 @@ function bindEvents() {
   });
 
   document.addEventListener("change", (event) => {
+    const chargeCheckbox = event.target.closest('[data-charge-select] input[name="charge_ids"]');
+    if (chargeCheckbox) {
+      const paymentForm = chargeCheckbox.closest('form[data-form="payment"]');
+      const amountField = paymentForm?.elements?.amount;
+      if (amountField) {
+        const selectedRemaining = [...paymentForm.querySelectorAll('[data-charge-select] input[name="charge_ids"]:checked')]
+          .reduce((total, input) => total + (Number(input.dataset.chargeRemaining) || 0), 0);
+        amountField.value = selectedRemaining > 0 ? PaymentsCore.agorotToAmountText(selectedRemaining) : "";
+      }
+      return;
+    }
     const questionnaireTemplateSelect = event.target.closest("[data-questionnaire-template-select]");
     if (questionnaireTemplateSelect) {
       state.currentQuestionnaireTemplateId = questionnaireTemplateSelect.value || "";

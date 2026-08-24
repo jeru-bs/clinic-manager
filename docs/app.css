@@ -1515,6 +1515,47 @@ th {
   font-weight: 800;
 }
 
+[data-charge-select] {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+[data-charge-select] legend {
+  padding-inline: 8px;
+  color: var(--primary);
+  font-weight: 800;
+}
+
+.profile > *,
+.profile-tab-body > * {
+  min-width: 0;
+}
+
+.charge-amount-input {
+  width: 96px;
+  min-height: 36px;
+}
+
+.charge-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.charge-option input[type="checkbox"] {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 .profile-tabs {
   overflow-x: auto;
   scrollbar-width: thin;

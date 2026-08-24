@@ -7,7 +7,7 @@ const context = { globalThis: {} };
 vm.runInNewContext(source, context);
 const core = context.globalThis.CLINIC_WORKFLOW_CORE;
 
-for (const table of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports", "business_records"]) {
+for (const table of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports", "business_records", "session_charges", "payment_allocations"]) {
   assert.ok(core.TABLES.includes(table), `${table} must participate in audit snapshots and backup validation`);
 }
 

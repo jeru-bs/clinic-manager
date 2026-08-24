@@ -69,9 +69,11 @@ https://drive.google.com/drive/folders/16XWqhBGBZ053aRGPmuWTv0MOsM-d7JfV
 - `clinical_reports`
 - `schedule_exceptions`
 - `business_records`
+- `session_charges`
+- `payment_allocations`
 - `audit_log`
 
-מבנה העמודות מוגדר ב-`docs/app.js` בתחילת הקובץ ומתועד גם ב-`docs/DATA_MODEL.md`.
+מבנה העמודות מוגדר ב-`docs/app.js` בתחילת הקובץ ומתועד גם ב-`docs/DATA_MODEL.md`. לוגיקת החיובים והשיוכים (חישובי אגורות, יתרות ושיוך מהישן לחדש) נמצאת ב-`docs/payments-core.js` ונבדקת ב-`scripts/test-payments.mjs`.
 
 ## מה עדיין לא סגור
 
