@@ -3926,15 +3926,17 @@ function friendlyGoogleError(text, status) {
 
 async function googleFetch(url, options = {}) {
   if (!state.accessToken) throw new Error("לא מחוברים לאחסון.");
+  const { acceptStatuses = [], ...fetchOptions } = options;
   const response = await fetch(url, {
-    ...options,
+    ...fetchOptions,
     headers: {
       Authorization: `Bearer ${state.accessToken}`,
       "Content-Type": "application/json",
-      ...(options.headers || {})
+      ...(fetchOptions.headers || {})
     }
   });
 
+  if (acceptStatuses.includes(response.status)) return null;
   if (!response.ok) {
     const text = await response.text();
     throw new Error(friendlyGoogleError(text, response.status));
@@ -4499,7 +4501,9 @@ async function deleteCalendarEvent(eventId) {
       calendarId
     )}/events/${encodeURIComponent(eventId)}`,
     {
-      method: "DELETE"
+      method: "DELETE",
+      // 404/410 mean the event is already gone, which is the desired final state.
+      acceptStatuses: [404, 410]
     }
   );
 }
