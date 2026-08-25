@@ -366,6 +366,8 @@ let lastGoogleRestoreAttempt = 0;
 let drawerReturnFocus = null;
 const loadingIsraelHolidayYears = new Set();
 let syncRetryTimer = null;
+let syncHideTimer = null;
+let syncIndicatorHidden = false;
 let syncProcessing = false;
 let activeUploadRequest = null;
 let uploadCancelled = false;
@@ -531,6 +533,41 @@ function formatDateTime(value) {
   );
 }
 
+function syncIndicatorBusy() {
+  return (
+    syncProcessing ||
+    state.syncQueue.length > 0 ||
+    state.saveState === "saving" ||
+    state.saveState === "pending" ||
+    state.saveState === "error"
+  );
+}
+
+function updateSyncIndicatorVisibility() {
+  const indicator = document.getElementById("syncStatus");
+  if (syncIndicatorBusy()) {
+    if (syncHideTimer) {
+      window.clearTimeout(syncHideTimer);
+      syncHideTimer = null;
+    }
+    syncIndicatorHidden = false;
+    if (indicator) indicator.hidden = false;
+    return;
+  }
+  if (syncIndicatorHidden) {
+    if (indicator) indicator.hidden = true;
+    return;
+  }
+  if (syncHideTimer) window.clearTimeout(syncHideTimer);
+  syncHideTimer = window.setTimeout(() => {
+    syncHideTimer = null;
+    if (syncIndicatorBusy()) return;
+    syncIndicatorHidden = true;
+    const target = document.getElementById("syncStatus");
+    if (target) target.hidden = true;
+  }, 5000);
+}
+
 function updateSyncIndicator() {
   const label = document.querySelector("[data-sync-label]");
   const meta = document.querySelector("[data-sync-meta]");
@@ -538,6 +575,7 @@ function updateSyncIndicator() {
   if (label) label.textContent = syncStatusLabel();
   if (meta) meta.textContent = `רענון אחרון: ${formatDateTime(state.lastRefreshAt)}`;
   if (retry) retry.hidden = !state.syncQueue.length;
+  updateSyncIndicatorVisibility();
 }
 
 function updateUploadProgress(loaded, total, label = "מעלה קובץ…") {
@@ -1038,7 +1076,7 @@ function activeKey() {
 
 function syncIndicator() {
   return `
-    <div class="sync-indicator ${state.syncQueue.length ? "pending" : state.saveState}" id="syncStatus" role="status" aria-live="polite">
+    <div class="sync-indicator ${state.syncQueue.length ? "pending" : state.saveState}" id="syncStatus" role="status" aria-live="polite" ${syncIndicatorHidden && !syncIndicatorBusy() ? "hidden" : ""}>
       <strong data-sync-label>${html(syncStatusLabel())}</strong>
       <span data-sync-meta>רענון אחרון: ${html(formatDateTime(state.lastRefreshAt))}</span>
       <button class="button secondary table-button" data-action="retry-sync" type="button" ${state.syncQueue.length ? "" : "hidden"}>נסה שוב עכשיו</button>
@@ -5226,6 +5264,166 @@ async function deleteBusinessRecordEntry(recordId) {
   if (state.currentBusinessRecordId === recordId) state.currentBusinessRecordId = "";
 }
 
+function paymentIncomeRecord(paymentId) {
+  if (!paymentId) return null;
+  return (
+    state.businessRecords.find(
+      (record) => record.source === "payment" && record.payment_id === paymentId
+    ) || null
+  );
+}
+
+async function copyDriveFileToFolder(fileId, folderId, name) {
+  const copied = await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}/copy?fields=id,name,webViewLink`,
+    { method: "POST", body: JSON.stringify({ name, parents: [folderId] }) }
+  );
+  if (!copied?.id) throw new Error("יצירת עותק הקבלה בתיקיית ניהול העסק נכשלה.");
+  return copied;
+}
+
+async function syncPaymentIncomeRecord(payment, receiptReplaced = false) {
+  const existingRecord = paymentIncomeRecord(payment.id);
+  if (!existingRecord && !payment.receipt_file_id) return null;
+
+  const validated = BusinessCore.validateRecordInput({
+    document_date: payment.paid_at,
+    record_type: "income",
+    amount: payment.amount
+  });
+  if (validated.error) throw new Error(validated.error);
+
+  if (!existingRecord) return createPaymentIncomeRecord(payment, validated);
+  return updatePaymentIncomeRecord(existingRecord, payment, validated, receiptReplaced);
+}
+
+function paymentReceiptCopyName(payment) {
+  const receiptFile = state.files.find((item) => item.drive_file_id === payment.receipt_file_id);
+  return receiptFile?.name || `קבלה ${payment.paid_at}`;
+}
+
+async function createPaymentIncomeRecord(payment, validated) {
+  const folder = await ensureBusinessPeriodFolder(payment.paid_at);
+  const copied = await copyDriveFileToFolder(
+    payment.receipt_file_id,
+    folder.id,
+    paymentReceiptCopyName(payment)
+  );
+
+  const now = new Date().toISOString();
+  const record = {
+    id: id(),
+    document_date: payment.paid_at,
+    record_type: "income",
+    amount: validated.amount,
+    drive_file_id: copied.id,
+    drive_folder_id: folder.id,
+    file_name: copied.name || paymentReceiptCopyName(payment),
+    file_url: copied.webViewLink || driveFileUrl(copied.id),
+    source: "payment",
+    payment_id: payment.id,
+    created_at: now,
+    updated_at: now
+  };
+  try {
+    const result = await appendSheet("business_records", record);
+    record._rowNumber = appendedRowNumber(result);
+  } catch (persistError) {
+    try {
+      await trashDriveFile(copied.id);
+    } catch {
+      throw new Error(
+        `שמירת רשומת ההכנסה נכשלה וגם העברת עותק הקבלה לאשפה נכשלה. יש לבדוק את הקובץ "${record.file_name}" באחסון. שגיאה: ${persistError.message || persistError}`
+      );
+    }
+    throw new Error(
+      `שמירת רשומת ההכנסה נכשלה. עותק הקבלה הועבר לאשפה ואפשר לנסות שוב. שגיאה: ${persistError.message || persistError}`
+    );
+  }
+  state.businessRecords = sortBusinessRecords([record, ...state.businessRecords]);
+  return record;
+}
+
+async function updatePaymentIncomeRecord(record, payment, validated, receiptReplaced) {
+  const replacingCopy = receiptReplaced && Boolean(payment.receipt_file_id);
+  const unchanged =
+    !replacingCopy && record.document_date === payment.paid_at && record.amount === validated.amount;
+  if (unchanged) return record;
+
+  if (!record._rowNumber) throw new Error("צריך לרענן נתונים לפני עדכון רשומת ההכנסה המקושרת.");
+  await assertSheetRowCurrent("business_records", record._rowNumber, record);
+
+  const currentPeriod = BusinessCore.periodForDate(record.document_date);
+  const nextPeriod = BusinessCore.periodForDate(payment.paid_at);
+  const periodChanged =
+    !currentPeriod || currentPeriod.year !== nextPeriod.year || currentPeriod.key !== nextPeriod.key;
+
+  let folderId = record.drive_folder_id || "";
+  let movedFromFolderId = "";
+  let newCopy = null;
+  const previousCopyId = record.drive_file_id || "";
+
+  if (replacingCopy) {
+    const folder = periodChanged || !folderId ? await ensureBusinessPeriodFolder(payment.paid_at) : { id: folderId };
+    folderId = folder.id;
+    newCopy = await copyDriveFileToFolder(payment.receipt_file_id, folderId, paymentReceiptCopyName(payment));
+  } else if (record.drive_file_id && periodChanged) {
+    const folder = await ensureBusinessPeriodFolder(payment.paid_at);
+    if (folder.id && folder.id !== folderId) {
+      await moveDriveFile(record.drive_file_id, folderId, folder.id);
+      movedFromFolderId = folderId;
+      folderId = folder.id;
+    }
+  }
+
+  const updated = {
+    ...record,
+    document_date: payment.paid_at,
+    amount: validated.amount,
+    drive_file_id: newCopy ? newCopy.id : record.drive_file_id,
+    drive_folder_id: folderId,
+    file_name: newCopy ? newCopy.name || paymentReceiptCopyName(payment) : record.file_name,
+    file_url: newCopy ? newCopy.webViewLink || driveFileUrl(newCopy.id) : record.file_url,
+    updated_at: new Date().toISOString()
+  };
+  try {
+    await updateSheetRow("business_records", record._rowNumber, updated, record);
+  } catch (persistError) {
+    if (newCopy) {
+      try {
+        await trashDriveFile(newCopy.id);
+      } catch {
+        throw new Error(
+          `עדכון רשומת ההכנסה נכשל וגם העברת עותק הקבלה החדש לאשפה נכשלה. יש לבדוק את הקובץ "${updated.file_name}" באחסון. שגיאה: ${persistError.message || persistError}`
+        );
+      }
+    }
+    if (movedFromFolderId) {
+      try {
+        await moveDriveFile(record.drive_file_id, folderId, movedFromFolderId);
+      } catch {
+        throw new Error(
+          `עדכון רשומת ההכנסה נכשל ועותק הקבלה נשאר בתיקיית התקופה החדשה. יש לרענן נתונים ולנסות שוב. שגיאה: ${persistError.message || persistError}`
+        );
+      }
+    }
+    throw persistError;
+  }
+  state.businessRecords = sortBusinessRecords(
+    state.businessRecords.map((item) => (item.id === updated.id ? updated : item))
+  );
+  if (newCopy && previousCopyId) {
+    try {
+      await trashDriveFile(previousCopyId);
+    } catch (trashError) {
+      throw new Error(
+        `רשומת ההכנסה עודכנה, אך עותק הקבלה הישן "${record.file_name}" נשאר בתיקיית ניהול העסק ויש למחוק אותו ידנית. שגיאה: ${trashError.message || trashError}`
+      );
+    }
+  }
+  return updated;
+}
+
 async function updateLinkedFileReferences(oldDriveFileId, newDriveFileId = "") {
   if (!oldDriveFileId) return;
   const now = new Date().toISOString();
@@ -5238,8 +5436,9 @@ async function updateLinkedFileReferences(oldDriveFileId, newDriveFileId = "") {
       receipt_status: newDriveFileId ? payment.receipt_status || "issued" : "needed",
       updated_at: now
     };
-    await updateSheetRow("payments", payment._rowNumber, updated);
-    state.payments = state.payments.map((item) => (item.id === payment.id ? updated : item));
+    await updateSheetRow("payments", payment._rowNumber, updated, payment);
+    // עדכון במקום שומר על אותה רפרנס שמחזיקים קוראים במקביל (מחיקת תשלום/קבלה), כולל _loadedVersion עדכני.
+    Object.assign(payment, updated);
   }
 
   const linkedSessions = state.sessions.filter((session) => session.document_file_id === oldDriveFileId);
@@ -5250,8 +5449,8 @@ async function updateLinkedFileReferences(oldDriveFileId, newDriveFileId = "") {
       document_file_id: newDriveFileId,
       updated_at: now
     };
-    await updateSheetRow("sessions", session._rowNumber, updated);
-    state.sessions = state.sessions.map((item) => (item.id === session.id ? updated : item));
+    await updateSheetRow("sessions", session._rowNumber, updated, session);
+    Object.assign(session, updated);
   }
 }
 
@@ -6148,6 +6347,18 @@ async function savePayment(form) {
   if (payment.payment_status === "paid" && payment.receipt_status !== "issued") {
     await createSystemTask(patientId, "הפקת קבלה", `נדרשת קבלה עבור תשלום: ${formatAmount(payment.amount)}`, payment.paid_at);
   }
+
+  try {
+    await syncPaymentIncomeRecord(payment, Boolean(receiptFile));
+  } catch (syncError) {
+    const detail = syncError.message || syncError;
+    if (receiptFile) {
+      throw new Error(
+        `התשלום נשמר, אך סנכרון רשומת ההכנסה בניהול העסק נכשל: ${detail} שמירה חוזרת של התשלום תבצע את הסנכרון מחדש.`
+      );
+    }
+    throw new Error(`סנכרון רשומת ההכנסה בניהול העסק נכשל: ${detail}`);
+  }
 }
 
 async function deleteFileRecordByDriveId(driveFileId) {
@@ -6171,6 +6382,16 @@ async function deletePaymentRecord(paymentId) {
   }
 
   await assertSheetRowCurrent("payments", payment._rowNumber, payment);
+  const linkedIncomeRecord = paymentIncomeRecord(paymentId);
+  if (linkedIncomeRecord) {
+    try {
+      await deleteBusinessRecordEntry(linkedIncomeRecord.id);
+    } catch (incomeError) {
+      throw new Error(
+        `מחיקת רשומת ההכנסה המקושרת בניהול העסק נכשלה והתשלום לא נמחק: ${incomeError.message || incomeError}`
+      );
+    }
+  }
   if (payment.receipt_file_id) await deleteFileRecordByDriveId(payment.receipt_file_id);
   for (const allocation of paymentAllocations) {
     await clearSheetRow("payment_allocations", allocation._rowNumber, allocation);
