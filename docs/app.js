@@ -1143,7 +1143,7 @@ function shell(content) {
         ${syncIndicator()}
         ${uploadProgressBar()}
         ${state.error ? `<div class="message error" role="alert" aria-live="assertive">${html(state.error)}</div>` : ""}
-        ${state.message ? `<div class="message" role="status" aria-live="polite">${html(state.message)}${state.lastUndoActionId ? ` <button class="button secondary message-action" data-action="undo-last-action" data-id="${html(state.lastUndoActionId)}" type="button">ביטול הפעולה</button>` : ""}</div>` : ""}
+        ${state.message ? `<div class="message" data-app-message role="status" aria-live="polite">${html(state.message)}${state.lastUndoActionId ? ` <button class="button secondary message-action" data-action="undo-last-action" data-id="${html(state.lastUndoActionId)}" type="button">ביטול הפעולה</button>` : ""}</div>` : ""}
         ${content}
       </main>
     </div>`;
@@ -8341,7 +8341,8 @@ function scheduleMessageDismiss() {
     state.message = "";
     messageDismissTimer = null;
     messageDismissValue = "";
-    render();
+    // הסרה נקודתית ולא render מלא, כדי לא לאפס טפסים פתוחים שהמשתמש כבר מילא.
+    document.querySelector("[data-app-message]")?.remove();
   }, 4500);
 }
 

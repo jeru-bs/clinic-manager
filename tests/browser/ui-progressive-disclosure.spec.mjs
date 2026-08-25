@@ -197,6 +197,27 @@ test("the Hebrew upload control reports the selected file name", async ({ page }
   await expect(fileName).toHaveText("receipt.pdf");
 });
 
+test("dismissing the status message never clears input the user already typed", async ({ page }) => {
+  await setupUiMocks(page, { seed: SEED });
+
+  await page.goto("/#/patients/p1");
+  await page.locator(".profile-tab", { hasText: "משימות" }).click();
+  await page.getByRole("button", { name: "משימה חדשה +" }).click();
+  await page.locator("#task_title").fill("משימה ראשונה");
+  await page.getByRole("button", { name: "שמירת משימה" }).click();
+
+  const message = page.locator("[data-app-message]");
+  await expect(message).toBeVisible();
+
+  await page.getByRole("button", { name: "משימה חדשה +" }).click();
+  await page.locator("#task_title").fill("טיוטה שעדיין לא נשמרה");
+
+  // ההודעה נעלמת אחרי 4.5 שניות; הטופס הפתוח והקלט שבתוכו חייבים לשרוד.
+  await expect(message).toHaveCount(0, { timeout: 8000 });
+  await expect(page.locator('form[data-form="task"]')).toBeVisible();
+  await expect(page.locator("#task_title")).toHaveValue("טיוטה שעדיין לא נשמרה");
+});
+
 test("the patient card shows a persistent summary and keeps every tab reachable", async ({ page }) => {
   await setupUiMocks(page, { seed: SEED });
 
