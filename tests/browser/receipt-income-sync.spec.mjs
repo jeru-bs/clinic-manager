@@ -276,6 +276,7 @@ test("saving a payment with a receipt creates the period copy and one linked inc
   });
 
   await openPaymentsTab(page);
+  await page.getByRole("button", { name: "תשלום חדש +" }).click();
   const paymentForm = page.locator('form[data-form="payment"]');
   await paymentForm.locator('input[name="charge_ids"][value="c1"]').check();
   await paymentForm.locator('input[name="charge_ids"][value="c2"]').check();
@@ -433,6 +434,7 @@ test("a failed income append trashes the copy, keeps the payment, and re-save sy
   });
 
   await openPaymentsTab(page);
+  await page.getByRole("button", { name: "תשלום חדש +" }).click();
   const paymentForm = page.locator('form[data-form="payment"]');
   await paymentForm.locator("#amount").fill("200");
   await setPaidAt(paymentForm, "2026-08-25");
@@ -475,6 +477,7 @@ test("the saved indicator hides five seconds after success and returns with new 
   await expect(page.locator("#syncStatus")).toBeHidden({ timeout: 8000 });
 
   // A new save shows the indicator again immediately, then it hides after success.
+  await page.getByRole("button", { name: "תשלום חדש +" }).click();
   const paymentForm = page.locator('form[data-form="payment"]');
   await paymentForm.locator("#amount").fill("100");
   await paymentForm.getByRole("button", { name: "שמירת תשלום" }).click();

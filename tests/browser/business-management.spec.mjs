@@ -193,6 +193,8 @@ test("uploading business documents creates the period folder tree once and store
   await expect(page.getByRole("heading", { name: "ניהול עסק" })).toBeVisible();
   await expect(page.getByText("אין רשומות בתקופה שנבחרה", { exact: false })).toBeVisible();
 
+  await expect(page.locator("#business_document_date")).toHaveCount(0);
+  await page.getByRole("button", { name: "רשומה עסקית חדשה +" }).click();
   await setDateInput(page, "#business_document_date", "2026-07-15");
   await page.getByLabel("סוג").selectOption("income");
   await page.getByLabel("סכום בשקלים").fill("150.5");
@@ -228,6 +230,7 @@ test("uploading business documents creates the period folder tree once and store
   await expect(page.getByRole("cell", { name: "receipt.pdf" })).toBeVisible();
 
   // A second document in the same period must reuse the existing folders.
+  await page.getByRole("button", { name: "רשומה עסקית חדשה +" }).click();
   await setDateInput(page, "#business_document_date", "2026-08-02");
   await page.getByLabel("סוג").selectOption("expense");
   await page.getByLabel("סכום בשקלים").fill("50.25");
@@ -256,6 +259,7 @@ test("a failed record save moves the uploaded file to the trash and reports the 
 
   await page.goto("/#/business");
   await expect(page.getByRole("heading", { name: "ניהול עסק" })).toBeVisible();
+  await page.getByRole("button", { name: "רשומה עסקית חדשה +" }).click();
   await expect(page.locator("#business_document_date")).toBeAttached();
   await setDateInput(page, "#business_document_date", "2026-07-15");
   await page.getByLabel("סוג").selectOption("income");

@@ -337,6 +337,12 @@ const state = {
     text: ""
   },
   profileTab: "overview",
+  openForms: {
+    task: false,
+    payment: false,
+    file: false,
+    business: false
+  },
   businessView: {
     year: isoDate(new Date()).slice(0, 4),
     period: window.CLINIC_BUSINESS_CORE.periodForDate(isoDate(new Date()))?.key || "01-02",
@@ -1198,6 +1204,113 @@ function header(title, subtitle, actions = "") {
     </section>`;
 }
 
+function statusPill(label, tone = "") {
+  return `<span class="status-pill${tone ? ` tone-${tone}` : ""}">${html(label)}</span>`;
+}
+
+const PAYMENT_STATUS_TONES = { paid: "success", partial: "warning", unpaid: "danger" };
+const CHARGE_STATUS_TONES = { paid: "success", partial: "warning", open: "danger", cancelled: "" };
+const RECEIPT_STATUS_TONES = { issued: "success", needed: "warning", not_needed: "" };
+
+function uploadField({ id, name = "", label, required = false, hint = "", extra = "", wide = true, accept = "" }) {
+  return `
+    <div class="field${wide ? " wide" : ""}">
+      <label for="${html(id)}">${html(label)}</label>
+      <div class="upload-control">
+        <span class="upload-cta" aria-hidden="true">בחירת קובץ מהמחשב</span>
+        <span class="upload-filename" data-upload-name="${html(id)}">לא נבחר קובץ</span>
+        <input id="${html(id)}" ${name ? `name="${html(name)}"` : ""} type="file" ${accept ? `accept="${html(accept)}"` : ""} ${required ? "required" : ""} aria-describedby="${html(id)}_hint" />
+      </div>
+      <small class="upload-hint" id="${html(id)}_hint">${html(hint || "אפשר לבחור קובץ אחד. שם הקובץ שנבחר יוצג כאן.")}</small>
+      ${extra}
+    </div>`;
+}
+
+const DISCLOSURE_FORM_KEYS = { task: "task", payment: "payment", file: "file", "business-record": "business" };
+
+function isDisclosureOpen(key, editing) {
+  return Boolean(editing) || state.openForms[key] === true;
+}
+
+function closeDisclosureForForm(formName) {
+  const key = DISCLOSURE_FORM_KEYS[formName];
+  if (key) state.openForms[key] = false;
+}
+
+function disclosureSection(key, { title, description = "", openLabel, editing = false, form }) {
+  const open = isDisclosureOpen(key, editing);
+  return `
+    <div class="disclosure-head">
+      <div>
+        <h2>${html(title)}</h2>
+        ${description && !open ? `<p>${html(description)}</p>` : ""}
+      </div>
+      ${
+        editing
+          ? ""
+          : `<button class="button${open ? " secondary" : ""}" data-action="toggle-form" data-form-key="${html(key)}" type="button" aria-expanded="${open ? "true" : "false"}">${open ? "סגירת הטופס" : html(openLabel)}</button>`
+      }
+    </div>
+    ${open ? form : ""}`;
+}
+
+function todayAgendaPanel(todayRows) {
+  const sorted = todayRows
+    .slice()
+    .sort((first, second) => String(first.start_time || "").localeCompare(String(second.start_time || "")));
+  const nowTime = new Date().toTimeString().slice(0, 5);
+  const nextRow = sorted.find((session) => String(session.start_time || "") >= nowTime) || null;
+  return `
+    <article class="panel">
+      <div class="panel-head"><h2>היום ביומן</h2><span>${sorted.length} מפגשים</span></div>
+      ${
+        sorted.length
+          ? `<div class="attention-list">${sorted
+              .slice(0, 6)
+              .map(
+                (session) => `
+                  <div class="attention-row ${nextRow && session.id === nextRow.id ? "is-next" : ""}">
+                    <div>
+                      <strong>${html(patientName(session.patient_id))}</strong>
+                      <span>${html(session.session_type || "מפגש")}${nextRow && session.id === nextRow.id ? " · המפגש הבא" : ""}</span>
+                    </div>
+                    <span class="attention-time">${html(session.start_time || "ללא שעה")}</span>
+                  </div>`
+              )
+              .join("")}</div>`
+          : `<div class="empty"><strong>אין מפגשים מתוכננים להיום.</strong>אפשר לבדוק את היומן לימים הקרובים.<a class="button secondary" href="#/calendar">מעבר ליומן</a></div>`
+      }
+    </article>`;
+}
+
+function openPaymentsPanel() {
+  const openRows = state.payments.filter((payment) => payment.payment_status !== "paid");
+  return `
+    <article class="panel">
+      <div class="panel-head"><h2>תשלומים פתוחים</h2><span>${openRows.length} רשומות</span></div>
+      ${
+        openRows.length
+          ? `<div class="attention-list">${openRows
+              .slice(0, 6)
+              .map(
+                (payment) => `
+                  <div class="attention-row is-warning">
+                    <div>
+                      <strong>${html(patientName(payment.patient_id))}</strong>
+                      <span>${html(formatDate(payment.paid_at))} · ${html(paymentMethodLabel(payment.payment_method))}</span>
+                    </div>
+                    <div class="actions">
+                      <span class="attention-time">${html(formatAmount(payment.amount))}</span>
+                      ${statusPill(paymentStatusLabel(payment.payment_status), payment.payment_status === "partial" ? "warning" : "danger")}
+                    </div>
+                  </div>`
+              )
+              .join("")}</div>`
+          : `<div class="empty"><strong>אין תשלומים פתוחים.</strong>כל התשלומים הרשומים סומנו כשולמו.<a class="button secondary" href="#/payments">מעבר לתשלומים</a></div>`
+      }
+    </article>`;
+}
+
 function dashboardPage() {
   const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid").length;
   const activePatients = state.patients.filter((patient) => patient.status !== "archived").length;
@@ -1209,11 +1322,16 @@ function dashboardPage() {
 
   return shell(`
     ${header(
-      "תמונת מצב יומית",
-      "",
+      "מה דורש תשומת לב היום",
+      "המפגשים, המשימות והתשלומים שמחכים לטיפול.",
       `<button class="button" data-action="open-patient-drawer" type="button">מטופל חדש +</button>`
     )}
     ${connectionBanner()}
+    <section class="attention-grid">
+      ${todayAgendaPanel(todayRows)}
+      ${remindersPanel()}
+      ${openPaymentsPanel()}
+    </section>
     <section class="kpi-grid">
       <article class="kpi-card blue-card"><div><strong>${todaySessions}</strong><span>מפגשים היום</span></div><span class="kpi-symbol">${icon("calendar")}</span></article>
       <article class="kpi-card teal-card"><div><strong>${reminderCount}</strong><span>תזכורות פעילות</span></div><span class="kpi-symbol">${icon("tasks")}</span></article>
@@ -1221,7 +1339,6 @@ function dashboardPage() {
       <article class="kpi-card purple-card"><div><strong>${activePatients}</strong><span>מטופלים פעילים</span></div><span class="kpi-symbol">${icon("patients")}</span></article>
     </section>
     <section class="dashboard-grid">
-      <div class="dashboard-full">${remindersPanel()}</div>
       ${sessionsPanel(weekRows)}
       ${paymentsPanel()}
       <div class="dashboard-full">${tasksPanel()}</div>
@@ -1254,7 +1371,7 @@ function patientsPage() {
     <section class="panel">
       <div class="panel-head count-only"><span>${filteredPatients.length} מתוך ${state.patients.length}</span></div>
       <div class="table-wrap">
-        <table>
+        <table class="stack-mobile">
           <thead>
             <tr>
               <th>שם</th>
@@ -1276,14 +1393,14 @@ function patientsPage() {
               .map(
                 (patient) => `
                 <tr>
-                  <td>
+                  <td data-label="שם">
                     <strong>${html(patient.child_name)}</strong>
                     ${patient.status === "archived" ? `<span class="status-pill muted">ארכיון</span>` : ""}
                   </td>
-                  <td>${html(patient.school_name || "-")}</td>
-                  <td>${html(patient.treatment_type || "-")}</td>
-                  <td><span class="status-pill">${html(paymentStatusLabel(patient.payment_status))}</span></td>
-                  <td>
+                  <td data-label="מוסד">${html(patient.school_name || "-")}</td>
+                  <td data-label="סוג טיפול">${html(patient.treatment_type || "-")}</td>
+                  <td data-label="תשלום">${statusPill(paymentStatusLabel(patient.payment_status), PAYMENT_STATUS_TONES[patient.payment_status] || "")}</td>
+                  <td data-label="פעולות">
                     <div class="actions">
                       <button class="small-action" data-action="open-profile" data-id="${html(patient.id)}" type="button" aria-label="פתיחת כרטיס מטופל" title="פתיחת כרטיס מטופל">↗</button>
                       <button class="small-action edit" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button" aria-label="עריכת מטופל" title="עריכת מטופל">✎</button>
@@ -1322,6 +1439,7 @@ function profilePage(patientId) {
       `<a class="button secondary" href="#/patients">חזרה לרשימה</a>`
     )}
     <section class="profile">
+      ${patientSummary(patient, { sessions, tasks })}
       ${profileTabs(tab)}
       <section class="profile-tab-body">
         ${tab === "overview" ? profileOverviewPanel(patient) : ""}
@@ -1338,33 +1456,75 @@ function profilePage(patientId) {
   `);
 }
 
+function patientSummary(patient, { sessions, tasks }) {
+  const balances = patientChargeBalances(patient.id);
+  const outstandingAgorot = PaymentsCore.outstandingTotal(balances);
+  const today = isoDate(new Date());
+  const upcoming = sessions
+    .filter((session) => String(session.session_date || "") >= today)
+    .sort((first, second) => String(first.session_date || "").localeCompare(String(second.session_date || "")))[0];
+  const lastSession = sessions
+    .filter((session) => String(session.session_date || "") < today)
+    .sort((first, second) => String(second.session_date || "").localeCompare(String(first.session_date || "")))[0];
+  const openTasks = tasks.filter((task) => task.status !== "done").length;
+
+  return `
+    <section class="patient-summary" aria-label="סיכום מטופל">
+      <div class="summary-main">
+        <div class="summary-title">
+          <h2>${html(patient.child_name)}</h2>
+          ${statusPill(paymentStatusLabel(patient.payment_status), PAYMENT_STATUS_TONES[patient.payment_status] || "")}
+          ${patient.status === "archived" ? `<span class="status-pill muted">ארכיון</span>` : ""}
+        </div>
+        <div class="summary-facts">
+          <div class="summary-fact"><span>סוג טיפול</span><strong>${html(patient.treatment_type || "לא הוגדר")}</strong></div>
+          <div class="summary-fact"><span>מועד קבוע</span><strong>${html(`${patient.fixed_day || "ללא יום קבוע"} ${patient.fixed_time || ""}`.trim())}</strong></div>
+          <div class="summary-fact"><span>מפגש קרוב</span><strong>${html(upcoming ? `${formatDate(upcoming.session_date)} ${upcoming.start_time || ""}`.trim() : "אין מפגש מתוכנן")}</strong></div>
+          <div class="summary-fact"><span>מפגש אחרון</span><strong>${html(lastSession ? formatDate(lastSession.session_date) : "אין תיעוד קודם")}</strong></div>
+          <div class="summary-fact${outstandingAgorot > 0 ? " is-alert" : ""}"><span>יתרת חוב</span><strong>${html(formatAgorotAmount(outstandingAgorot))}</strong></div>
+          <div class="summary-fact"><span>משימות פתוחות</span><strong>${openTasks}</strong></div>
+        </div>
+      </div>
+      <div class="summary-actions">
+        <button class="button" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button">עריכת פרטי מטופל</button>
+        ${
+          patient.drive_folder_id
+            ? `<a class="button secondary" href="https://drive.google.com/drive/folders/${html(patient.drive_folder_id)}" target="_blank" rel="noopener">תיקיית המטופל</a>`
+            : `<button class="button secondary" data-action="create-drive-folder" data-id="${html(patient.id)}" type="button">יצירת תיקיית מטופל</button>`
+        }
+      </div>
+    </section>
+    ${patientDrawer()}`;
+}
+
 function profileTabKey() {
   const allowedTabs = ["overview", "contacts", "goals", "questionnaires", "documentation", "clinical-reports", "payments", "tasks", "files"];
   return allowedTabs.includes(state.profileTab) ? state.profileTab : "overview";
 }
 
 function profileTabs(activeTab) {
-  const tabs = [
+  const primaryTabs = [
     ["overview", "פרטים"],
-    ["contacts", "הורים ואנשי מקצוע"],
-    ["goals", "מטרות"],
-    ["questionnaires", "שאלונים"],
     ["documentation", "תיעוד מפגש"],
-    ["clinical-reports", "דוחות טיפוליים"],
+    ["goals", "מטרות"],
     ["payments", "תשלומים"],
-    ["tasks", "משימות"],
     ["files", "קבצים"]
   ];
+  const secondaryTabs = [
+    ["contacts", "הורים ואנשי מקצוע"],
+    ["questionnaires", "שאלונים"],
+    ["clinical-reports", "דוחות טיפוליים"],
+    ["tasks", "משימות"]
+  ];
+  const tabButton = (key, label, secondary) => `
+    <button class="profile-tab${secondary ? " is-secondary" : ""} ${activeTab === key ? "active" : ""}" data-action="profile-tab" data-tab="${key}" type="button">
+      ${label}
+    </button>`;
   return `
     <nav class="profile-tabs" aria-label="ניווט בכרטיס מטופל">
-      ${tabs
-        .map(
-          ([key, label]) => `
-            <button class="profile-tab ${activeTab === key ? "active" : ""}" data-action="profile-tab" data-tab="${key}" type="button">
-              ${label}
-            </button>`
-        )
-        .join("")}
+      ${primaryTabs.map(([key, label]) => tabButton(key, label, false)).join("")}
+      <span class="profile-tabs-label" aria-hidden="true">עוד</span>
+      ${secondaryTabs.map(([key, label]) => tabButton(key, label, true)).join("")}
     </nav>`;
 }
 
@@ -1540,10 +1700,36 @@ function settingsPage() {
     : `<button class="button blue" data-action="connect-google" type="button" ${googleAuthInFlight || state.authRestoring ? "disabled" : ""}>${googleAuthInFlight || state.authRestoring ? "מתחבר…" : "התחברות לאחסון"}</button>`;
   return shell(`
     ${header("הגדרות", "", connectionAction)}
+    <section class="settings-section">
+      <div class="section-head">
+        <h2>העדפות קליניקה ואישיות</h2>
+        <p>רשימות הבחירה שמופיעות בטפסי המפגש.</p>
+      </div>
+      <article class="panel settings-panel">
+        <div class="form-grid settings-form">
+          <div class="field">
+            <label for="sessionTypes">סוגי מפגש</label>
+            <textarea id="sessionTypes" name="sessionTypes" form="settingsForm" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionTypes)}</textarea>
+          </div>
+          <div class="field">
+            <label for="sessionLocations">מיקומים למפגש</label>
+            <textarea id="sessionLocations" name="sessionLocations" form="settingsForm" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionLocations)}</textarea>
+          </div>
+          <div class="toolbar settings-full">
+            <button class="button" type="submit" form="settingsForm">שמירת העדפות</button>
+          </div>
+        </div>
+      </article>
+    </section>
+    <section class="settings-section page-gap">
+      <div class="section-head">
+        <h2>חיבורים ואינטגרציות</h2>
+        <p>חיבור החשבון, מאגר הנתונים, האחסון והיומן.</p>
+      </div>
     <section class="grid-two settings-grid">
       <article class="panel settings-panel">
         <div class="panel-head"><h2>פרטי חיבור</h2></div>
-        <form class="form-grid settings-form" data-form="settings">
+        <form class="form-grid settings-form" id="settingsForm" data-form="settings">
           <div class="field settings-full">
             <label for="googleClientId">מזהה התחברות</label>
             <input id="googleClientId" name="googleClientId" value="${html(state.config.googleClientId)}" title="${html(state.config.googleClientId)}" placeholder="xxxx.apps.googleusercontent.com" />
@@ -1563,18 +1749,6 @@ function settingsPage() {
           <div class="field">
             <label for="googleCalendarId">יומן לסנכרון מפגשים</label>
             <input id="googleCalendarId" name="googleCalendarId" value="${html(state.config.googleCalendarId)}" title="${html(state.config.googleCalendarId)}" placeholder="primary" />
-          </div>
-          <div class="field settings-full">
-            <label for="allowedUserEmails">חשבונות Google מורשים</label>
-            <textarea id="allowedUserEmails" name="allowedUserEmails" placeholder="כתובת Google אחת בכל שורה">${html(state.config.allowedUserEmails)}</textarea>
-          </div>
-          <div class="field">
-            <label for="sessionTypes">סוגי מפגש</label>
-            <textarea id="sessionTypes" name="sessionTypes" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionTypes)}</textarea>
-          </div>
-          <div class="field">
-            <label for="sessionLocations">מיקומים למפגש</label>
-            <textarea id="sessionLocations" name="sessionLocations" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionLocations)}</textarea>
           </div>
           <div class="toolbar settings-full">
             <button class="button" type="submit">שמירת הגדרות</button>
@@ -1617,53 +1791,89 @@ function settingsPage() {
         </div>
       </article>
     </section>
-    <section class="panel page-gap">
-      <div class="panel-head"><h2>יומן פעילות וביטול</h2></div>
-      ${auditLogView()}
     </section>
-    <section class="panel page-gap">
-      <div class="panel-head"><h2>גיבוי וייצוא</h2></div>
-      <div class="toolbar">
-        <button class="button blue" data-action="download-backup" type="button">הורדת גיבוי מלא</button>
-        <button class="button" data-action="save-backup-drive" type="button">שמירת גיבוי באחסון</button>
-        <button class="button secondary" data-action="export-table" data-table="patients" type="button">ייצוא מטופלים</button>
-        <button class="button secondary" data-action="export-table" data-table="payments" type="button">ייצוא תשלומים</button>
-        <button class="button secondary" data-action="export-table" data-table="tasks" type="button">ייצוא משימות</button>
+    <section class="settings-section page-gap">
+      <div class="section-head">
+        <h2>נתונים, גיבוי ושחזור</h2>
+        <p>ייצוא, גיבוי ובדיקת תקינות של הנתונים השמורים.</p>
       </div>
-      <div class="restore-box">
-        <label class="field" for="restoreBackupFile">
-          <span>שחזור מגיבוי JSON</span>
-          <input id="restoreBackupFile" type="file" accept="application/json,.json" />
-        </label>
-        <button class="button danger" data-action="restore-backup" type="button">שחזור מגיבוי</button>
-      </div>
-      <div class="detail-list detail-grid">
-        ${detail("מטופלים", state.patients.length)}
-        ${detail("מפגשים", state.sessions.length)}
-        ${detail("תשלומים", state.payments.length)}
-        ${detail("משימות", state.tasks.length)}
-        ${detail("קבצים", state.files.length)}
-        ${detail("הורים ואנשי מקצוע", state.contacts.length)}
-        ${detail("תאריך גיבוי", formatDate(isoDate(new Date())))}
-      </div>
+      <section class="panel">
+        <div class="panel-head"><h2>גיבוי וייצוא</h2></div>
+        <div class="toolbar">
+          <button class="button blue" data-action="download-backup" type="button">הורדת גיבוי מלא</button>
+          <button class="button" data-action="save-backup-drive" type="button">שמירת גיבוי באחסון</button>
+          <button class="button secondary" data-action="export-table" data-table="patients" type="button">ייצוא מטופלים</button>
+          <button class="button secondary" data-action="export-table" data-table="payments" type="button">ייצוא תשלומים</button>
+          <button class="button secondary" data-action="export-table" data-table="tasks" type="button">ייצוא משימות</button>
+        </div>
+        <div class="detail-list detail-grid">
+          ${detail("מטופלים", state.patients.length)}
+          ${detail("מפגשים", state.sessions.length)}
+          ${detail("תשלומים", state.payments.length)}
+          ${detail("משימות", state.tasks.length)}
+          ${detail("קבצים", state.files.length)}
+          ${detail("הורים ואנשי מקצוע", state.contacts.length)}
+          ${detail("תאריך גיבוי", formatDate(isoDate(new Date())))}
+        </div>
+      </section>
+      <section class="panel page-gap">
+        <div class="panel-head"><h2>בדיקת תקינות נתונים</h2></div>
+        <div class="toolbar">
+          <button class="button blue" data-action="check-data-health" type="button">בדיקת תקינות</button>
+          <button class="button yellow" data-action="repair-data-health" type="button">תיקון מבנה</button>
+        </div>
+        ${dataHealthView()}
+      </section>
+      <section class="panel danger-zone page-gap">
+        <div class="panel-head"><h2>פעולות מסוכנות</h2></div>
+        <p class="notice warning">שחזור מגיבוי דורס את הנתונים הקיימים במערכת. הפעולה מתבצעת רק לאחר אישור מפורש.</p>
+        <div class="restore-box">
+          ${uploadField({
+            id: "restoreBackupFile",
+            label: "שחזור מגיבוי JSON",
+            accept: "application/json,.json",
+            hint: "יש לבחור קובץ גיבוי בפורמט JSON שהופק מהמערכת."
+          })}
+          <button class="button danger" data-action="restore-backup" type="button">שחזור מגיבוי</button>
+        </div>
+      </section>
     </section>
-    <section class="panel page-gap">
-      <div class="panel-head"><h2>בדיקת תקינות נתונים</h2></div>
-      <div class="toolbar">
-        <button class="button blue" data-action="check-data-health" type="button">בדיקת תקינות</button>
-        <button class="button yellow" data-action="repair-data-health" type="button">תיקון מבנה</button>
+    <section class="settings-section page-gap">
+      <div class="section-head">
+        <h2>אבטחה ויומן פעילות</h2>
+        <p>חשבונות מורשים, הרשאות שיתוף ותיעוד הפעולות במערכת.</p>
       </div>
-      ${dataHealthView()}
+      <section class="panel">
+        <div class="panel-head"><h2>חשבונות מורשים</h2></div>
+        <div class="form-grid settings-form">
+          <div class="field settings-full">
+            <label for="allowedUserEmails">חשבונות Google מורשים</label>
+            <textarea id="allowedUserEmails" name="allowedUserEmails" form="settingsForm" placeholder="כתובת Google אחת בכל שורה">${html(state.config.allowedUserEmails)}</textarea>
+          </div>
+          <div class="toolbar settings-full">
+            <button class="button" type="submit" form="settingsForm">שמירת רשימת המורשים</button>
+          </div>
+        </div>
+      </section>
+      <section class="panel page-gap">
+        <div class="panel-head"><h2>אבטחת שיתוף</h2></div>
+        <div class="toolbar">
+          <button class="button blue" data-action="check-sharing-security" type="button">בדיקת הרשאות שיתוף</button>
+          <button class="button yellow" data-action="repair-sharing-security" type="button">הסרת גישה ציבורית</button>
+        </div>
+        ${sharingSecurityView()}
+      </section>
+      <section class="panel page-gap">
+        <div class="panel-head"><h2>יומן פעילות וביטול</h2></div>
+        ${auditLogView()}
+      </section>
     </section>
-    <section class="panel page-gap">
-      <div class="panel-head"><h2>אבטחת שיתוף</h2></div>
-      <div class="toolbar">
-        <button class="button blue" data-action="check-sharing-security" type="button">בדיקת הרשאות שיתוף</button>
-        <button class="button yellow" data-action="repair-sharing-security" type="button">הסרת גישה ציבורית</button>
+    <section class="settings-section page-gap">
+      <div class="section-head">
+        <h2>חריגות וחסימות יומן</h2>
+        <p>ימים חסומים, חופשות וביטולים חד-פעמיים.</p>
       </div>
-      ${sharingSecurityView()}
-    </section>
-    <section class="panel page-gap">
+    <section class="panel">
       <div class="panel-head"><h2>חריגי יומן</h2></div>
       <form class="inline-form schedule-exception-form" data-form="schedule-exception">
         <div class="field">
@@ -1699,6 +1909,7 @@ function settingsPage() {
         </div>
       </form>
       ${scheduleExceptionsView()}
+    </section>
     </section>
   `);
 }
@@ -2015,15 +2226,17 @@ function paymentForm(patientId) {
         <label for="payment_notes">הערות</label>
         <textarea id="payment_notes" name="notes">${html(editedPayment?.notes || "")}</textarea>
       </div>
-      <div class="field wide">
-        <label for="receipt_upload">${receiptFile ? "החלפת קובץ קבלה" : "קובץ קבלה"}</label>
-        <input id="receipt_upload" name="receipt_upload" type="file" />
-        ${
-          receiptFile
-            ? `<small><a href="${html(receiptFile.url || driveFileUrl(receiptFile.drive_file_id))}" target="_blank" rel="noopener">קבלה קיימת: ${html(receiptFile.name || "פתיחה")}</a></small>`
-            : ""
-        }
-      </div>
+      ${uploadField({
+        id: "receipt_upload",
+        name: "receipt_upload",
+        label: receiptFile ? "החלפת קובץ קבלה" : "קובץ קבלה",
+        hint: receiptFile
+          ? "בחירת קובץ חדש תחליף את הקבלה הקיימת."
+          : "אפשר לצרף קובץ קבלה. השדה אינו חובה.",
+        extra: receiptFile
+          ? `<small><a href="${html(receiptFile.url || driveFileUrl(receiptFile.drive_file_id))}" target="_blank" rel="noopener">קבלה קיימת: ${html(receiptFile.name || "פתיחה")}</a></small>`
+          : ""
+      })}
       <div class="toolbar wide">
         <button class="button" type="submit">${editedPayment ? "עדכון תשלום" : "שמירת תשלום"}</button>
         ${editedPayment ? `<button class="button secondary" data-action="cancel-payment-edit" type="button">ביטול עריכה</button>` : ""}
@@ -2077,7 +2290,7 @@ function patientChargesSection(patientId) {
     ${
       balances.length
         ? `<div class="table-wrap">
-            <table>
+            <table class="stack-mobile">
               <thead>
                 <tr>
                   <th>תאריך מפגש</th>
@@ -2093,16 +2306,16 @@ function patientChargesSection(patientId) {
                   .map(
                     (balance) => `
                     <tr>
-                      <td>${html(formatDate(balance.sessionDate))}</td>
-                      <td>${
+                      <td data-label="תאריך מפגש">${html(formatDate(balance.sessionDate))}</td>
+                      <td data-label="סכום חיוב">${
                         state.currentChargeId === balance.chargeId
                           ? `<input type="text" inputmode="decimal" class="charge-amount-input" data-charge-amount-input value="${html(PaymentsCore.agorotToAmountText(balance.amountAgorot))}" aria-label="סכום חיוב חדש">`
                           : html(formatAgorotAmount(balance.amountAgorot))
                       }</td>
-                      <td>${html(formatAgorotAmount(balance.paidAgorot))}</td>
-                      <td>${html(formatAgorotAmount(balance.remainingAgorot))}</td>
-                      <td><span class="status-pill">${html(chargeStatusLabel(balance.status))}</span></td>
-                      <td>
+                      <td data-label="שולם">${html(formatAgorotAmount(balance.paidAgorot))}</td>
+                      <td data-label="יתרה">${html(formatAgorotAmount(balance.remainingAgorot))}</td>
+                      <td data-label="סטטוס">${statusPill(chargeStatusLabel(balance.status), CHARGE_STATUS_TONES[balance.status] || "")}</td>
+                      <td data-label="פעולות">
                         <div class="row-actions">
                           ${
                             state.currentChargeId === balance.chargeId
@@ -2127,9 +2340,18 @@ function paymentsPanel(items = state.payments, patientId = "") {
   const rows = items.slice(0, 5);
   return `
     <article class="panel">
-      <div class="panel-head"><h2>תשלומים</h2></div>
       ${patientId ? patientChargesSection(patientId) : ""}
-      ${patientId ? paymentForm(patientId) : ""}
+      ${
+        patientId
+          ? disclosureSection("payment", {
+              title: "תשלומים",
+              description: "פתיחת טופס לרישום תשלום חדש ושיוכו לחיובי טיפול.",
+              openLabel: "תשלום חדש +",
+              editing: Boolean(state.currentPaymentId),
+              form: paymentForm(patientId)
+            })
+          : `<div class="panel-head"><h2>תשלומים</h2></div>`
+      }
       ${
         rows.length
           ? `<div class="item-list">${rows
@@ -2314,7 +2536,7 @@ function paymentsPage() {
     <section class="panel">
       <div class="panel-head"><h2>חיובים פתוחים</h2><span>${openChargeRows.length} חיובים</span></div>
       <div class="table-wrap">
-        <table>
+        <table class="stack-mobile">
           <thead>
             <tr>
               <th>מטופל</th>
@@ -2331,13 +2553,13 @@ function paymentsPage() {
               .map(
                 (balance) => `
                 <tr>
-                  <td><strong>${html(patientName(balance.patientId))}</strong></td>
-                  <td>${html(formatDate(balance.sessionDate))}</td>
-                  <td>${html(formatAgorotAmount(balance.amountAgorot))}</td>
-                  <td>${html(formatAgorotAmount(balance.paidAgorot))}</td>
-                  <td>${html(formatAgorotAmount(balance.remainingAgorot))}</td>
-                  <td><span class="status-pill">${html(chargeStatusLabel(balance.status))}</span></td>
-                  <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(balance.patientId)}" type="button">כרטיס</button></td>
+                  <td data-label="מטופל"><strong>${html(patientName(balance.patientId))}</strong></td>
+                  <td data-label="תאריך">${html(formatDate(balance.sessionDate))}</td>
+                  <td data-label="חיוב">${html(formatAgorotAmount(balance.amountAgorot))}</td>
+                  <td data-label="שולם">${html(formatAgorotAmount(balance.paidAgorot))}</td>
+                  <td data-label="יתרה">${html(formatAgorotAmount(balance.remainingAgorot))}</td>
+                  <td data-label="סטטוס">${statusPill(chargeStatusLabel(balance.status), CHARGE_STATUS_TONES[balance.status] || "")}</td>
+                  <td data-label="פעולות"><button class="button secondary table-button" data-action="open-profile" data-id="${html(balance.patientId)}" type="button">כרטיס</button></td>
                 </tr>`
               )
               .join("") || `<tr><td colspan="7"><div class="empty">אין חיובים פתוחים. חיוב נוצר אוטומטית בשמירת תיעוד מפגש.</div></td></tr>`}
@@ -2348,7 +2570,7 @@ function paymentsPage() {
     <section class="panel page-gap">
       <div class="panel-head count-only"><span>${rows.length} תשלומים</span></div>
       <div class="table-wrap">
-        <table>
+        <table class="stack-mobile">
           <thead>
             <tr>
               <th>תאריך</th>
@@ -2367,19 +2589,19 @@ function paymentsPage() {
               .map(
                 (payment) => `
                 <tr>
-                  <td>${html(formatDate(payment.paid_at))}</td>
-                  <td><strong>${html(patientName(payment.patient_id))}</strong></td>
-                  <td>${html(payment.session_id ? sessionLabelById(payment.session_id) : "-")}</td>
-                  <td>${html(formatAmount(payment.amount))}</td>
-                  <td>${html(paymentMethodLabel(payment.payment_method))}</td>
-                  <td><span class="status-pill">${html(paymentStatusLabel(payment.payment_status))}</span></td>
-                  <td>${
+                  <td data-label="תאריך">${html(formatDate(payment.paid_at))}</td>
+                  <td data-label="מטופל"><strong>${html(patientName(payment.patient_id))}</strong></td>
+                  <td data-label="מפגש">${html(payment.session_id ? sessionLabelById(payment.session_id) : "-")}</td>
+                  <td data-label="סכום">${html(formatAmount(payment.amount))}</td>
+                  <td data-label="אמצעי">${html(paymentMethodLabel(payment.payment_method))}</td>
+                  <td data-label="תשלום">${statusPill(paymentStatusLabel(payment.payment_status), PAYMENT_STATUS_TONES[payment.payment_status] || "")}</td>
+                  <td data-label="קבלה">${
                     payment.receipt_file_id
-                      ? `<a href="${html(driveFileUrl(payment.receipt_file_id))}" target="_blank" rel="noopener">${html(receiptStatusLabel(payment.receipt_status))}</a>`
-                      : html(receiptStatusLabel(payment.receipt_status))
+                      ? `<a href="${html(driveFileUrl(payment.receipt_file_id))}" target="_blank" rel="noopener">${statusPill(receiptStatusLabel(payment.receipt_status), RECEIPT_STATUS_TONES[payment.receipt_status] || "")}</a>`
+                      : statusPill(receiptStatusLabel(payment.receipt_status), RECEIPT_STATUS_TONES[payment.receipt_status] || "")
                   }</td>
-                  <td>${html(payment.notes || "-")}</td>
-                  <td>
+                  <td data-label="הערות">${html(payment.notes || "-")}</td>
+                  <td data-label="פעולות">
                     <div class="actions">
                       <button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button>
                       <button class="button secondary table-button" data-action="edit-payment" data-id="${html(payment.id)}" type="button">עריכה</button>
@@ -2524,7 +2746,7 @@ function reportsPage() {
     <section class="panel page-gap">
       <div class="panel-head"><h2>קבלות חסרות</h2><span>${missingReceipts.length} רשומות</span></div>
       <div class="table-wrap">
-        <table class="report-table">
+        <table class="report-table stack-mobile">
           <thead>
             <tr>
               <th>תאריך</th>
@@ -2540,12 +2762,12 @@ function reportsPage() {
               .map(
                 (payment) => `
                 <tr>
-                  <td>${html(formatDate(payment.paid_at))}</td>
-                  <td><strong>${html(patientName(payment.patient_id))}</strong></td>
-                  <td>${html(formatAmount(payment.amount))}</td>
-                  <td>${html(paymentMethodLabel(payment.payment_method))}</td>
-                  <td>${html(receiptStatusLabel(payment.receipt_status))}</td>
-                  <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button></td>
+                  <td data-label="תאריך">${html(formatDate(payment.paid_at))}</td>
+                  <td data-label="מטופל"><strong>${html(patientName(payment.patient_id))}</strong></td>
+                  <td data-label="סכום">${html(formatAmount(payment.amount))}</td>
+                  <td data-label="אמצעי">${html(paymentMethodLabel(payment.payment_method))}</td>
+                  <td data-label="סטטוס קבלה">${statusPill(receiptStatusLabel(payment.receipt_status), RECEIPT_STATUS_TONES[payment.receipt_status] || "")}</td>
+                  <td data-label="פעולות"><button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button></td>
                 </tr>`
               )
               .join("") || `<tr><td colspan="6"><div class="empty">אין קבלות חסרות.</div></td></tr>`}
@@ -2728,7 +2950,7 @@ function taskForm(patientId = "") {
 function tasksTable(rows) {
   return `
     <div class="table-wrap">
-      <table>
+      <table class="stack-mobile">
         <thead>
           <tr>
             <th>יעד / תזכורת</th>
@@ -2744,12 +2966,12 @@ function tasksTable(rows) {
             .map(
               (task) => `
               <tr>
-                <td>${html(formatDate(task.due_date))}<small class="table-note">${task.reminder_at ? `תזכורת: ${html(formatDate(task.reminder_at))}` : ""}</small></td>
-                <td><strong>${html(patientName(task.patient_id))}</strong></td>
-                <td>${html(task.title || "-")}</td>
-                <td><span class="status-pill">${html(taskStatusLabel(task.status))}</span></td>
-                <td>${html(task.description || "-")}</td>
-                <td>
+                <td data-label="יעד">${html(formatDate(task.due_date))}<small class="table-note">${task.reminder_at ? `תזכורת: ${html(formatDate(task.reminder_at))}` : ""}</small></td>
+                <td data-label="מטופל"><strong>${html(patientName(task.patient_id))}</strong></td>
+                <td data-label="משימה">${html(task.title || "-")}</td>
+                <td data-label="סטטוס">${statusPill(taskStatusLabel(task.status), task.status === "done" ? "success" : "warning")}</td>
+                <td data-label="פירוט">${html(task.description || "-")}</td>
+                <td data-label="פעולות">
                   <div class="actions">
                     <button class="button secondary table-button" data-action="open-profile" data-id="${html(task.patient_id)}" type="button">כרטיס</button>
                     <button class="button secondary table-button" data-action="edit-task" data-id="${html(task.id)}" type="button">עריכה</button>
@@ -2763,7 +2985,7 @@ function tasksTable(rows) {
                 </td>
               </tr>`
             )
-            .join("") || `<tr><td colspan="6"><div class="empty">אין משימות להצגה.</div></td></tr>`}
+            .join("") || `<tr><td colspan="6"><div class="empty"><strong>אין משימות להצגה.</strong>משימה חדשה נפתחת בכפתור «משימה חדשה».</div></td></tr>`}
         </tbody>
       </table>
     </div>`;
@@ -2773,8 +2995,17 @@ function tasksPanel(items = state.tasks, patientId = "") {
   const rows = items.slice(0, 6);
   return `
     <article class="panel">
-      <div class="panel-head"><h2>משימות</h2><span>${rows.length} לתצוגה</span></div>
-      ${patientId ? taskForm(patientId) : ""}
+      ${
+        patientId
+          ? disclosureSection("task", {
+              title: "משימות",
+              description: "פתיחת טופס להוספת משימה חדשה למטופל.",
+              openLabel: "משימה חדשה +",
+              editing: Boolean(state.currentTaskId),
+              form: taskForm(patientId)
+            })
+          : `<div class="panel-head"><h2>משימות</h2><span>${rows.length} לתצוגה</span></div>`
+      }
       ${tasksTable(rows)}
     </article>`;
 }
@@ -2788,7 +3019,13 @@ function activeReminders() {
 
 function remindersPanel() {
   const reminders = activeReminders();
-  if (!reminders.length) return "";
+  if (!reminders.length) {
+    return `
+    <article class="panel reminder-panel">
+      <div class="panel-head"><h2>תזכורות פעילות</h2><span>0 דורשות תשומת לב</span></div>
+      <div class="empty"><strong>אין תזכורות שדורשות טיפול היום.</strong>משימות עם תאריך יעד יופיעו כאן ביום היעד.<a class="button secondary" href="#/tasks">מעבר למשימות</a></div>
+    </article>`;
+  }
   return `
     <article class="panel reminder-panel">
       <div class="panel-head"><h2>תזכורות פעילות</h2><span>${reminders.length} דורשות תשומת לב</span></div>
@@ -2884,8 +3121,13 @@ function tasksPage() {
       <article class="metric teal-card"><strong>${rows.length}</strong><span>סה"כ משימות</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>משימה חדשה</h2></div>
-      ${taskForm()}
+      ${disclosureSection("task", {
+        title: "משימה חדשה",
+        description: "הוספת משימה עם תאריך יעד ותזכורת.",
+        openLabel: "משימה חדשה +",
+        editing: Boolean(state.currentTaskId),
+        form: taskForm()
+      })}
     </section>
     ${taskFiltersPanel(rows.length, shownRows.length)}
     <section class="panel page-gap">
@@ -2939,15 +3181,17 @@ function fileForm(patientId = "") {
           <option value="other" ${editedFile?.file_type === "other" ? "selected" : ""}>אחר</option>
         </select>
       </div>
-      <div class="field wide">
-        <label for="file_upload">${editedFile ? "החלפת קובץ" : "קובץ להעלאה"}</label>
-        <input id="file_upload" name="upload" type="file" ${editedFile ? "" : "required"} />
-        ${
+      ${uploadField({
+        id: "file_upload",
+        name: "upload",
+        label: editedFile ? "החלפת קובץ" : "קובץ להעלאה",
+        required: !editedFile,
+        hint: editedFile ? "בחירת קובץ חדש תחליף את הקובץ הקיים." : "יש לבחור קובץ אחד להעלאה לתיקיית המטופל.",
+        extra:
           editedFile?.url
             ? `<small><a href="${html(editedFile.url)}" target="_blank" rel="noopener">קובץ קיים: ${html(editedFile.name || "פתיחה")}</a></small>`
             : ""
-        }
-      </div>
+      })}
       <div class="toolbar wide">
         <button class="button" type="submit">${editedFile ? "עדכון קובץ" : "העלאת קובץ"}</button>
         ${editedFile ? `<button class="button secondary" data-action="cancel-file-edit" type="button">ביטול עריכה</button>` : ""}
@@ -2982,7 +3226,7 @@ function templateForm(patientId) {
 function filesTable(rows) {
   return `
     <div class="table-wrap">
-      <table>
+      <table class="stack-mobile">
         <thead>
           <tr>
             <th>שם</th>
@@ -2997,11 +3241,11 @@ function filesTable(rows) {
             .map(
               (file) => `
               <tr>
-                <td><strong>${html(file.name || "-")}</strong></td>
-                <td>${html(patientName(file.patient_id))}</td>
-                <td>${html(fileTypeLabel(file.file_type))}</td>
-                <td>${html(formatDate((file.created_at || "").slice(0, 10)))}</td>
-                <td>
+                <td data-label="שם"><strong>${html(file.name || "-")}</strong></td>
+                <td data-label="מטופל">${html(patientName(file.patient_id))}</td>
+                <td data-label="סוג">${html(fileTypeLabel(file.file_type))}</td>
+                <td data-label="נוצר">${html(formatDate((file.created_at || "").slice(0, 10)))}</td>
+                <td data-label="פעולות">
                   <div class="actions">
                     <button class="button secondary table-button" data-action="open-profile" data-id="${html(file.patient_id)}" type="button">כרטיס</button>
                     <button class="button secondary table-button" data-action="edit-file" data-id="${html(file.id)}" type="button">עריכה</button>
@@ -3020,7 +3264,7 @@ function filesTable(rows) {
                 </td>
               </tr>`
             )
-            .join("") || `<tr><td colspan="5"><div class="empty">אין קבצים להצגה.</div></td></tr>`}
+            .join("") || `<tr><td colspan="5"><div class="empty"><strong>אין קבצים להצגה.</strong>קובץ חדש נוסף בכפתור «קובץ חדש», והוא נשמר בתיקיית המטופל.</div></td></tr>`}
         </tbody>
       </table>
     </div>`;
@@ -3044,9 +3288,17 @@ function filesPanel(items = state.files, patient = null) {
   const rows = items.slice(0, 6);
   return `
     <article class="panel">
-      <div class="panel-head"><h2>קבצים</h2></div>
-      ${patient ? fileForm(patient.id) : ""}
-      ${patient ? templateForm(patient.id) : ""}
+      ${
+        patient
+          ? disclosureSection("file", {
+              title: "קבצים",
+              description: "פתיחת טופס להעלאת קובץ חדש לתיקיית המטופל.",
+              openLabel: "קובץ חדש +",
+              editing: Boolean(state.currentFileId),
+              form: `${fileForm(patient.id)}${templateForm(patient.id)}`
+            })
+          : `<div class="panel-head"><h2>קבצים</h2></div>`
+      }
       ${
         patient?.drive_folder_id
           ? `<div class="folder-link">
@@ -3128,8 +3380,13 @@ function filesPage() {
       <article class="metric purple-card"><strong>${state.patients.length}</strong><span>מטופלים במערכת</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>${state.currentFileId ? "עריכת קובץ" : "קובץ חדש"}</h2></div>
-      ${fileForm()}
+      ${disclosureSection("file", {
+        title: state.currentFileId ? "עריכת קובץ" : "קובץ חדש",
+        description: "העלאת קובץ ושיוכו למטופל ולסוג המתאים.",
+        openLabel: "קובץ חדש +",
+        editing: Boolean(state.currentFileId),
+        form: fileForm()
+      })}
     </section>
     ${fileFiltersPanel(rows.length, shownRows.length)}
     <section class="panel page-gap">
@@ -3213,15 +3470,20 @@ function businessRecordForm() {
         <label for="business_amount">סכום בשקלים</label>
         <input id="business_amount" name="amount" inputmode="decimal" required placeholder="לדוגמה: 250 או 250.50" value="${html(edited?.amount || "")}" />
       </div>
-      <div class="field wide">
-        ${
-          edited
-            ? `<label for="business_document_link">קובץ המסמך</label>
-               <small id="business_document_link"><a href="${html(edited.file_url || driveFileUrl(edited.drive_file_id))}" target="_blank" rel="noopener">${html(edited.file_name || "פתיחת המסמך")}</a> — בעריכה משנים תאריך, סוג וסכום בלבד; הקובץ עובר אוטומטית לתיקיית התקופה המתאימה.</small>`
-            : `<label for="business_document">קובץ המסמך</label>
-               <input id="business_document" name="business_document" type="file" required />`
-        }
-      </div>
+      ${
+        edited
+          ? `<div class="field wide">
+               <label for="business_document_link">קובץ המסמך</label>
+               <small id="business_document_link"><a href="${html(edited.file_url || driveFileUrl(edited.drive_file_id))}" target="_blank" rel="noopener">${html(edited.file_name || "פתיחת המסמך")}</a> — בעריכה משנים תאריך, סוג וסכום בלבד; הקובץ עובר אוטומטית לתיקיית התקופה המתאימה.</small>
+             </div>`
+          : uploadField({
+              id: "business_document",
+              name: "business_document",
+              label: "קובץ המסמך",
+              required: true,
+              hint: "יש לבחור קובץ אחד. הקובץ יישמר בתיקיית התקופה המתאימה."
+            })
+      }
       <div class="toolbar wide">
         <button class="button" type="submit">${edited ? "עדכון רשומה" : "העלאה ושמירה"}</button>
         ${edited ? `<button class="button secondary" data-action="cancel-business-edit" type="button">ביטול עריכה</button>` : ""}
@@ -3232,7 +3494,7 @@ function businessRecordForm() {
 function businessRecordsTable(records) {
   return `
     <div class="table-wrap">
-      <table>
+      <table class="stack-mobile">
         <thead><tr><th>תאריך</th><th>סוג</th><th>סכום</th><th>קובץ</th><th>פעולות</th></tr></thead>
         <tbody>
           ${
@@ -3241,11 +3503,11 @@ function businessRecordsTable(records) {
                   .map(
                     (record) => `
                     <tr>
-                      <td>${html(formatDate(record.document_date))}</td>
-                      <td>${html(businessTypeLabel(record.record_type))}</td>
-                      <td>${html(formatBusinessAmount(record.amount))}</td>
-                      <td>${html(record.file_name || "-")}</td>
-                      <td>
+                      <td data-label="תאריך">${html(formatDate(record.document_date))}</td>
+                      <td data-label="סוג">${statusPill(businessTypeLabel(record.record_type), record.record_type === "income" ? "success" : "info")}</td>
+                      <td data-label="סכום">${html(formatBusinessAmount(record.amount))}</td>
+                      <td data-label="קובץ">${html(record.file_name || "-")}</td>
+                      <td data-label="פעולות">
                         <div class="actions">
                           ${
                             record.drive_file_id
@@ -3309,8 +3571,13 @@ function businessPage() {
       <article class="metric blue-card"><strong>${html(formatAgorotAmount(totals.balanceAgorot))}</strong><span>מאזן בתקופה</span></article>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>${state.currentBusinessRecordId ? "עריכת רשומה" : "מסמך חדש"}</h2></div>
-      ${businessRecordForm()}
+      ${disclosureSection("business", {
+        title: state.currentBusinessRecordId ? "עריכת רשומה" : "מסמך חדש",
+        description: "העלאת מסמך הכנסה או הוצאה ושיוכו לתקופה.",
+        openLabel: "רשומה עסקית חדשה +",
+        editing: Boolean(state.currentBusinessRecordId),
+        form: businessRecordForm()
+      })}
     </section>
     <section class="panel page-gap">
       <div class="panel-head"><h2>רשומות ${html(period.label)} ${html(view.year)}</h2><span>${periodRecords.length} רשומות</span></div>
@@ -7021,6 +7288,14 @@ function bindEvents() {
     if (!busyKey) return;
 
     try {
+    if (action === "toggle-form") {
+      const formKey = target.dataset.formKey;
+      if (formKey && formKey in state.openForms) {
+        state.openForms[formKey] = !state.openForms[formKey];
+        state.error = "";
+        render();
+      }
+    }
     if (action === "cancel-upload") {
       uploadCancelled = true;
       activeUploadRequest?.abort();
@@ -7774,6 +8049,15 @@ function bindEvents() {
   });
 
   document.addEventListener("change", (event) => {
+    const uploadInput = event.target.closest('.upload-control input[type="file"]');
+    if (uploadInput) {
+      const display = uploadInput
+        .closest(".upload-control")
+        ?.querySelector(`[data-upload-name="${uploadInput.id}"]`);
+      if (display) {
+        display.textContent = uploadInput.files?.[0]?.name || "לא נבחר קובץ";
+      }
+    }
     const chargeCheckbox = event.target.closest('[data-charge-select] input[name="charge_ids"]');
     if (chargeCheckbox) {
       const paymentForm = chargeCheckbox.closest('form[data-form="payment"]');
@@ -7996,6 +8280,7 @@ function bindEvents() {
         state.message = "המסמך נוצר מתבנית, נשמר בתיקיית המטופל ונרשם בקבצים.";
       }
 
+      closeDisclosureForForm(form.dataset.form);
       setSaveState(state.syncQueue.length ? "pending" : "saved");
       render();
     } catch (error) {
