@@ -133,10 +133,16 @@ const SEED = {
   session_charges: [chargeRow("c1", "s1", "p1", "2026-08-03", "300.00")]
 };
 
+// המתנה לסיום הטעינה הראשונית של הנתונים, כדי שה-render שאחריה לא יאפס קלט שכבר הוקלד בטופס.
+async function openApp(page, route) {
+  await page.goto(route);
+  await page.waitForLoadState("networkidle");
+}
+
 test("the payment form opens only on request and stays open when validation fails", async ({ page }) => {
   const { captured } = await setupUiMocks(page, { seed: SEED });
 
-  await page.goto("/#/patients/p1");
+  await openApp(page, "/#/patients/p1");
   await page.locator(".profile-tab", { hasText: "תשלומים" }).click();
 
   const toggle = page.getByRole("button", { name: "תשלום חדש +" });
@@ -165,7 +171,7 @@ test("the payment form opens only on request and stays open when validation fail
 test("a successful save closes the disclosure form again", async ({ page }) => {
   const { captured } = await setupUiMocks(page, { seed: SEED });
 
-  await page.goto("/#/patients/p1");
+  await openApp(page, "/#/patients/p1");
   await page.locator(".profile-tab", { hasText: "משימות" }).click();
   await expect(page.locator('form[data-form="task"]')).toHaveCount(0);
 
@@ -182,7 +188,7 @@ test("a successful save closes the disclosure form again", async ({ page }) => {
 test("the Hebrew upload control reports the selected file name", async ({ page }) => {
   await setupUiMocks(page, { seed: SEED });
 
-  await page.goto("/#/business");
+  await openApp(page, "/#/business");
   await page.getByRole("button", { name: "רשומה עסקית חדשה +" }).click();
 
   const fileName = page.locator('[data-upload-name="business_document"]');
@@ -200,7 +206,7 @@ test("the Hebrew upload control reports the selected file name", async ({ page }
 test("dismissing the status message never clears input the user already typed", async ({ page }) => {
   await setupUiMocks(page, { seed: SEED });
 
-  await page.goto("/#/patients/p1");
+  await openApp(page, "/#/patients/p1");
   await page.locator(".profile-tab", { hasText: "משימות" }).click();
   await page.getByRole("button", { name: "משימה חדשה +" }).click();
   await page.locator("#task_title").fill("משימה ראשונה");
@@ -221,7 +227,7 @@ test("dismissing the status message never clears input the user already typed", 
 test("the patient card shows a persistent summary and keeps every tab reachable", async ({ page }) => {
   await setupUiMocks(page, { seed: SEED });
 
-  await page.goto("/#/patients/p1");
+  await openApp(page, "/#/patients/p1");
   const summary = page.locator(".patient-summary");
   await expect(summary.getByRole("heading", { name: "נועם" })).toBeVisible();
   await expect(summary).toContainText("יתרת חוב");

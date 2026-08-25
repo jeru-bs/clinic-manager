@@ -185,10 +185,16 @@ async function setDateInput(page, selector, value) {
   );
 }
 
+// המתנה לסיום הטעינה הראשונית של הנתונים, כדי שה-render שאחריה לא יאפס קלט שכבר הוקלד בטופס.
+async function openApp(page, route) {
+  await page.goto(route);
+  await page.waitForLoadState("networkidle");
+}
+
 test("uploading business documents creates the period folder tree once and stores exact records", async ({ page }) => {
   const captured = await setupBusinessMocks(page);
 
-  await page.goto("/");
+  await openApp(page, "/");
   await page.getByRole("link", { name: "ניהול עסק" }).click();
   await expect(page.getByRole("heading", { name: "ניהול עסק" })).toBeVisible();
   await expect(page.getByText("אין רשומות בתקופה שנבחרה", { exact: false })).toBeVisible();
@@ -257,7 +263,7 @@ test("uploading business documents creates the period folder tree once and store
 test("a failed record save moves the uploaded file to the trash and reports the failure", async ({ page }) => {
   const captured = await setupBusinessMocks(page, { failBusinessAppend: true });
 
-  await page.goto("/#/business");
+  await openApp(page, "/#/business");
   await expect(page.getByRole("heading", { name: "ניהול עסק" })).toBeVisible();
   await page.getByRole("button", { name: "רשומה עסקית חדשה +" }).click();
   await expect(page.locator("#business_document_date")).toBeAttached();
@@ -279,7 +285,7 @@ test("a failed record save moves the uploaded file to the trash and reports the 
 test("moving a record's date to another period moves the Drive file and updates the row", async ({ page }) => {
   const captured = await setupBusinessMocks(page, { businessRows: [seededRecordRow()] });
 
-  await page.goto("/#/business");
+  await openApp(page, "/#/business");
   await expect(page.getByRole("cell", { name: "receipt.pdf" })).toBeVisible();
   await page.getByRole("button", { name: "עריכה" }).click();
   await expect(page.getByRole("button", { name: "עדכון רשומה" })).toBeVisible();
@@ -313,7 +319,7 @@ test("deleting a record requires confirmation, trashes the file and clears the r
     dialog.accept();
   });
 
-  await page.goto("/#/business");
+  await openApp(page, "/#/business");
   await expect(page.getByRole("cell", { name: "receipt.pdf" })).toBeVisible();
   await page.getByRole("button", { name: "מחיקה" }).click();
 
