@@ -258,9 +258,9 @@ p:last-child {
 }
 
 /* Selected item: a full-width light row integrated into the rail (never a
-   floating rounded card) with a thin primary line on the content-facing edge. */
+   floating rounded card) with a heavy primary line on the content-facing edge. */
 .side-link.active {
-  background: var(--canvas);
+  background: var(--surface);
   color: var(--text);
   font-weight: 700;
 }
@@ -269,7 +269,7 @@ p:last-child {
   position: absolute;
   inset-block: 0;
   inset-inline-end: 0;
-  width: 3px;
+  width: 5px;
   border-radius: 0;
   background: var(--primary);
   content: "";
@@ -2225,7 +2225,7 @@ legend {
     inset-inline-start: 0;
     inset-inline-end: 0;
     width: auto;
-    height: 3px;
+    height: 4px;
   }
 
   .main {
@@ -2495,15 +2495,6 @@ legend {
 .spine-metrics span {
   color: var(--muted);
   font-size: 0.84rem;
-}
-
-.spine-count.tone-alert strong,
-.spine-metrics li.tone-alert strong {
-  color: var(--danger);
-}
-
-.spine-metrics li.tone-warn strong {
-  color: var(--warning-text);
 }
 
 .spine-date {
@@ -2914,5 +2905,337 @@ tbody tr.row-link {
   .row-menu-list {
     inset-inline-start: auto;
     inset-inline-end: 0;
+  }
+}
+
+/* ========================================================================== */
+/* Reference colour fidelity: the approved palette carries the interface       */
+/* hierarchy. Colour appears as filled areas, tinted selections and functional */
+/* markers with real visual weight - never as a lone hairline or tiny dot.     */
+/* ========================================================================== */
+
+/* ---------------------------------------- context spine: functional counts */
+
+.spine-count {
+  position: relative;
+  align-items: center;
+}
+
+.spine-count::after {
+  position: absolute;
+  inset-block: 4px;
+  inset-inline-end: -18px;
+  width: 5px;
+  background: var(--border-strong);
+  content: "";
+}
+
+.spine-count.tone-info::after {
+  background: var(--primary);
+}
+
+.spine-count.tone-success::after {
+  background: var(--success);
+}
+
+.spine-count.tone-warning::after {
+  background: var(--yellow);
+}
+
+.spine-count.tone-danger::after {
+  background: var(--pink);
+}
+
+.spine-count.tone-purple::after {
+  background: var(--purple);
+}
+
+.spine-count-glyph {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+}
+
+.spine-count-glyph svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.spine-count.tone-info .spine-count-glyph {
+  color: var(--primary);
+}
+
+.spine-count.tone-success .spine-count-glyph {
+  color: var(--success);
+}
+
+.spine-count.tone-warning .spine-count-glyph {
+  color: var(--yellow);
+}
+
+.spine-count.tone-danger .spine-count-glyph {
+  color: var(--pink);
+}
+
+.spine-count.tone-purple .spine-count-glyph {
+  color: var(--purple);
+}
+
+/* Payments totals: the label carries the semantic colour and a marker dot,
+   the figure stays dark so the money remains the most legible element. */
+.spine-metrics li[class*="tone-"] span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  font-weight: 700;
+}
+
+.spine-metrics li[class*="tone-"] span::before {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.spine-metrics li.tone-success span {
+  color: var(--success-text);
+}
+
+.spine-metrics li.tone-warning span {
+  color: var(--warning-text);
+}
+
+.spine-metrics li.tone-danger span {
+  color: var(--danger-text);
+}
+
+.spine-metrics li.tone-info span {
+  color: var(--info-text);
+}
+
+/* Next-session emphasis: a tinted block with a heavy primary edge. */
+.spine-next {
+  border-inline-start: 0;
+  border-inline-end: 5px solid var(--primary);
+}
+
+/* --------------------------------- context spine: selected local navigation */
+
+.spine-nav-item.active,
+.spine .profile-tab.active {
+  margin-inline: -18px;
+  padding-inline: 18px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.spine-nav-item.active::before,
+.spine .profile-tab.active::before {
+  inset-block: 0;
+  inset-inline-start: auto;
+  inset-inline-end: 0;
+  width: 5px;
+}
+
+/* Patient record: every section keeps its own functional colour and icon. */
+.spine .profile-tab-glyph {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-inline-end: 10px;
+}
+
+.spine .profile-tab-glyph svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.spine .profile-tab.tone-info .profile-tab-glyph {
+  color: var(--primary);
+}
+
+.spine .profile-tab.tone-success .profile-tab-glyph {
+  color: var(--success);
+}
+
+.spine .profile-tab.tone-warning .profile-tab-glyph {
+  color: var(--yellow);
+}
+
+.spine .profile-tab.tone-danger .profile-tab-glyph {
+  color: var(--pink);
+}
+
+.spine .profile-tab.tone-purple .profile-tab-glyph {
+  color: var(--purple);
+}
+
+/* Payment views read as selectable boxes with a primary count badge. */
+.spine-nav.boxed {
+  gap: var(--gap-xs);
+}
+
+.spine-nav.boxed .spine-nav-item {
+  min-height: 44px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  padding: 8px 12px;
+}
+
+.spine-nav.boxed .spine-nav-item small {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--muted);
+  padding: 0 6px;
+  font-weight: 700;
+}
+
+.spine-nav.boxed .spine-nav-item.active {
+  margin-inline: 0;
+  padding-inline: 12px;
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.spine-nav.boxed .spine-nav-item.active::before {
+  content: none;
+}
+
+.spine-nav.boxed .spine-nav-item.active small {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+/* ------------------------------------------- ledger rows and money emphasis */
+
+tbody tr.row-link:hover > td,
+tbody tr.row-link:focus-within > td {
+  background: var(--primary-soft);
+}
+
+tbody tr.row-link:hover > td:first-child,
+tbody tr.row-link:focus-within > td:first-child {
+  box-shadow: inset -5px 0 0 0 var(--primary);
+}
+
+.amount-due.is-due {
+  color: var(--danger-text);
+  font-weight: 700;
+}
+
+/* Legacy tone cards: the accent edge and the figure both carry the role
+   colour, so the metric is readable as a semantic state, not a grey box. */
+.blue-card,
+.teal-card,
+.pink-card,
+.purple-card {
+  border-inline-start-width: 5px;
+}
+
+.blue-card {
+  border-inline-start-color: var(--info);
+}
+
+.teal-card {
+  border-inline-start-color: var(--success);
+}
+
+.pink-card {
+  border-inline-start-color: var(--pink);
+}
+
+.blue-card strong {
+  color: var(--info-text);
+}
+
+.teal-card strong {
+  color: var(--success-text);
+}
+
+.pink-card strong {
+  color: var(--danger-text);
+}
+
+.purple-card strong {
+  color: var(--purple);
+}
+
+/* Dashboard focus rows: heavier functional edges. */
+.attention-row.is-next {
+  border-inline-start-width: 5px;
+}
+
+.attention-row.is-warning {
+  border-inline-start: 5px solid var(--yellow);
+}
+
+.attention-row.is-alert {
+  border-inline-start: 5px solid var(--pink);
+}
+
+/* Secondary inline actions follow the primary action colour. */
+.small-action:not(.danger) {
+  border-color: var(--primary);
+  color: var(--primary-strong);
+}
+
+.small-action:not(.danger):hover {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+@media (max-width: 980px) {
+  /* Stacked spine: the count chips carry the role colour as a tinted surface. */
+  .spine-count::after {
+    display: none;
+  }
+
+  .spine-count.tone-info {
+    border-color: var(--info-line);
+    background: var(--info-soft);
+  }
+
+  .spine-count.tone-success {
+    border-color: var(--success-line);
+    background: var(--success-soft);
+  }
+
+  .spine-count.tone-warning {
+    border-color: var(--warning-line);
+    background: var(--warning-soft);
+  }
+
+  .spine-count.tone-danger {
+    border-color: var(--danger-line);
+    background: var(--danger-soft);
+  }
+
+  .spine-count.tone-purple {
+    border-color: var(--purple);
+    background: var(--primary-soft);
+  }
+
+  .spine-nav-item.active,
+  .spine .profile-tab.active,
+  .spine-nav.boxed .spine-nav-item.active {
+    margin-inline: 0;
+    padding-inline: 12px;
+    border-color: var(--primary);
   }
 }

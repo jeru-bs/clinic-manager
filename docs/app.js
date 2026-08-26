@@ -1072,6 +1072,10 @@ function icon(name) {
     business: `<svg ${common}><rect height="13" rx="2" width="18" x="3" y="7"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M3 12h18"/></svg>`,
     reports: `<svg ${common}><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16V9"/><path d="M13 16V7"/><path d="M18 16v-5"/></svg>`,
     files: `<svg ${common}><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg>`,
+    document: `<svg ${common}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 14h5"/></svg>`,
+    target: `<svg ${common}><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M18 6l3-3"/></svg>`,
+    contacts: `<svg ${common}><circle cx="9" cy="9" r="3"/><path d="M3 19v-1a5 5 0 0 1 10 0v1"/><path d="M16 6.5a3 3 0 0 1 0 5"/><path d="M18 19v-1a4 4 0 0 0-2-3.4"/></svg>`,
+    clipboard: `<svg ${common}><rect height="16" rx="2" width="13" x="5" y="4"/><path d="M9 4V3h5v1"/><path d="M8.5 11h6"/><path d="M8.5 15h4"/></svg>`,
     more: `<svg ${common}><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>`,
     chevron: `<svg ${common}><path d="M14 6l-6 6 6 6"/></svg>`,
     folder: `<svg ${common}><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg>`,
@@ -1125,13 +1129,16 @@ function spineBlock(title, body) {
   return `<div class="spine-block">${title ? `<h2 class="spine-title">${html(title)}</h2>` : ""}${body}</div>`;
 }
 
+/* Each count carries its functional colour role and marker icon, exactly as the
+   reference shows: the colour is part of the hierarchy, not a decorative dot. */
 function spineCounts(items) {
   return `<ul class="spine-counts">${items
     .map(
-      ([value, label, tone]) => `
+      ([value, label, tone, glyph]) => `
         <li class="spine-count${tone ? ` tone-${tone}` : ""}">
           <strong>${html(String(value))}</strong>
           <span>${html(label)}</span>
+          ${glyph ? `<span class="spine-count-glyph">${icon(glyph)}</span>` : ""}
         </li>`
     )
     .join("")}</ul>`;
@@ -1367,10 +1374,10 @@ function dashboardSpine({ todayRows, todaySessions, reminderCount, openPayments,
     ${spineBlock(
       "מבט מהיר",
       spineCounts([
-        [todaySessions, "מפגשים היום"],
-        [reminderCount, "תזכורות פעילות"],
-        [openPayments, "תשלומים פתוחים", openPayments ? "alert" : ""],
-        [activePatients, "מטופלים פעילים"]
+        [todaySessions, "מפגשים היום", "info", "calendar"],
+        [reminderCount, "תזכורות פעילות", "success", "bell"],
+        [openPayments, "תשלומים פתוחים", "warning", "payments"],
+        [activePatients, "מטופלים פעילים", "danger", "patients"]
       ])
     )}
   `);
@@ -1445,9 +1452,9 @@ function patientsPage() {
     ${spineBlock(
       "מטופלים",
       spineCounts([
-        [filteredPatients.length, "מוצגים"],
-        [activeCount, "פעילים"],
-        [archivedCount, "בארכיון"]
+        [filteredPatients.length, "מוצגים", "info", "patients"],
+        [activeCount, "פעילים", "success", "tasks"],
+        [archivedCount, "בארכיון", "purple", "folder"]
       ])
     )}
     ${spineBlock(
@@ -1591,7 +1598,7 @@ function patientSummary(patient, { sessions, tasks }) {
           <div class="summary-fact"><span>מפגש קרוב</span><strong>${html(upcoming ? `${formatDate(upcoming.session_date)} ${upcoming.start_time || ""}`.trim() : "אין מפגש מתוכנן")}</strong></div>
           <div class="summary-fact"><span>מפגש אחרון</span><strong>${html(lastSession ? formatDate(lastSession.session_date) : "אין תיעוד קודם")}</strong></div>
           <div class="summary-fact${outstandingAgorot > 0 ? " is-alert" : ""}"><span>יתרת חוב</span><strong>${html(formatAgorotAmount(outstandingAgorot))}</strong></div>
-          <div class="summary-fact"><span>משימות פתוחות</span><strong>${openTasks}</strong></div>
+          <div class="summary-fact${openTasks > 0 ? " is-alert" : ""}"><span>משימות פתוחות</span><strong>${openTasks}</strong></div>
         </div>
       </div>
       <div class="summary-actions">
@@ -1612,24 +1619,26 @@ function profileTabKey() {
 }
 
 function profileTabs(activeTab) {
+  // Every section keeps its own functional colour and icon, as the reference shows.
   const tabs = [
-    ["overview", "פרטים"],
-    ["documentation", "תיעוד מפגש"],
-    ["goals", "מטרות"],
-    ["payments", "תשלומים"],
-    ["files", "קבצים"],
-    ["contacts", "הורים ואנשי מקצוע"],
-    ["questionnaires", "שאלונים"],
-    ["clinical-reports", "דוחות טיפוליים"],
-    ["tasks", "משימות"]
+    ["overview", "פרטים", "patients", "info"],
+    ["documentation", "תיעוד מפגש", "document", "info"],
+    ["goals", "מטרות", "target", "success"],
+    ["payments", "תשלומים", "payments", "warning"],
+    ["files", "קבצים", "folder", "purple"],
+    ["contacts", "הורים ואנשי מקצוע", "contacts", "success"],
+    ["questionnaires", "שאלונים", "clipboard", "danger"],
+    ["clinical-reports", "דוחות טיפוליים", "reports", "purple"],
+    ["tasks", "משימות", "tasks", "warning"]
   ];
   return `
     <nav class="profile-tabs" aria-label="ניווט בכרטיס מטופל">
       ${tabs
         .map(
-          ([key, label]) => `
-        <button class="profile-tab ${activeTab === key ? "active" : ""}" data-action="profile-tab" data-tab="${key}" type="button" ${activeTab === key ? 'aria-current="page"' : ""}>
-          ${label}
+          ([key, label, glyph, tone]) => `
+        <button class="profile-tab tone-${tone} ${activeTab === key ? "active" : ""}" data-action="profile-tab" data-tab="${key}" type="button" ${activeTab === key ? 'aria-current="page"' : ""}>
+          <span class="profile-tab-glyph">${icon(glyph)}</span>
+          <span class="profile-tab-label">${label}</span>
         </button>`
         )
         .join("")}
@@ -2460,7 +2469,7 @@ function patientChargesSection(patientId) {
                           : html(formatAgorotAmount(balance.amountAgorot))
                       }</td>
                       <td data-label="שולם">${html(formatAgorotAmount(balance.paidAgorot))}</td>
-                      <td data-label="יתרה">${html(formatAgorotAmount(balance.remainingAgorot))}</td>
+                      <td data-label="יתרה"><span class="amount-due${balance.remainingAgorot > 0 ? " is-due" : ""}">${html(formatAgorotAmount(balance.remainingAgorot))}</span></td>
                       <td data-label="סטטוס">${statusPill(chargeStatusLabel(balance.status), CHARGE_STATUS_TONES[balance.status] || "")}</td>
                       <td data-label="פעולות">
                         <div class="row-actions">
@@ -2672,14 +2681,14 @@ function paymentsPage() {
     ${spineBlock(
       "סיכום כספי",
       `<ul class="spine-metrics">
-        <li data-payments-total="paid"><strong>${html(formatAmount(paidTotal))}</strong><span>שולם</span></li>
-        <li class="tone-alert" data-payments-total="open"><strong>${html(formatAgorotAmount(openAgorot))}</strong><span>פתוח</span></li>
-        <li class="tone-warn" data-payments-total="receipts"><strong>${receiptsToPrepare.length}</strong><span>קבלות להכנה</span></li>
+        <li class="tone-success" data-payments-total="paid"><strong>${html(formatAmount(paidTotal))}</strong><span>שולם</span></li>
+        <li class="tone-danger" data-payments-total="open"><strong>${html(formatAgorotAmount(openAgorot))}</strong><span>פתוח</span></li>
+        <li class="tone-warning" data-payments-total="receipts"><strong>${receiptsToPrepare.length}</strong><span>קבלות להכנה</span></li>
       </ul>`
     )}
     ${spineBlock(
       "תצוגה",
-      `<div class="spine-nav" role="group" aria-label="בחירת תצוגת תשלומים">
+      `<div class="spine-nav boxed" role="group" aria-label="בחירת תצוגת תשלומים">
         <button class="spine-nav-item ${pendingReceiptsView ? "" : "active"}" data-action="set-payments-view" data-view="all" type="button" aria-pressed="${pendingReceiptsView ? "false" : "true"}"><span>כל התשלומים</span><small>${rows.length}</small></button>
         <button class="spine-nav-item ${pendingReceiptsView ? "active" : ""}" data-action="set-payments-view" data-view="receipts-pending" type="button" aria-pressed="${pendingReceiptsView ? "true" : "false"}"><span>תשלומים ממתינים לקבלה</span><small>${receiptsToPrepare.length}</small></button>
       </div>`
@@ -2719,7 +2728,7 @@ function paymentsPage() {
                   <td data-label="תאריך">${html(formatDate(balance.sessionDate))}</td>
                   <td data-label="חיוב">${html(formatAgorotAmount(balance.amountAgorot))}</td>
                   <td data-label="שולם">${html(formatAgorotAmount(balance.paidAgorot))}</td>
-                  <td data-label="יתרה">${html(formatAgorotAmount(balance.remainingAgorot))}</td>
+                  <td data-label="יתרה"><span class="amount-due${balance.remainingAgorot > 0 ? " is-due" : ""}">${html(formatAgorotAmount(balance.remainingAgorot))}</span></td>
                   <td data-label="סטטוס">${statusPill(chargeStatusLabel(balance.status), CHARGE_STATUS_TONES[balance.status] || "")}</td>
                   <td data-label="פעולות"><button class="button secondary table-button" data-action="open-profile" data-id="${html(balance.patientId)}" type="button">כרטיס</button></td>
                 </tr>`
