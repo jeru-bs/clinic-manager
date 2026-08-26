@@ -184,13 +184,13 @@ test("saving a treatment report creates exactly one charge with the fixed-price 
 
   // The new charge is open in the patient card and in the global payments page.
   await page.locator(".profile-tab", { hasText: "תשלומים" }).click();
-  await expect(page.locator(".metric.pink-card strong")).toContainText("300.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("300.00");
   const chargeRows = page.locator(".profile-tab-body .table-wrap tbody tr");
   await expect(chargeRows).toHaveCount(1);
   await expect(chargeRows.first().locator(".status-pill")).toHaveText("פתוח");
 
   await page.goto("/#/payments");
-  await expect(page.locator(".metric.pink-card strong")).toContainText("300.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("300.00");
   const openChargesPanel = page.locator("section.panel", { hasText: "חיובים פתוחים" });
   await expect(openChargesPanel.locator("tbody tr", { hasText: "נועם" })).toHaveCount(1);
 });
@@ -231,7 +231,7 @@ test("a multi-session payment allocates oldest-first and rejects overpayment", a
   });
 
   await openProfileTab(page, "p1", "תשלומים");
-  await expect(page.locator(".metric.pink-card strong")).toContainText("900.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("900.00");
 
   await expect(page.locator('form[data-form="payment"]')).toHaveCount(0);
   await page.getByRole("button", { name: "תשלום חדש +" }).click();
@@ -244,7 +244,7 @@ test("a multi-session payment allocates oldest-first and rejects overpayment", a
   await paymentForm.getByRole("button", { name: "שמירת תשלום" }).click();
 
   await expect(page.locator(".status-pill", { hasText: "שולם חלקית" })).toBeVisible();
-  await expect(page.locator(".metric.pink-card strong")).toContainText("500.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("500.00");
   const chargeStatusRows = page.locator(".profile-tab-body .table-wrap tbody tr");
   await expect(chargeStatusRows.nth(0).locator(".status-pill")).toHaveText("שולם");
   await expect(chargeStatusRows.nth(1).locator(".status-pill")).toHaveText("שולם חלקית");
@@ -293,7 +293,7 @@ test("deleting a payment reopens its charges and charged sessions cannot be dele
   expect(captured.clears.filter((entry) => entry.sheet === "sessions")).toHaveLength(0);
 
   await page.locator(".profile-tab", { hasText: "תשלומים" }).click();
-  await expect(page.locator(".metric.pink-card strong")).toContainText("0.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("0.00");
   await expect(page.locator(".profile-tab-body .table-wrap tbody tr").first().locator(".status-pill")).toHaveText("שולם");
 
   await page.locator(".list-item", { hasText: "מזומן" }).getByRole("button", { name: "מחיקה" }).click();
@@ -304,7 +304,7 @@ test("deleting a payment reopens its charges and charged sessions cannot be dele
       { sheet: "payments", range: "payments!A2:L2" }
     ])
   );
-  await expect(page.locator(".metric.pink-card strong")).toContainText("300.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("300.00");
   await expect(page.locator(".profile-tab-body .table-wrap tbody tr").first().locator(".status-pill")).toHaveText("פתוח");
 });
 
@@ -319,7 +319,7 @@ test("editing an unpaid charge validates the amount and updates every balance", 
   page.on("dialog", (dialog) => dialog.accept());
 
   await openProfileTab(page, "p1", "תשלומים");
-  await expect(page.locator(".metric.pink-card strong")).toContainText("300.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("300.00");
   await page.locator('button[data-action="edit-charge"][data-id="c1"]').click();
 
   // Invalid amounts are rejected before any write.
@@ -338,7 +338,7 @@ test("editing an unpaid charge validates the amount and updates every balance", 
   expect(chargePuts[0].row[4]).toBe("250.00");
 
   // Balances update everywhere; the patient's fixed price is untouched.
-  await expect(page.locator(".metric.pink-card strong")).toContainText("250.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("250.00");
   await expect(page.locator(".profile-tab-body .table-wrap tbody tr").first().locator(".status-pill")).toHaveText("פתוח");
   expect(captured.puts.filter((entry) => entry.sheet === "patients")).toHaveLength(0);
   await page.getByRole("button", { name: "תשלום חדש +" }).click();
@@ -346,7 +346,7 @@ test("editing an unpaid charge validates the amount and updates every balance", 
   await paymentForm.locator('input[name="charge_ids"][value="c1"]').check();
   await expect(paymentForm.locator("#amount")).toHaveValue("250.00");
   await page.goto("/#/payments");
-  await expect(page.locator(".metric.pink-card strong")).toContainText("250.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("250.00");
 });
 
 test("cancelling an unpaid charge removes the debt and frees the session for deletion", async ({ page }) => {
@@ -367,7 +367,7 @@ test("cancelling an unpaid charge removes the debt and frees the session for del
   expect(captured.clears).toEqual(
     expect.arrayContaining([{ sheet: "session_charges", range: "session_charges!A2:G2" }])
   );
-  await expect(page.locator(".metric.pink-card strong")).toContainText("0.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("0.00");
   await expect(page.locator('form[data-form="payment"] input[name="charge_ids"]')).toHaveCount(0);
 
   // The treatment report is untouched and the session can now be deleted normally.
@@ -407,7 +407,7 @@ test("re-saving a report after cancellation creates one new charge at the curren
   expect(chargeAppends[0].row[1]).toBe("s1");
   expect(chargeAppends[0].row[4]).toBe("350.00");
   await page.locator(".profile-tab", { hasText: "תשלומים" }).click();
-  await expect(page.locator(".metric.pink-card strong")).toContainText("350.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("350.00");
 });
 
 test("charges with an allocation or a legacy linked payment cannot be edited or cancelled", async ({ page }) => {
@@ -457,12 +457,12 @@ test("a failed charge write leaves the original charge and balances unchanged", 
   await page.locator("[data-charge-amount-input]").fill("250");
   await page.locator('button[data-action="save-charge-amount"][data-id="c1"]').click();
   await expect(page.locator(".message.error")).toBeVisible();
-  await expect(page.locator(".metric.pink-card strong")).toContainText("300.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("300.00");
 
   await page.locator('button[data-action="cancel-charge-edit"]').click();
   await page.locator('button[data-action="cancel-charge"][data-id="c1"]').click();
   await expect(page.locator(".message.error")).toBeVisible();
-  await expect(page.locator(".metric.pink-card strong")).toContainText("300.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("300.00");
   await expect(page.locator(".profile-tab-body .table-wrap tbody tr")).toHaveCount(1);
   await page.getByRole("button", { name: "תשלום חדש +" }).click();
   await expect(page.locator('form[data-form="payment"] input[name="charge_ids"][value="c1"]')).toBeVisible();
@@ -490,6 +490,6 @@ test("a failed allocation write rolls the payment back with no partial records",
   await expect(page.getByText("שמירת שיוך התשלום נכשלה והרשומות הוחזרו לאחור", { exact: false })).toBeVisible();
   expect(appendsFor(captured, "payments")).toHaveLength(1);
   expect(captured.clears.filter((entry) => entry.sheet === "payments")).toHaveLength(1);
-  await expect(page.locator(".metric.pink-card strong")).toContainText("300.00");
+  await expect(page.locator('[data-payments-total="open"] strong')).toContainText("300.00");
   await expect(page.locator(".profile-tab-body .table-wrap tbody tr").first().locator(".status-pill")).toHaveText("פתוח");
 });

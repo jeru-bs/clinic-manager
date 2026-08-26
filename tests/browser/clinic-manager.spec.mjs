@@ -26,8 +26,10 @@ test("a blocked Google popup produces an actionable Hebrew error", async ({ page
 test("settings remain readable and operable on the configured viewport", async ({ page, isMobile }) => {
   await page.goto("/#/settings");
 
-  await expect(page.getByLabel("חשבונות Google מורשים")).toBeVisible();
+  await page.getByRole("button", { name: "חיבורים ואינטגרציות" }).click();
   await expect(page.getByLabel("מזהה התחברות")).toBeVisible();
+  await page.getByRole("button", { name: "אבטחה ויומן פעילות" }).click();
+  await expect(page.getByLabel("חשבונות Google מורשים")).toBeVisible();
   const connectButton = page.getByRole("button", { name: "התחברות לאחסון" });
   await expect(connectButton).toBeVisible();
 

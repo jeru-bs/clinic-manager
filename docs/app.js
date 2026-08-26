@@ -337,6 +337,9 @@ const state = {
     text: ""
   },
   profileTab: "overview",
+  paymentsView: "all",
+  settingsCategory: "preferences",
+  openRowMenu: "",
   openForms: {
     task: false,
     payment: false,
@@ -1061,7 +1064,7 @@ function icon(name) {
   const common =
     'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
   const icons = {
-    dashboard: `<svg ${common}><path d="M4 13a8 8 0 0 1 16 0"/><path d="M12 13l4-4"/><path d="M6.5 19h11"/></svg>`,
+    dashboard: `<svg ${common}><rect height="7" rx="1.5" width="7" x="3" y="3"/><rect height="7" rx="1.5" width="7" x="14" y="3"/><rect height="7" rx="1.5" width="7" x="3" y="14"/><rect height="7" rx="1.5" width="7" x="14" y="14"/></svg>`,
     patients: `<svg ${common}><path d="M16 19v-1a4 4 0 0 0-8 0v1"/><circle cx="12" cy="8" r="3"/><path d="M19 19v-1.2a3 3 0 0 0-2-2.8"/><path d="M17 5.4a2.5 2.5 0 0 1 0 5.2"/></svg>`,
     calendar: `<svg ${common}><rect height="16" rx="2" width="18" x="3" y="5"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M3 10h18"/></svg>`,
     tasks: `<svg ${common}><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6l1 1 2-2"/><path d="M4 12l1 1 2-2"/><path d="M4 18l1 1 2-2"/></svg>`,
@@ -1069,6 +1072,10 @@ function icon(name) {
     business: `<svg ${common}><rect height="13" rx="2" width="18" x="3" y="7"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M3 12h18"/></svg>`,
     reports: `<svg ${common}><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16V9"/><path d="M13 16V7"/><path d="M18 16v-5"/></svg>`,
     files: `<svg ${common}><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg>`,
+    more: `<svg ${common}><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>`,
+    chevron: `<svg ${common}><path d="M14 6l-6 6 6 6"/></svg>`,
+    folder: `<svg ${common}><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg>`,
+    bell: `<svg ${common}><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>`,
     settings: `<svg ${common}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.8 1.8 0 0 0 .4 2l.1.1-2 3.4-.2-.1a1.8 1.8 0 0 0-2.1.4l-.1.1h-4l-.1-.1a1.8 1.8 0 0 0-2.1-.4l-.2.1-2-3.4.1-.1a1.8 1.8 0 0 0 .4-2"/></svg>`
   };
   return icons[name] || "";
@@ -1103,7 +1110,34 @@ function uploadProgressBar() {
     </div>`;
 }
 
-function shell(content) {
+const HEB_WEEKDAYS = ["יום ראשון", "יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת"];
+
+function hebrewWeekday(date) {
+  return HEB_WEEKDAYS[date.getDay()] || "";
+}
+
+/* Shared context spine: one narrow local column next to the main content. */
+function spine(sections) {
+  return `<aside class="spine" aria-label="הקשר המסך">${sections}</aside>`;
+}
+
+function spineBlock(title, body) {
+  return `<div class="spine-block">${title ? `<h2 class="spine-title">${html(title)}</h2>` : ""}${body}</div>`;
+}
+
+function spineCounts(items) {
+  return `<ul class="spine-counts">${items
+    .map(
+      ([value, label, tone]) => `
+        <li class="spine-count${tone ? ` tone-${tone}` : ""}">
+          <strong>${html(String(value))}</strong>
+          <span>${html(label)}</span>
+        </li>`
+    )
+    .join("")}</ul>`;
+}
+
+function shell(content, spineHtml = "") {
   const nav = [
     ["dashboard", "dashboard", "דשבורד"],
     ["patients", "patients", "מטופלים"],
@@ -1125,7 +1159,7 @@ function shell(content) {
     .join("");
 
   return `
-    <div class="app-shell">
+    <div class="app-shell${spineHtml ? " has-spine" : ""}">
       <aside class="side-nav" aria-label="ניווט במערכת">
         <div class="side-brand">
           <img class="side-brand-logo" src="./assets/malka-logo.png" alt="מלכה זיידמן" />
@@ -1139,6 +1173,7 @@ function shell(content) {
             : ""
         }
       </aside>
+      ${spineHtml}
       <main class="main">
         ${syncIndicator()}
         ${uploadProgressBar()}
@@ -1311,6 +1346,36 @@ function openPaymentsPanel() {
     </article>`;
 }
 
+function dashboardSpine({ todayRows, todaySessions, reminderCount, openPayments, activePatients }) {
+  const now = new Date();
+  const nowTime = now.toTimeString().slice(0, 5);
+  const nextSession = todayRows
+    .slice()
+    .sort((first, second) => String(first.start_time || "").localeCompare(String(second.start_time || "")))
+    .find((session) => String(session.start_time || "") >= nowTime);
+  return spine(`
+    ${spineBlock(
+      "היום",
+      `<p class="spine-date"><strong>${html(formatDate(isoDate(now)))}</strong><span>${html(hebrewWeekday(now))}</span></p>`
+    )}
+    ${spineBlock(
+      "המפגש הבא",
+      nextSession
+        ? `<div class="spine-next"><strong>${html(patientName(nextSession.patient_id))}</strong><span>${html(nextSession.start_time || "ללא שעה")} · ${html(nextSession.session_type || "מפגש")}</span></div>`
+        : `<p class="spine-empty">אין מפגש נוסף היום.</p>`
+    )}
+    ${spineBlock(
+      "מבט מהיר",
+      spineCounts([
+        [todaySessions, "מפגשים היום"],
+        [reminderCount, "תזכורות פעילות"],
+        [openPayments, "תשלומים פתוחים", openPayments ? "alert" : ""],
+        [activePatients, "מטופלים פעילים"]
+      ])
+    )}
+  `);
+}
+
 function dashboardPage() {
   const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid").length;
   const activePatients = state.patients.filter((patient) => patient.status !== "archived").length;
@@ -1320,7 +1385,8 @@ function dashboardPage() {
   const todaySessions = todayRows.length;
   const reminderCount = activeReminders().length;
 
-  return shell(`
+  return shell(
+    `
     ${header(
       "מה דורש תשומת לב היום",
       "המפגשים, המשימות והתשלומים שמחכים לטיפול.",
@@ -1332,19 +1398,15 @@ function dashboardPage() {
       ${remindersPanel()}
       ${openPaymentsPanel()}
     </section>
-    <section class="kpi-grid">
-      <article class="kpi-card blue-card"><div><strong>${todaySessions}</strong><span>מפגשים היום</span></div><span class="kpi-symbol">${icon("calendar")}</span></article>
-      <article class="kpi-card teal-card"><div><strong>${reminderCount}</strong><span>תזכורות פעילות</span></div><span class="kpi-symbol">${icon("tasks")}</span></article>
-      <article class="kpi-card pink-card"><div><strong>${openPayments}</strong><span>תשלומים פתוחים</span></div><span class="kpi-symbol">${icon("payments")}</span></article>
-      <article class="kpi-card purple-card"><div><strong>${activePatients}</strong><span>מטופלים פעילים</span></div><span class="kpi-symbol">${icon("patients")}</span></article>
-    </section>
     <section class="dashboard-grid">
       ${sessionsPanel(weekRows)}
       ${paymentsPanel()}
       <div class="dashboard-full">${tasksPanel()}</div>
     </section>
     ${patientDrawer()}
-  `);
+  `,
+    dashboardSpine({ todayRows, todaySessions, reminderCount, openPayments, activePatients })
+  );
 }
 
 function patientsPage() {
@@ -1358,8 +1420,65 @@ function patientsPage() {
       includes(patient.treatment_type, filters.treatment) &&
       includes(paymentStatusLabel(patient.payment_status), filters.status)
   );
+  const activeCount = state.patients.filter((patient) => patient.status !== "archived").length;
+  const archivedCount = state.patients.length - activeCount;
 
-  return shell(`
+  const distinct = (read) =>
+    [...new Set(state.patients.map(read).filter(Boolean))].sort((first, second) =>
+      String(first).localeCompare(String(second), "he")
+    );
+  const filterSelect = (key, label, options) => `
+    <div class="spine-field">
+      <label for="patientFilter-${key}">${html(label)}</label>
+      <select id="patientFilter-${key}" data-patient-filter="${key}">
+        <option value="">הכל</option>
+        ${options
+          .map(
+            (option) =>
+              `<option value="${html(option)}" ${filters[key] === option ? "selected" : ""}>${html(option)}</option>`
+          )
+          .join("")}
+      </select>
+    </div>`;
+
+  const patientsSpine = spine(`
+    ${spineBlock(
+      "מטופלים",
+      spineCounts([
+        [filteredPatients.length, "מוצגים"],
+        [activeCount, "פעילים"],
+        [archivedCount, "בארכיון"]
+      ])
+    )}
+    ${spineBlock(
+      "חיפוש וסינון",
+      `<div class="spine-field">
+        <label for="patientFilter-name">חיפוש שם</label>
+        <input id="patientFilter-name" type="search" placeholder="חיפוש שם" data-patient-filter="name" value="${html(filters.name)}" />
+      </div>
+      ${filterSelect("school", "מוסד", distinct((patient) => patient.school_name))}
+      ${filterSelect("treatment", "סוג טיפול", distinct((patient) => patient.treatment_type))}
+      ${filterSelect("status", "תשלום", distinct((patient) => paymentStatusLabel(patient.payment_status)))}`
+    )}
+  `);
+
+  const rowMenu = (patient) => {
+    const open = state.openRowMenu === patient.id;
+    const archived = patient.status === "archived";
+    const archiveLabel = archived ? "החזרה מארכיון" : "ארכוב";
+    return `
+      <div class="row-menu">
+        <button class="icon-button" data-action="toggle-row-menu" data-id="${html(patient.id)}" type="button" aria-haspopup="menu" aria-expanded="${open ? "true" : "false"}" aria-label="פעולות עבור ${html(patient.child_name)}" title="פעולות">${icon("more")}</button>
+        <div class="row-menu-list" role="menu" aria-label="פעולות עבור ${html(patient.child_name)}" ${open ? "" : "hidden"}>
+          <button class="row-menu-item" role="menuitem" data-action="open-profile" data-id="${html(patient.id)}" type="button">פתיחת כרטיס מטופל</button>
+          <button class="row-menu-item" role="menuitem" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button">עריכת מטופל</button>
+          <button class="row-menu-item danger" role="menuitem" data-action="toggle-patient-archive" data-id="${html(patient.id)}" data-archive="${archived ? "restore" : "archive"}" type="button">${archiveLabel}</button>
+        </div>
+      </div>`;
+  };
+
+  return shell(
+    `
     ${header(
       "מטופלים",
       "",
@@ -1380,33 +1499,20 @@ function patientsPage() {
               <th>תשלום</th>
               <th>פעולות</th>
             </tr>
-            <tr class="filters">
-              <td><input class="table-filter" aria-label="חיפוש מטופל לפי שם" placeholder="חיפוש שם" data-patient-filter="name" value="${html(filters.name)}" /></td>
-              <td><input class="table-filter" aria-label="סינון לפי מוסד" placeholder="מוסד" data-patient-filter="school" value="${html(filters.school)}" /></td>
-              <td><input class="table-filter" aria-label="סינון לפי סוג טיפול" placeholder="סוג טיפול" data-patient-filter="treatment" value="${html(filters.treatment)}" /></td>
-              <td><input class="table-filter" aria-label="סינון לפי סטטוס" placeholder="סטטוס" data-patient-filter="status" value="${html(filters.status)}" /></td>
-              <td></td>
-            </tr>
           </thead>
           <tbody>
             ${filteredPatients
               .map(
                 (patient) => `
-                <tr>
+                <tr class="row-link" data-action="open-profile" data-id="${html(patient.id)}">
                   <td data-label="שם">
-                    <strong>${html(patient.child_name)}</strong>
+                    <button class="row-open" data-action="open-profile" data-id="${html(patient.id)}" type="button">${html(patient.child_name)}</button>
                     ${patient.status === "archived" ? `<span class="status-pill muted">ארכיון</span>` : ""}
                   </td>
                   <td data-label="מוסד">${html(patient.school_name || "-")}</td>
                   <td data-label="סוג טיפול">${html(patient.treatment_type || "-")}</td>
                   <td data-label="תשלום">${statusPill(paymentStatusLabel(patient.payment_status), PAYMENT_STATUS_TONES[patient.payment_status] || "")}</td>
-                  <td data-label="פעולות">
-                    <div class="actions">
-                      <button class="small-action" data-action="open-profile" data-id="${html(patient.id)}" type="button" aria-label="פתיחת כרטיס מטופל" title="פתיחת כרטיס מטופל">↗</button>
-                      <button class="small-action edit" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button" aria-label="עריכת מטופל" title="עריכת מטופל">✎</button>
-                      <button class="small-action danger" data-action="toggle-patient-archive" data-id="${html(patient.id)}" data-archive="${patient.status === "archived" ? "restore" : "archive"}" type="button" aria-label="${patient.status === "archived" ? "החזרה מארכיון" : "ארכוב"}" title="${patient.status === "archived" ? "החזרה מארכיון" : "ארכוב"}">${patient.status === "archived" ? "↩" : "↓"}</button>
-                    </div>
-                  </td>
+                  <td data-label="פעולות">${rowMenu(patient)}</td>
                 </tr>`
               )
               .join("") || `<tr><td colspan="5"><div class="empty">אין מטופלים להצגה.</div></td></tr>`}
@@ -1415,7 +1521,9 @@ function patientsPage() {
       </div>
     </section>
     ${patientDrawer()}
-  `);
+  `,
+    patientsSpine
+  );
 }
 
 function profilePage(patientId) {
@@ -1440,7 +1548,6 @@ function profilePage(patientId) {
     )}
     <section class="profile">
       ${patientSummary(patient, { sessions, tasks })}
-      ${profileTabs(tab)}
       <section class="profile-tab-body">
         ${tab === "overview" ? profileOverviewPanel(patient) : ""}
         ${tab === "documentation" ? sessionsPanel(sessions, patient.id) : ""}
@@ -1453,7 +1560,9 @@ function profilePage(patientId) {
         ${tab === "clinical-reports" ? clinicalReportsPanel(clinicalReports, patient.id) : ""}
       </section>
     </section>
-  `);
+  `,
+    spine(spineBlock("סעיפי הכרטיס", profileTabs(tab)))
+  );
 }
 
 function patientSummary(patient, { sessions, tasks }) {
@@ -1503,28 +1612,27 @@ function profileTabKey() {
 }
 
 function profileTabs(activeTab) {
-  const primaryTabs = [
+  const tabs = [
     ["overview", "פרטים"],
     ["documentation", "תיעוד מפגש"],
     ["goals", "מטרות"],
     ["payments", "תשלומים"],
-    ["files", "קבצים"]
-  ];
-  const secondaryTabs = [
+    ["files", "קבצים"],
     ["contacts", "הורים ואנשי מקצוע"],
     ["questionnaires", "שאלונים"],
     ["clinical-reports", "דוחות טיפוליים"],
     ["tasks", "משימות"]
   ];
-  const tabButton = (key, label, secondary) => `
-    <button class="profile-tab${secondary ? " is-secondary" : ""} ${activeTab === key ? "active" : ""}" data-action="profile-tab" data-tab="${key}" type="button">
-      ${label}
-    </button>`;
   return `
     <nav class="profile-tabs" aria-label="ניווט בכרטיס מטופל">
-      ${primaryTabs.map(([key, label]) => tabButton(key, label, false)).join("")}
-      <span class="profile-tabs-label" aria-hidden="true">עוד</span>
-      ${secondaryTabs.map(([key, label]) => tabButton(key, label, true)).join("")}
+      ${tabs
+        .map(
+          ([key, label]) => `
+        <button class="profile-tab ${activeTab === key ? "active" : ""}" data-action="profile-tab" data-tab="${key}" type="button" ${activeTab === key ? 'aria-current="page"' : ""}>
+          ${label}
+        </button>`
+        )
+        .join("")}
     </nav>`;
 }
 
@@ -1692,15 +1800,52 @@ function clinicalReportsPanel(reports, patientId) {
     </section>`;
 }
 
+const SETTINGS_CATEGORIES = [
+  ["preferences", "העדפות קליניקה ואישיות"],
+  ["connections", "חיבורים ואינטגרציות"],
+  ["data", "נתונים, גיבוי ושחזור"],
+  ["security", "אבטחה ויומן פעילות"],
+  ["schedule", "חריגות וחסימות יומן"]
+];
+
+function settingsCategoryKey() {
+  return SETTINGS_CATEGORIES.some(([key]) => key === state.settingsCategory)
+    ? state.settingsCategory
+    : "preferences";
+}
+
+/* Every category stays in the DOM because #settingsForm lives in one category
+   while fields in other categories associate to it through form="settingsForm".
+   The inactive ones are hidden, so they leave the tab order and the a11y tree. */
+function settingsSectionAttrs(key) {
+  return `data-settings-category="${key}"${settingsCategoryKey() === key ? "" : " hidden"}`;
+}
+
+function settingsSpine() {
+  const active = settingsCategoryKey();
+  return spine(
+    spineBlock(
+      "קטגוריות",
+      `<div class="spine-nav" role="group" aria-label="קטגוריות הגדרות">
+        ${SETTINGS_CATEGORIES.map(
+          ([key, label]) => `
+          <button class="spine-nav-item ${active === key ? "active" : ""}" data-action="settings-category" data-category="${key}" type="button" aria-pressed="${active === key ? "true" : "false"}"><span>${html(label)}</span></button>`
+        ).join("")}
+      </div>`
+    )
+  );
+}
+
 function settingsPage() {
   const currentOrigin = window.location.origin;
   const activeClientId = state.config.googleClientId || "לא הוגדר";
   const connectionAction = state.accessToken
     ? `<button class="button secondary" data-action="disconnect-google" type="button">התנתקות מהמכשיר</button>`
     : `<button class="button blue" data-action="connect-google" type="button" ${googleAuthInFlight || state.authRestoring ? "disabled" : ""}>${googleAuthInFlight || state.authRestoring ? "מתחבר…" : "התחברות לאחסון"}</button>`;
-  return shell(`
+  return shell(
+    `
     ${header("הגדרות", "", connectionAction)}
-    <section class="settings-section">
+    <section class="settings-section" ${settingsSectionAttrs("preferences")}>
       <div class="section-head">
         <h2>העדפות קליניקה ואישיות</h2>
         <p>רשימות הבחירה שמופיעות בטפסי המפגש.</p>
@@ -1721,7 +1866,7 @@ function settingsPage() {
         </div>
       </article>
     </section>
-    <section class="settings-section page-gap">
+    <section class="settings-section" ${settingsSectionAttrs("connections")}>
       <div class="section-head">
         <h2>חיבורים ואינטגרציות</h2>
         <p>חיבור החשבון, מאגר הנתונים, האחסון והיומן.</p>
@@ -1792,7 +1937,7 @@ function settingsPage() {
       </article>
     </section>
     </section>
-    <section class="settings-section page-gap">
+    <section class="settings-section" ${settingsSectionAttrs("data")}>
       <div class="section-head">
         <h2>נתונים, גיבוי ושחזור</h2>
         <p>ייצוא, גיבוי ובדיקת תקינות של הנתונים השמורים.</p>
@@ -1838,7 +1983,7 @@ function settingsPage() {
         </div>
       </section>
     </section>
-    <section class="settings-section page-gap">
+    <section class="settings-section" ${settingsSectionAttrs("security")}>
       <div class="section-head">
         <h2>אבטחה ויומן פעילות</h2>
         <p>חשבונות מורשים, הרשאות שיתוף ותיעוד הפעולות במערכת.</p>
@@ -1868,7 +2013,7 @@ function settingsPage() {
         ${auditLogView()}
       </section>
     </section>
-    <section class="settings-section page-gap">
+    <section class="settings-section" ${settingsSectionAttrs("schedule")}>
       <div class="section-head">
         <h2>חריגות וחסימות יומן</h2>
         <p>ימים חסומים, חופשות וביטולים חד-פעמיים.</p>
@@ -1911,7 +2056,9 @@ function settingsPage() {
       ${scheduleExceptionsView()}
     </section>
     </section>
-  `);
+  `,
+    settingsSpine()
+  );
 }
 
 function auditLogView() {
@@ -2284,7 +2431,7 @@ function patientChargesSection(patientId) {
   const outstandingAgorot = PaymentsCore.outstandingTotal(balances);
   return `
     <div class="metric-row">
-      <article class="metric pink-card"><strong>${html(formatAgorotAmount(outstandingAgorot))}</strong><span>יתרת חוב פתוחה</span></article>
+      <article class="metric pink-card" data-payments-total="open"><strong>${html(formatAgorotAmount(outstandingAgorot))}</strong><span>יתרת חוב פתוחה</span></article>
     </div>
     <div class="panel-head"><h2>חיובי טיפול</h2><span>${balances.length} חיובים</span></div>
     ${
@@ -2519,20 +2666,35 @@ function paymentsPage() {
   const openChargeRows = chargeBalanceRows.filter((balance) => balance.remainingAgorot > 0);
   const openAgorot = PaymentsCore.outstandingTotal(chargeBalanceRows);
 
-  return shell(`
+  const pendingReceiptsView = state.paymentsView === "receipts-pending";
+  const visibleRows = pendingReceiptsView ? receiptsToPrepare : rows;
+  const paymentsSpine = spine(`
+    ${spineBlock(
+      "סיכום כספי",
+      `<ul class="spine-metrics">
+        <li data-payments-total="paid"><strong>${html(formatAmount(paidTotal))}</strong><span>שולם</span></li>
+        <li class="tone-alert" data-payments-total="open"><strong>${html(formatAgorotAmount(openAgorot))}</strong><span>פתוח</span></li>
+        <li class="tone-warn" data-payments-total="receipts"><strong>${receiptsToPrepare.length}</strong><span>קבלות להכנה</span></li>
+      </ul>`
+    )}
+    ${spineBlock(
+      "תצוגה",
+      `<div class="spine-nav" role="group" aria-label="בחירת תצוגת תשלומים">
+        <button class="spine-nav-item ${pendingReceiptsView ? "" : "active"}" data-action="set-payments-view" data-view="all" type="button" aria-pressed="${pendingReceiptsView ? "false" : "true"}"><span>כל התשלומים</span><small>${rows.length}</small></button>
+        <button class="spine-nav-item ${pendingReceiptsView ? "active" : ""}" data-action="set-payments-view" data-view="receipts-pending" type="button" aria-pressed="${pendingReceiptsView ? "true" : "false"}"><span>תשלומים ממתינים לקבלה</span><small>${receiptsToPrepare.length}</small></button>
+      </div>`
+    )}
+  `);
+
+  return shell(
+    `
     ${header(
       "תשלומים",
       "",
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
-       <button class="button blue" data-action="export-receipts" type="button">ייצוא קבלות להכנה</button>
        <a class="button yellow" href="#/patients">פתיחת מטופלים</a>`
     )}
     ${connectionBanner()}
-    <section class="metric-row">
-      <article class="metric blue-card"><strong>${html(formatAmount(paidTotal))}</strong><span>שולם</span></article>
-      <article class="metric pink-card"><strong>${html(formatAgorotAmount(openAgorot))}</strong><span>פתוח</span></article>
-      <article class="metric teal-card"><strong>${receiptsToPrepare.length}</strong><span>קבלות להכנה</span></article>
-    </section>
     <section class="panel">
       <div class="panel-head"><h2>חיובים פתוחים</h2><span>${openChargeRows.length} חיובים</span></div>
       <div class="table-wrap">
@@ -2567,8 +2729,8 @@ function paymentsPage() {
         </table>
       </div>
     </section>
-    <section class="panel page-gap">
-      <div class="panel-head count-only"><span>${rows.length} תשלומים</span></div>
+    <section class="panel page-gap" data-payments-view="${pendingReceiptsView ? "receipts-pending" : "all"}">
+      <div class="panel-head"><h2>${pendingReceiptsView ? "תשלומים ממתינים לקבלה" : "כל התשלומים"}</h2><span data-payments-count>${visibleRows.length} תשלומים</span></div>
       <div class="table-wrap">
         <table class="stack-mobile">
           <thead>
@@ -2585,7 +2747,7 @@ function paymentsPage() {
             </tr>
           </thead>
           <tbody>
-            ${rows
+            ${visibleRows
               .map(
                 (payment) => `
                 <tr>
@@ -2625,12 +2787,14 @@ function paymentsPage() {
                   </td>
                 </tr>`
               )
-              .join("") || `<tr><td colspan="9"><div class="empty">אין תשלומים להצגה. אפשר להוסיף תשלום מתוך כרטיס מטופל.</div></td></tr>`}
+              .join("") || `<tr><td colspan="9"><div class="empty">${pendingReceiptsView ? "אין תשלומים שממתינים לקבלה." : "אין תשלומים להצגה. אפשר להוסיף תשלום מתוך כרטיס מטופל."}</div></td></tr>`}
           </tbody>
         </table>
       </div>
     </section>
-  `);
+  `,
+    paymentsSpine
+  );
 }
 
 function reportsPage() {
@@ -6981,31 +7145,6 @@ function exportTableCsv(tableKey) {
   return rows.length;
 }
 
-function exportReceiptsCsv() {
-  const rows = state.payments
-    .filter((payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued")
-    .sort((a, b) => `${a.paid_at} ${a.created_at}`.localeCompare(`${b.paid_at} ${b.created_at}`));
-  if (!rows.length) return 0;
-  const headerRow = ["תאריך", "מטופל", "סכום", "אמצעי תשלום", "מפגש", "הערות"];
-  const csvRows = [
-    headerRow.map(csvValue).join(","),
-    ...rows.map((payment) =>
-      [
-        formatDate(payment.paid_at),
-        patientName(payment.patient_id),
-        payment.amount || "",
-        paymentMethodLabel(payment.payment_method),
-        payment.session_id ? sessionLabelById(payment.session_id) : "",
-        payment.notes || ""
-      ]
-        .map(csvValue)
-        .join(",")
-    )
-  ];
-  downloadTextFile(`receipts-to-prepare-${isoDate(new Date())}.csv`, `\uFEFF${csvRows.join("\n")}`, "text/csv;charset=utf-8");
-  return rows.length;
-}
-
 async function createSystemTask(patientId, title, description = "", dueDate = "") {
   const exists = state.tasks.some(
     (task) =>
@@ -7260,6 +7399,7 @@ function stopRecording() {
 function bindEvents() {
   document.addEventListener("keydown", handleDrawerKeyboard);
   document.addEventListener("keydown", handlePickerKeyboard);
+  document.addEventListener("keydown", handleRowMenuKeyboard);
 
   document.addEventListener("click", async (event) => {
     if (event.target.closest(".picker-popover")) return;
@@ -7281,13 +7421,37 @@ function bindEvents() {
     closePicker();
 
     const target = event.target.closest("[data-action]");
-    if (!target) return;
+    if (!target) {
+      if (state.openRowMenu && !event.target.closest(".row-menu")) {
+        state.openRowMenu = "";
+        render();
+      }
+      return;
+    }
 
     const action = target.dataset.action;
+    if (action !== "toggle-row-menu" && state.openRowMenu) state.openRowMenu = "";
     const busyKey = beginBusyAction(target);
     if (!busyKey) return;
 
     try {
+    if (action === "toggle-row-menu") {
+      const rowId = target.dataset.id || "";
+      state.openRowMenu = state.openRowMenu === rowId ? "" : rowId;
+      render();
+      focusRowMenuToggle(rowId);
+    }
+    if (action === "set-payments-view") {
+      state.paymentsView = target.dataset.view === "receipts-pending" ? "receipts-pending" : "all";
+      state.error = "";
+      render();
+    }
+    if (action === "settings-category") {
+      state.settingsCategory = target.dataset.category || "preferences";
+      state.error = "";
+      render();
+      document.querySelector(`[data-action="settings-category"][data-category="${state.settingsCategory}"]`)?.focus();
+    }
     if (action === "toggle-form") {
       const formKey = target.dataset.formKey;
       if (formKey && formKey in state.openForms) {
@@ -7465,6 +7629,7 @@ function bindEvents() {
       closePatientDrawer();
     }
     if (action === "open-profile") {
+      state.openRowMenu = "";
       state.profileTab = "overview";
       state.currentSessionId = "";
       state.currentPaymentId = "";
@@ -7698,12 +7863,6 @@ function bindEvents() {
         state.message = "";
         render();
       }
-    }
-    if (action === "export-receipts") {
-      const count = exportReceiptsCsv();
-      state.message = count ? `נוצר קובץ ייצוא עבור ${count} קבלות להכנה.` : "אין קבלות להכנה כרגע.";
-      state.error = "";
-      render();
     }
     if (action === "edit-task") {
       const task = state.tasks.find((item) => item.id === target.dataset.id);
@@ -8344,6 +8503,25 @@ function scheduleMessageDismiss() {
     // הסרה נקודתית ולא render מלא, כדי לא לאפס טפסים פתוחים שהמשתמש כבר מילא.
     document.querySelector("[data-app-message]")?.remove();
   }, 4500);
+}
+
+function focusRowMenuToggle(rowId) {
+  if (!rowId) return;
+  const toggles = document.querySelectorAll('[data-action="toggle-row-menu"]');
+  for (const toggle of toggles) {
+    if (toggle.dataset.id === rowId) {
+      toggle.focus();
+      return;
+    }
+  }
+}
+
+function handleRowMenuKeyboard(event) {
+  if (event.key !== "Escape" || !state.openRowMenu) return;
+  const rowId = state.openRowMenu;
+  state.openRowMenu = "";
+  render();
+  focusRowMenuToggle(rowId);
 }
 
 function busyActionKey(target) {
