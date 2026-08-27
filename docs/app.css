@@ -74,6 +74,8 @@
   --gap-sm: 8px;
   --gap: 16px;
   --pad-panel: 16px;
+  /* Outer breathing room between an overlay card and the viewport edges. */
+  --drawer-gap: 24px;
 
   --side-width: 232px;
   --spine-width: 248px;
@@ -2173,7 +2175,8 @@ legend {
   place-items: start center;
   overflow-y: auto;
   background: rgba(30, 40, 48, 0.34);
-  padding: 48px 16px;
+  /* The same gap on every side, so the card border and corners never touch the viewport edge. */
+  padding: var(--drawer-gap);
 }
 
 .drawer[hidden] {
@@ -2182,9 +2185,15 @@ legend {
 
 .drawer-inner {
   width: min(100%, 900px);
+  /* Never taller than the gap allows; taller content scrolls inside the card instead of clipping. */
+  max-height: calc(100vh - var(--drawer-gap) * 2);
+  max-height: calc(100dvh - var(--drawer-gap) * 2);
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
   background: var(--surface);
+  /* Keeps the title, labels and fields off the border and the rounded corners. */
+  padding: var(--pad-panel);
   box-shadow: var(--shadow-overlay);
 }
 
@@ -2371,13 +2380,15 @@ legend {
   }
 
   .drawer {
+    --drawer-gap: 12px;
     align-items: end;
-    padding: 12px 8px 84px;
+    /* The bottom gap also clears the 72px fixed navigation bar. */
+    padding: var(--drawer-gap) var(--drawer-gap) calc(var(--drawer-gap) + 72px);
   }
 
   .drawer-inner {
-    max-height: calc(100vh - 104px);
-    overflow-y: auto;
+    max-height: calc(100vh - var(--drawer-gap) * 2 - 72px);
+    max-height: calc(100dvh - var(--drawer-gap) * 2 - 72px);
   }
 
   .calendar-day {
