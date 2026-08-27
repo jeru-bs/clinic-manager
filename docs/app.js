@@ -863,6 +863,21 @@ function hebcalCacheKey(year) {
   return `${HEBCAL_CACHE_PREFIX}-${year}`;
 }
 
+const HOLIDAY_KEEP_ALLOWED_PATTERN = /chanukah|hanukkah|חנוכה/i;
+// Tisha B'Av is a fast in the Hebcal data but is treated like a festival here.
+const HOLIDAY_MAJOR_FAST_PATTERN = /tish'?a b'?av|תשעה באב/i;
+
+// A treatment may stay in place only on Hanukkah and on the minor fasts, which are ordinary
+// working days. Every festival, Yom Kippur and Tisha B'Av must be cancelled or moved.
+function israelHolidayConflictKind(item) {
+  if (item?.conflictKind === "optional" || item?.conflictKind === "required") return item.conflictKind;
+  const text = `${item?.title || ""} ${item?.hebrew || ""}`;
+  if (HOLIDAY_KEEP_ALLOWED_PATTERN.test(text)) return "optional";
+  if (HOLIDAY_MAJOR_FAST_PATTERN.test(text)) return "required";
+  if (String(item?.subcat || "") === "fast") return "optional";
+  return "required";
+}
+
 function normalizeIsraelHoliday(item) {
   const sourceLink = String(item?.link || "");
   const safeLink = /^https:\/\/(?:www\.)?hebcal\.com\//.test(sourceLink)
@@ -874,7 +889,10 @@ function normalizeIsraelHoliday(item) {
     memo: item?.memo || "",
     link: safeLink,
     subcat: item?.subcat || "",
-    yomtov: item?.yomtov === true
+    yomtov: item?.yomtov === true,
+    // Stored with the holiday so a cached round-trip, which loses the English title, still
+    // classifies the conflict the same way.
+    conflictKind: israelHolidayConflictKind(item)
   };
 }
 
@@ -980,6 +998,13 @@ async function ensureIsraelHolidaysForRange(startDateValue, endDateValue) {
 
 function israelHolidayBlocksRecurring(dateValue) {
   return israelHolidaysForDate(dateValue).find((holiday) => holiday.yomtov);
+}
+
+// The strictest holiday of the day decides which choices the therapist is offered.
+function israelHolidayConflictKindForDate(holidays) {
+  return holidays.some((holiday) => israelHolidayConflictKind(holiday) === "required")
+    ? "required"
+    : "optional";
 }
 
 function dateFromInput(value) {
@@ -4027,15 +4052,19 @@ async function showNoticeModal(message) {
   });
 }
 
-async function askHolidayConflict(holidayTitle) {
+async function askHolidayConflict(holidayTitle, conflictKind = "required") {
+  const actions = [
+    { value: "cancel", label: "ביטול", variant: "" },
+    { value: "move", label: "שינוי", variant: "blue" }
+  ];
+  // Hanukkah and the minor fasts are working days, so leaving the treatment untouched is offered.
+  if (conflictKind === "optional") actions.push({ value: "keep", label: "אל תשנה", variant: "" });
+  actions.push({ value: "abandon", label: "יציאה ללא שמירה", variant: "secondary" });
+
   return showAppModal({
     title: "התנגשות עם מועד ישראל",
     message: `בתוך הטווח שהוגדר, חלה התנגשות עם ${holidayTitle}, האם לבטל את המפגש או לשנות את המועד שלו?`,
-    actions: [
-      { value: "cancel", label: "ביטול", variant: "" },
-      { value: "move", label: "שינוי", variant: "blue" },
-      { value: "abandon", label: "יציאה ללא שמירה", variant: "secondary" }
-    ]
+    actions
   });
 }
 
@@ -4341,8 +4370,20 @@ async function resolveSeriesOccurrence(patientId, dateValue, timeValue, plan, pl
     }
 
     plan.conflicts += 1;
-    const choice = await askHolidayConflict(holidays[0].title);
+    const choice = await askHolidayConflict(
+      holidays[0].title,
+      israelHolidayConflictKindForDate(holidays)
+    );
     if (choice === "abandon") return "abandon";
+    if (choice === "keep") {
+      // The occurrence stays where it is. Materialising it is what persists the decision:
+      // the stored session makes the same date skip the conflict check on every later save.
+      if (!planned.has(currentDate)) {
+        plan.occurrences.push({ date: currentDate, time: currentTime });
+        planned.add(currentDate);
+      }
+      return "kept";
+    }
     if (choice === "cancel") {
       if (!isReplacement) plan.cancellations.push(currentDate);
       return "cancelled";
@@ -4462,13 +4503,49 @@ async function applyRecurringSchedulePlan(patient, plan) {
   );
 }
 
+// A stored session sits on a recurring series when it matches the patient's fixed day inside the
+// stored bounds. Deleting such a session has to leave a cancellation behind, otherwise the virtual
+// projection immediately shows the deleted date again.
+function recurringSeriesSlotFor(session) {
+  const dateValue = String(session?.session_date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return null;
+  const patient = state.patients.find((item) => item.id === session?.patient_id);
+  if (!patient?.fixed_day || !patient?.fixed_time) return null;
+  if (patient.fixed_start_date && dateValue < patient.fixed_start_date) return null;
+  if (patient.fixed_end_date && dateValue > patient.fixed_end_date) return null;
+  if (fixedDayIndex(patient.fixed_day) !== dateFromInput(dateValue).getDay()) return null;
+  return { patientId: patient.id, dateValue };
+}
+
+async function cancelDeletedRecurringOccurrence(session) {
+  const slot = recurringSeriesSlotFor(session);
+  if (!slot) return;
+  if (storedScheduleExceptionFor(slot.patientId, slot.dateValue)) return;
+
+  const now = new Date().toISOString();
+  const exception = {
+    id: id(),
+    patient_id: slot.patientId,
+    exception_type: "cancel",
+    start_date: slot.dateValue,
+    end_date: slot.dateValue,
+    reason: "מחיקת מפגש מתוך סדרה קבועה",
+    created_at: now,
+    updated_at: now
+  };
+  const appendResult = await appendSheet("schedule_exceptions", exception);
+  exception._rowNumber = appendedRowNumber(appendResult);
+  state.scheduleExceptions = [exception, ...state.scheduleExceptions];
+}
+
 function recurringSessionForDate(patient, dateValue) {
   if (!patient?.id || patient.status === "archived") return null;
   if (!patient.fixed_day || !patient.fixed_time) return null;
-  // A fixed treatment projects only inside its stored inclusive range. Legacy rows without a
-  // range project nothing and are never backfilled with invented dates.
-  if (!patient.fixed_start_date || !patient.fixed_end_date) return null;
-  if (dateValue < patient.fixed_start_date || dateValue > patient.fixed_end_date) return null;
+  // A stored range bounds the series to its inclusive limits. Legacy rows saved before ranges
+  // existed keep projecting exactly as they did and are never backfilled with invented dates;
+  // the next edit of such a patient is what requires the bounds.
+  if (patient.fixed_start_date && dateValue < patient.fixed_start_date) return null;
+  if (patient.fixed_end_date && dateValue > patient.fixed_end_date) return null;
   const date = dateFromInput(dateValue);
   if (fixedDayIndex(patient.fixed_day) !== date.getDay()) return null;
   if (actualSessionExists(patient.id, dateValue)) return null;
@@ -4982,6 +5059,36 @@ async function writeSheetHeader(sheetName) {
   });
 }
 
+// Appending grid columns never moves an existing cell, so a sheet that is physically narrower
+// than the schema can be widened before the header is extended.
+async function ensureSheetColumnCapacity(sheetName, columnCount) {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  if (!spreadsheetId) return;
+  const result = await googleFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId,gridProperties.columnCount)`
+  );
+  const properties = (result.sheets || [])
+    .map((sheet) => sheet.properties)
+    .find((item) => item?.title === sheetName);
+  const current = Number(properties?.gridProperties?.columnCount || 0);
+  if (!properties || !current || current >= columnCount) return;
+
+  await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+    method: "POST",
+    body: JSON.stringify({
+      requests: [
+        {
+          appendDimension: {
+            sheetId: properties.sheetId,
+            dimension: "COLUMNS",
+            length: columnCount - current
+          }
+        }
+      ]
+    })
+  });
+}
+
 async function addMissingSheets(sheetNames) {
   if (!sheetNames.length) return;
   const spreadsheetId = state.config.googleSpreadsheetId;
@@ -5048,6 +5155,7 @@ async function runDataHealthCheck({ repair = false } = {}) {
       // stored data rows stay aligned and the header may safely be extended.
       const headerIsEmpty = !header.some((cell) => String(cell ?? "").trim());
       if (headerIsEmpty || headerIsMissingOnlyNewColumns(sheet, header)) {
+        await ensureSheetColumnCapacity(sheet, SHEETS[sheet].length).catch(() => {});
         await writeSheetHeader(sheet);
         header = await readSheetHeader(sheet).catch(() => []);
         row = healthRow(sheet, existingSheets, header);
@@ -7087,6 +7195,9 @@ async function deleteSessionRecord(sessionId) {
   }
 
   await assertSheetRowCurrent("sessions", session._rowNumber, session);
+  // Written before the row is cleared so a failure can never leave the date uncancelled; the
+  // audited rollback removes the exception again if the rest of the deletion does not complete.
+  await cancelDeletedRecurringOccurrence(session);
   if (session.calendar_event_id) {
     try {
       await deleteCalendarEvent(session.calendar_event_id);

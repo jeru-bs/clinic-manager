@@ -2382,15 +2382,24 @@ legend {
 
   .calendar-day {
     grid-template-rows: auto;
-    min-height: 56px;
+    min-height: 62px;
   }
 
   .calendar-day .day-events {
     display: none;
   }
 
-  .calendar-day .day-hebrew-month {
-    display: none;
+  /* The Hebrew day and month stay visible on mobile; the head stacks so both fit the cell. */
+  .calendar-day .day-head {
+    display: grid;
+    justify-items: start;
+    gap: 0;
+  }
+
+  .calendar-day .day-hebrew {
+    max-width: 100%;
+    font-size: 0.58rem;
+    line-height: 1.2;
   }
 
   .modal-fields {

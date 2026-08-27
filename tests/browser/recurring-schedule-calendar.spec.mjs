@@ -40,8 +40,9 @@ async function routeHolidays(page, holidays) {
           category: "holiday",
           date: holiday.date,
           hebrew: holiday.title,
-          title: holiday.title,
-          yomtov: true
+          title: holiday.english || holiday.title,
+          subcat: holiday.subcat || "major",
+          yomtov: holiday.yomtov !== false
         }))
       }
     })
@@ -126,14 +127,25 @@ test("every visible calendar day cell carries its Hebrew date", async ({ page })
     TISHREI_17
   );
 
-  const monthPart = page.locator(".calendar-day[data-date='2026-09-07'] .day-hebrew-month");
-  const numberPart = page.locator(".calendar-day[data-date='2026-09-07'] .day-hebrew-num");
-  await expect(numberPart).toBeVisible();
-  if (isMobile()) {
-    await expect(monthPart).toBeHidden();
-  } else {
-    await expect(monthPart).toBeVisible();
-  }
+  // The Hebrew day and month are visible in every cell on both desktop and mobile.
+  const monthParts = page.locator(".calendar-day .day-hebrew-month");
+  const numberParts = page.locator(".calendar-day .day-hebrew-num");
+  expect(await monthParts.count()).toBe(cellCount);
+  expect(await numberParts.count()).toBe(cellCount);
+  await expect(numberParts.first()).toBeVisible();
+  await expect(monthParts.first()).toBeVisible();
+  await expect(page.locator(".calendar-day[data-date='2026-09-07'] .day-hebrew-month")).toBeVisible();
+  await expect(page.locator(".calendar-day[data-date='2026-09-28'] .day-hebrew-month")).toBeVisible();
+
+  // The page itself must not scroll sideways once the month is kept on narrow screens.
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  // Keeping the month must not blow the compact cell up on a narrow screen.
+  const cellHeight = await selectedDay.evaluate((node) => node.getBoundingClientRect().height);
+  expect(cellHeight).toBeLessThanOrEqual(isMobile() ? 96 : 160);
 });
 
 test("a daily treatment row opens the patient card by stored id", async ({ page }) => {

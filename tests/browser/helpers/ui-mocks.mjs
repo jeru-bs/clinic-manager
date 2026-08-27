@@ -38,11 +38,20 @@ function columnLetter(count) {
 }
 
 // Same in-memory Sheets/Drive mock shape used by the financial specs: no real Google calls.
-export async function setupUiMocks(page, { seed = {} } = {}) {
+export async function setupUiMocks(page, { seed = {}, headers = {}, gridColumns = {} } = {}) {
   const store = Object.fromEntries(
     Object.keys(SHEET_HEADERS).map((sheet) => [sheet, (seed[sheet] || []).map((row) => [...row])])
   );
-  const captured = { appends: [], puts: [], clears: [] };
+  // `headers` lets a spec start from a legacy header row so the automatic extension can be tested.
+  const liveHeaders = Object.fromEntries(
+    Object.entries(SHEET_HEADERS).map(([sheet, columns]) => [sheet, [...(headers[sheet] || columns)]])
+  );
+  // Google Sheets creates sheets 26 columns wide; a narrower grid must be widened before the
+  // header can be extended.
+  const liveGridColumns = Object.fromEntries(
+    Object.keys(SHEET_HEADERS).map((sheet) => [sheet, Number(gridColumns[sheet] || 26)])
+  );
+  const captured = { appends: [], puts: [], clears: [], headerPuts: [], gridAppends: [] };
 
   await page.addInitScript(() => {
     sessionStorage.setItem(
@@ -63,12 +72,41 @@ export async function setupUiMocks(page, { seed = {} } = {}) {
     if (decoded.includes("fields=sheets.properties.title")) {
       return route.fulfill({ json: { sheets: Object.keys(SHEET_HEADERS).map((title) => ({ properties: { title } })) } });
     }
-    const headerEntry = Object.entries(SHEET_HEADERS).find(([sheet]) => decoded.includes(`${sheet}!1:1`));
-    if (headerEntry) return route.fulfill({ json: { values: [headerEntry[1]] } });
+    if (decoded.includes("gridProperties.columnCount")) {
+      return route.fulfill({
+        json: {
+          sheets: Object.keys(SHEET_HEADERS).map((title, index) => ({
+            properties: {
+              title,
+              sheetId: index + 1,
+              gridProperties: { columnCount: liveGridColumns[title] }
+            }
+          }))
+        }
+      });
+    }
+    if (decoded.endsWith(":batchUpdate") && request.method() === "POST") {
+      const requests = request.postDataJSON()?.requests || [];
+      for (const entry of requests) {
+        if (!entry.appendDimension) continue;
+        const title = Object.keys(SHEET_HEADERS)[Number(entry.appendDimension.sheetId) - 1];
+        captured.gridAppends.push({ sheet: title, length: entry.appendDimension.length });
+        liveGridColumns[title] += Number(entry.appendDimension.length || 0);
+      }
+      return route.fulfill({ json: {} });
+    }
+    const headerEntry = Object.keys(SHEET_HEADERS).find((sheet) => decoded.includes(`${sheet}!1:1`));
+    if (headerEntry) return route.fulfill({ json: { values: [liveHeaders[headerEntry]] } });
     const sheet = decoded.match(/values\/([a-z_]+)!/)?.[1];
     if (!sheet || !store[sheet]) return route.fulfill({ json: {} });
     const rows = store[sheet];
     const lastColumn = columnLetter(SHEET_HEADERS[sheet].length);
+    if (decoded.includes(`${sheet}!A1:${lastColumn}1`) && request.method() === "PUT") {
+      const values = request.postDataJSON()?.values || [];
+      captured.headerPuts.push({ sheet, row: [...(values[0] || [])] });
+      if (values[0]) liveHeaders[sheet] = [...values[0]];
+      return route.fulfill({ json: {} });
+    }
     if (decoded.includes(`${sheet}!A:${lastColumn}:append`)) {
       const values = request.postDataJSON()?.values || [];
       captured.appends.push(...values.map((row) => ({ sheet, row: [...row] })));
