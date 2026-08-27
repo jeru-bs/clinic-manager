@@ -2,13 +2,13 @@
 
 const SHEET_HEADERS = {
   patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at", "fixed_start_date", "fixed_end_date"],
-  sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id"],
+  sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id", "next_plan"],
   payments: ["id", "patient_id", "session_id", "amount", "payment_method", "payment_status", "receipt_status", "paid_at", "receipt_file_id", "notes", "created_at", "updated_at"],
   tasks: ["id", "patient_id", "title", "description", "status", "due_date", "source", "created_at", "updated_at", "reminder_at"],
   files: ["id", "patient_id", "drive_file_id", "drive_folder_id", "name", "file_type", "url", "created_at", "updated_at"],
   contacts: ["id", "patient_id", "contact_type", "name", "relationship", "phone", "email", "organization", "notes", "created_at", "updated_at"],
   goals: ["id", "patient_id", "title", "description", "status", "progress", "target_date", "note", "legacy_source", "created_at", "updated_at"],
-  goal_updates: ["id", "goal_id", "patient_id", "session_id", "progress", "status", "note", "created_at", "updated_at"],
+  goal_updates: ["id", "goal_id", "patient_id", "session_id", "progress", "status", "note", "created_at", "updated_at", "outcome"],
   questionnaire_templates: ["id", "name", "audience", "questions_json", "active", "created_at", "updated_at"],
   questionnaire_assignments: ["id", "patient_id", "contact_id", "template_id", "form_id", "responder_url", "status", "sent_at", "due_date", "responded_at", "last_response_id", "created_at", "updated_at"],
   questionnaire_responses: ["id", "assignment_id", "patient_id", "contact_id", "response_id", "submitted_at", "answers_json", "reviewed_at", "created_at", "updated_at"],
@@ -51,7 +51,7 @@ export async function setupUiMocks(page, { seed = {}, headers = {}, gridColumns 
   const liveGridColumns = Object.fromEntries(
     Object.keys(SHEET_HEADERS).map((sheet) => [sheet, Number(gridColumns[sheet] || 26)])
   );
-  const captured = { appends: [], puts: [], clears: [], headerPuts: [], gridAppends: [] };
+  const captured = { appends: [], puts: [], clears: [], headerPuts: [], gridAppends: [], documentInserts: [] };
 
   await page.addInitScript(() => {
     sessionStorage.setItem(
@@ -64,7 +64,17 @@ export async function setupUiMocks(page, { seed = {}, headers = {}, gridColumns 
     route.fulfill({ contentType: "text/javascript", body: "window.google={accounts:{oauth2:{}}};" })
   );
   await page.route("https://www.hebcal.com/**", (route) => route.fulfill({ json: { items: [] } }));
-  await page.route("https://docs.googleapis.com/**", (route) => route.fulfill({ json: {} }));
+  // Google Docs is only ever mocked; the inserted text is captured so the generated
+  // session document can be asserted without touching a real document.
+  await page.route("https://docs.googleapis.com/**", (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      for (const entry of request.postDataJSON()?.requests || []) {
+        if (entry.insertText?.text) captured.documentInserts.push(entry.insertText.text);
+      }
+    }
+    return route.fulfill({ json: {} });
+  });
 
   await page.route("https://sheets.googleapis.com/**", async (route) => {
     const request = route.request();
@@ -157,8 +167,12 @@ export function patientRow(id, name, fixedPrice) {
   return [id, name, "", "בית ספר", "רגשי", fixedPrice, "שני", "10:00", "", "", "", "active", "cash", "unpaid", "not_needed", `folder-${id}`, "", "2026-01-01T08:00:00.000Z", "2026-01-01T08:00:00.000Z", "2026-01-01", "2026-12-31"];
 }
 
-export function sessionRow(id, patientId, date, summary) {
-  return [id, patientId, date, "10:00", "10:45", "קליניקה", "טיפול", summary, "", "calendar-event-1", `${date}T08:00:00.000Z`, `${date}T08:00:00.000Z`, ""];
+export function sessionRow(id, patientId, date, summary, nextPlan = "") {
+  return [id, patientId, date, "10:00", "10:45", "קליניקה", "טיפול", summary, "", "calendar-event-1", `${date}T08:00:00.000Z`, `${date}T08:00:00.000Z`, "", nextPlan];
+}
+
+export function goalRow(id, patientId, title, progress = "0", status = "active") {
+  return [id, patientId, title, "", status, progress, "", "", "", "2026-01-01T08:00:00.000Z", "2026-01-01T08:00:00.000Z"];
 }
 
 export function chargeRow(id, sessionId, patientId, date, amount) {

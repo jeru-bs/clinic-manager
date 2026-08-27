@@ -2,13 +2,13 @@ import { expect, test } from "@playwright/test";
 
 const SHEET_HEADERS = {
   patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at", "fixed_start_date", "fixed_end_date"],
-  sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id"],
+  sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id", "next_plan"],
   payments: ["id", "patient_id", "session_id", "amount", "payment_method", "payment_status", "receipt_status", "paid_at", "receipt_file_id", "notes", "created_at", "updated_at"],
   tasks: ["id", "patient_id", "title", "description", "status", "due_date", "source", "created_at", "updated_at", "reminder_at"],
   files: ["id", "patient_id", "drive_file_id", "drive_folder_id", "name", "file_type", "url", "created_at", "updated_at"],
   contacts: ["id", "patient_id", "contact_type", "name", "relationship", "phone", "email", "organization", "notes", "created_at", "updated_at"],
   goals: ["id", "patient_id", "title", "description", "status", "progress", "target_date", "note", "legacy_source", "created_at", "updated_at"],
-  goal_updates: ["id", "goal_id", "patient_id", "session_id", "progress", "status", "note", "created_at", "updated_at"],
+  goal_updates: ["id", "goal_id", "patient_id", "session_id", "progress", "status", "note", "created_at", "updated_at", "outcome"],
   questionnaire_templates: ["id", "name", "audience", "questions_json", "active", "created_at", "updated_at"],
   questionnaire_assignments: ["id", "patient_id", "contact_id", "template_id", "form_id", "responder_url", "status", "sent_at", "due_date", "responded_at", "last_response_id", "created_at", "updated_at"],
   questionnaire_responses: ["id", "assignment_id", "patient_id", "contact_id", "response_id", "submitted_at", "answers_json", "reviewed_at", "created_at", "updated_at"],
@@ -259,6 +259,32 @@ test("uploading business documents creates the period folder tree once and store
   await page.getByRole("button", { name: "חישוב סיכום" }).click();
   await expect(page.getByText("נמצאו 2 רשומות")).toBeVisible();
 });
+test("a camera image uploads exactly one business document through the existing Drive flow", async ({ page }) => {
+  const captured = await setupBusinessMocks(page);
+
+  await openApp(page, "/#/business");
+  await page.getByRole("button", { name: "רשומה עסקית חדשה +" }).click();
+  await setDateInput(page, "#business_document_date", "2026-07-15");
+  await page.getByLabel("סוג").selectOption("expense");
+  await page.getByLabel("סכום בשקלים").fill("250");
+  await page.setInputFiles("#business_document_camera", {
+    name: "invoice-photo.jpg",
+    mimeType: "image/jpeg",
+    buffer: Buffer.from("camera-invoice")
+  });
+  await expect(page.locator('[data-upload-name="business_document_camera"]')).toHaveText("invoice-photo.jpg");
+  // A camera image satisfies the required upload, so the regular input no longer blocks submission.
+  expect(await page.locator("#business_document").evaluate((node) => node.required)).toBe(false);
+
+  await page.getByRole("button", { name: "העלאה ושמירה" }).click();
+  await expect(page.getByText("המסמך הועלה והרשומה נשמרה.")).toBeVisible();
+
+  // Exactly one file reaches Drive and exactly one row is written.
+  expect(captured.uploadMetadata).toEqual([{ name: "invoice-photo.jpg", parents: ["folder-3"] }]);
+  expect(captured.appendedBusinessRows).toHaveLength(1);
+  expect(captured.appendedBusinessRows[0][6]).toBe("invoice-photo.jpg");
+});
+
 
 test("a failed record save moves the uploaded file to the trash and reports the failure", async ({ page }) => {
   const captured = await setupBusinessMocks(page, { failBusinessAppend: true });

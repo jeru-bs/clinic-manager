@@ -2,13 +2,13 @@ import { expect, test } from "@playwright/test";
 
 const SHEET_HEADERS = {
   patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at", "fixed_start_date", "fixed_end_date"],
-  sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id"],
+  sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id", "next_plan"],
   payments: ["id", "patient_id", "session_id", "amount", "payment_method", "payment_status", "receipt_status", "paid_at", "receipt_file_id", "notes", "created_at", "updated_at"],
   tasks: ["id", "patient_id", "title", "description", "status", "due_date", "source", "created_at", "updated_at", "reminder_at"],
   files: ["id", "patient_id", "drive_file_id", "drive_folder_id", "name", "file_type", "url", "created_at", "updated_at"],
   contacts: ["id", "patient_id", "contact_type", "name", "relationship", "phone", "email", "organization", "notes", "created_at", "updated_at"],
   goals: ["id", "patient_id", "title", "description", "status", "progress", "target_date", "note", "legacy_source", "created_at", "updated_at"],
-  goal_updates: ["id", "goal_id", "patient_id", "session_id", "progress", "status", "note", "created_at", "updated_at"],
+  goal_updates: ["id", "goal_id", "patient_id", "session_id", "progress", "status", "note", "created_at", "updated_at", "outcome"],
   questionnaire_templates: ["id", "name", "audience", "questions_json", "active", "created_at", "updated_at"],
   questionnaire_assignments: ["id", "patient_id", "contact_id", "template_id", "form_id", "responder_url", "status", "sent_at", "due_date", "responded_at", "last_response_id", "created_at", "updated_at"],
   questionnaire_responses: ["id", "assignment_id", "patient_id", "contact_id", "response_id", "submitted_at", "answers_json", "reviewed_at", "created_at", "updated_at"],
@@ -178,7 +178,7 @@ test("deleting a session removes its calendar event directly without queueing wo
   await expect(page.getByText("המפגש נמחק מהמערכת ומהיומן.")).toBeVisible();
   expect(captured.calendarDeletes).toHaveLength(1);
   expect(captured.calendarDeletes[0].url).toContain("calendar-event-1");
-  expect(captured.clears).toEqual(expect.arrayContaining([{ sheet: "sessions", range: "sessions!A2:M2" }]));
+  expect(captured.clears).toEqual(expect.arrayContaining([{ sheet: "sessions", range: "sessions!A2:N2" }]));
   expect(await readSyncQueue(page)).toHaveLength(0);
   await expect(page.locator("#syncStatus")).not.toContainText("ממתינות לסנכרון");
 });
@@ -192,7 +192,7 @@ test("a temporary calendar failure still deletes the session and queues the even
 
   await deleteFirstSession(page);
   await expect(page.getByText("מחיקת האירוע מהיומן ממתינה לסנכרון חוזר", { exact: false })).toBeVisible();
-  expect(captured.clears).toEqual(expect.arrayContaining([{ sheet: "sessions", range: "sessions!A2:M2" }]));
+  expect(captured.clears).toEqual(expect.arrayContaining([{ sheet: "sessions", range: "sessions!A2:N2" }]));
 
   const queue = await readSyncQueue(page);
   expect(queue).toHaveLength(1);

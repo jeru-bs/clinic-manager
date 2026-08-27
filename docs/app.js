@@ -35,7 +35,8 @@ const SHEETS = {
     "calendar_event_id",
     "created_at",
     "updated_at",
-    "document_file_id"
+    "document_file_id",
+    "next_plan"
   ],
   payments: [
     "id",
@@ -109,7 +110,8 @@ const SHEETS = {
     "status",
     "note",
     "created_at",
-    "updated_at"
+    "updated_at",
+    "outcome"
   ],
   questionnaire_templates: [
     "id",
@@ -1359,15 +1361,24 @@ const PAYMENT_STATUS_TONES = { paid: "success", partial: "warning", unpaid: "dan
 const CHARGE_STATUS_TONES = { paid: "success", partial: "warning", open: "danger", cancelled: "" };
 const RECEIPT_STATUS_TONES = { issued: "success", needed: "warning", not_needed: "" };
 
-function uploadField({ id, name = "", label, required = false, hint = "", extra = "", wide = true, accept = "" }) {
-  return `
-    <div class="field${wide ? " wide" : ""}">
-      <label for="${html(id)}">${html(label)}</label>
+function uploadField({ id, name = "", label, required = false, hint = "", extra = "", wide = true, accept = "", camera = false }) {
+  const fileControl = `
       <div class="upload-control">
         <span class="upload-cta" aria-hidden="true">בחירת קובץ מהמחשב</span>
         <span class="upload-filename" data-upload-name="${html(id)}">לא נבחר קובץ</span>
-        <input id="${html(id)}" ${name ? `name="${html(name)}"` : ""} type="file" ${accept ? `accept="${html(accept)}"` : ""} ${required ? "required" : ""} aria-describedby="${html(id)}_hint" />
-      </div>
+        <input id="${html(id)}" ${name ? `name="${html(name)}"` : ""} type="file" ${accept ? `accept="${html(accept)}"` : ""} ${required ? "required" : ""} ${required && camera ? "data-upload-required" : ""} aria-describedby="${html(id)}_hint" />
+      </div>`;
+  // Camera capture is a second, equal option; exactly one of the two inputs may hold a file.
+  const cameraControl = `
+      <div class="upload-control">
+        <label class="upload-cta" for="${html(id)}_camera">צילום מהמצלמה</label>
+        <span class="upload-filename" data-upload-name="${html(id)}_camera">לא נבחר קובץ</span>
+        <input id="${html(id)}_camera" ${name ? `name="${html(name)}_camera"` : ""} type="file" accept="image/*" capture="environment" aria-describedby="${html(id)}_hint" />
+      </div>`;
+  return `
+    <div class="field${wide ? " wide" : ""}">
+      <label for="${html(id)}">${html(label)}</label>
+      ${camera ? `<div class="upload-controls" data-upload-group="${html(id)}">${fileControl}${cameraControl}</div>` : fileControl}
       <small class="upload-hint" id="${html(id)}_hint">${html(hint || "אפשר לבחור קובץ אחד. שם הקובץ שנבחר יוצג כאן.")}</small>
       ${extra}
     </div>`;
@@ -2347,6 +2358,68 @@ function detail(label, value) {
   return `<div class="detail"><span>${html(label)}</span><strong>${html(value || "-")}</strong></div>`;
 }
 
+// The four quick outcomes a therapist can mark on a goal straight from the session form.
+const GOAL_OUTCOMES = [
+  { value: "well", label: "בוצע היטב" },
+  { value: "partial", label: "התקדמות חלקית" },
+  { value: "difficulty", label: "קושי" },
+  { value: "achieved", label: "המטרה הושגה" }
+];
+
+function isGoalOutcome(value) {
+  return GOAL_OUTCOMES.some((outcome) => outcome.value === value);
+}
+
+// Chronological order of a session: date first, then start time, then creation time.
+function sessionChronologyKey(session) {
+  return `${session?.session_date || ""} ${session?.start_time || ""} ${session?.created_at || ""}`;
+}
+
+function sessionGoalUpdate(sessionId, goalId) {
+  if (!sessionId) return null;
+  return (
+    state.goalUpdates.find((update) => update.session_id === sessionId && update.goal_id === goalId) || null
+  );
+}
+
+// The plan written in the chronologically preceding session, ignoring the session being edited.
+function previousSessionPlan(patientId, currentSessionId = "") {
+  return (
+    state.sessions
+      .filter(
+        (session) =>
+          session.patient_id === patientId &&
+          session.id !== currentSessionId &&
+          String(session.next_plan || "").trim()
+      )
+      .sort((a, b) => sessionChronologyKey(b).localeCompare(sessionChronologyKey(a)))[0] || null
+  );
+}
+
+function goalOutcomeButtons(goal, selected) {
+  return `
+    <div class="field wide goal-outcome-group" data-goal-outcome-group="${html(goal.id)}" role="group" aria-label="סימון מהיר למטרה ${html(goal.title)}">
+      ${GOAL_OUTCOMES.map(
+        (outcome) => `
+        <button class="button secondary goal-outcome-button" data-action="set-goal-outcome" data-goal-id="${html(goal.id)}" data-outcome="${outcome.value}" type="button" aria-pressed="${selected === outcome.value ? "true" : "false"}">${outcome.label}</button>`
+      ).join("")}
+      <input name="goal_outcome_${html(goal.id)}" type="hidden" value="${html(selected || "")}" />
+    </div>`;
+}
+
+function previousPlanCallout(patientId, currentSessionId) {
+  const previous = previousSessionPlan(patientId, currentSessionId);
+  if (!previous) return "";
+  return `
+    <div class="field wide">
+      <div class="notice session-plan-callout" data-previous-plan="${html(previous.id)}" role="note">
+        <strong>מה תכננתי למפגש הזה</strong>
+        <span class="session-plan-source">מפגש מתאריך ${html(formatDate(previous.session_date))}</span>
+        <p>${html(previous.next_plan)}</p>
+      </div>
+    </div>`;
+}
+
 function sessionForm(patientId) {
   const editedSession =
     state.currentSessionId &&
@@ -2356,6 +2429,7 @@ function sessionForm(patientId) {
   const today = isoDate(new Date());
   return `
     <form class="form-grid inline-form" data-form="session" data-patient-id="${html(patientId)}" data-id="${html(editedSession?.id || "")}">
+      ${previousPlanCallout(patientId, editedSession?.id || "")}
       <div class="field">
         <label for="session_date">תאריך מפגש</label>
         <input class="picker-input" data-date-input id="session_date" name="session_date" readonly required type="text" value="${html(editedSession?.session_date || today)}" />
@@ -2388,14 +2462,23 @@ function sessionForm(patientId) {
         <label for="sensitive_notes">הערות פנימיות</label>
         <textarea id="sensitive_notes" name="sensitive_notes" placeholder="מידע פנימי שאינו מיועד לשיתוף">${html(editedSession?.sensitive_notes || "")}</textarea>
       </div>
-      ${state.goals.filter((goal) => goal.patient_id === patientId && ["planned", "active"].includes(goal.status)).map((goal) => `
+      <div class="field wide">
+        <label for="next_plan">תכנון למפגש הבא</label>
+        <textarea id="next_plan" name="next_plan" placeholder="מה חשוב להמשיך, לבדוק או להכין למפגש הבא?">${html(editedSession?.next_plan || "")}</textarea>
+      </div>
+      ${state.goals.filter((goal) => goal.patient_id === patientId && ["planned", "active"].includes(goal.status)).map((goal) => {
+        // Editing a session must restore exactly what that session saved for the goal.
+        const savedUpdate = sessionGoalUpdate(editedSession?.id || "", goal.id);
+        return `
         <fieldset class="field wide goal-session-update">
           <legend>${html(goal.title)}</legend>
           <div class="form-grid">
-            <div class="field"><label for="goal_progress_${html(goal.id)}">התקדמות במפגש</label><input id="goal_progress_${html(goal.id)}" name="goal_progress_${html(goal.id)}" type="number" min="0" max="100" value="${html(goal.progress || "0")}" /></div>
-            <div class="field"><label for="goal_note_${html(goal.id)}">הערת התקדמות</label><input id="goal_note_${html(goal.id)}" name="goal_note_${html(goal.id)}" /></div>
+            ${goalOutcomeButtons(goal, savedUpdate?.outcome || "")}
+            <div class="field"><label for="goal_progress_${html(goal.id)}">התקדמות במפגש</label><input id="goal_progress_${html(goal.id)}" name="goal_progress_${html(goal.id)}" type="number" min="0" max="100" value="${html(savedUpdate?.progress || goal.progress || "0")}" /></div>
+            <div class="field"><label for="goal_note_${html(goal.id)}">הערת התקדמות</label><input id="goal_note_${html(goal.id)}" name="goal_note_${html(goal.id)}" value="${html(savedUpdate?.note || "")}" /></div>
           </div>
-        </fieldset>`).join("")}
+        </fieldset>`;
+      }).join("")}
       <div class="toolbar wide">
         <button class="button" type="submit">${editedSession ? "עדכון מפגש" : "שמירת מפגש"}</button>
         ${editedSession ? `<button class="button secondary" data-action="cancel-session-edit" type="button">ביטול עריכה</button>` : ""}
@@ -2490,6 +2573,7 @@ function paymentForm(patientId) {
       ${uploadField({
         id: "receipt_upload",
         name: "receipt_upload",
+        camera: true,
         label: receiptFile ? "החלפת קובץ קבלה" : "קובץ קבלה",
         hint: receiptFile
           ? "בחירת קובץ חדש תחליף את הקבלה הקיימת."
@@ -3768,6 +3852,7 @@ function businessRecordForm() {
           : uploadField({
               id: "business_document",
               name: "business_document",
+              camera: true,
               label: "קובץ המסמך",
               required: true,
               hint: "יש לבחור קובץ אחד. הקובץ יישמר בתיקיית התקופה המתאימה."
@@ -5566,7 +5651,10 @@ function sessionDocumentText(patient, session) {
     session.summary || "",
     "",
     "הערות פנימיות:",
-    session.sensitive_notes || ""
+    session.sensitive_notes || "",
+    "",
+    "תכנון למפגש הבא:",
+    session.next_plan || ""
   ].join("\n");
 }
 
@@ -6152,7 +6240,7 @@ async function saveBusinessRecord(form) {
 }
 
 async function createBusinessRecord(form, data, validated) {
-  const selectedFile = form.elements.business_document?.files?.[0];
+  const selectedFile = form.elements.business_document?.files?.[0] || form.elements.business_document_camera?.files?.[0];
   if (!selectedFile) throw new Error("צריך לבחור קובץ מסמך להעלאה.");
 
   const folder = await ensureBusinessPeriodFolder(data.document_date);
@@ -7048,21 +7136,37 @@ async function saveSessionGoalUpdates(form, session) {
   for (const goal of patientGoals) {
     const progressField = form.elements[`goal_progress_${goal.id}`];
     const noteField = form.elements[`goal_note_${goal.id}`];
+    const outcomeField = form.elements[`goal_outcome_${goal.id}`];
     if (!progressField) continue;
-    const progress = Math.max(0, Math.min(100, Number(progressField.value) || 0));
+    const outcome = isGoalOutcome(outcomeField?.value) ? outcomeField.value : "";
+    // Only "המטרה הושגה" derives a numeric value; the other outcomes never invent progress.
+    const progress = outcome === "achieved"
+      ? 100
+      : Math.max(0, Math.min(100, Number(progressField.value) || 0));
     const note = String(noteField?.value || "").trim();
-    if (!note && progress === Number(goal.progress || 0)) continue;
+    const existingUpdate = sessionGoalUpdate(session.id, goal.id);
+    if (!existingUpdate && !note && !outcome && progress === Number(goal.progress || 0)) continue;
     const now = new Date().toISOString();
-    const update = {
-      id: id(), goal_id: goal.id, patient_id: goal.patient_id, session_id: session.id,
-      progress: String(progress), status: progress >= 100 ? "achieved" : "active", note,
-      created_at: now, updated_at: now
-    };
-    const result = await appendSheet("goal_updates", update);
-    update._rowNumber = appendedRowNumber(result);
-    state.goalUpdates = [update, ...state.goalUpdates];
+    const status = progress >= 100 ? "achieved" : "active";
+    // One goal_updates row per session_id + goal_id: editing a session rewrites its own row.
+    if (existingUpdate) {
+      const updated = { ...existingUpdate, progress: String(progress), status, note, outcome, updated_at: now };
+      if (existingUpdate._rowNumber) {
+        await updateSheetRow("goal_updates", existingUpdate._rowNumber, updated, existingUpdate);
+      }
+      state.goalUpdates = state.goalUpdates.map((item) => item.id === existingUpdate.id ? updated : item);
+    } else {
+      const update = {
+        id: id(), goal_id: goal.id, patient_id: goal.patient_id, session_id: session.id,
+        progress: String(progress), status, note, outcome,
+        created_at: now, updated_at: now
+      };
+      const result = await appendSheet("goal_updates", update);
+      update._rowNumber = appendedRowNumber(result);
+      state.goalUpdates = [update, ...state.goalUpdates];
+    }
     if (goal._rowNumber) {
-      const updatedGoal = { ...goal, progress: String(progress), status: update.status, updated_at: now };
+      const updatedGoal = { ...goal, progress: String(progress), status, updated_at: now };
       await updateSheetRow("goals", goal._rowNumber, updatedGoal, goal);
       state.goals = state.goals.map((item) => item.id === goal.id ? updatedGoal : item);
     }
@@ -7105,6 +7209,7 @@ async function saveSession(form) {
     session_type: data.session_type || "",
     summary: data.summary || "",
     sensitive_notes: data.sensitive_notes || "",
+    next_plan: data.next_plan || "",
     calendar_event_id: existing?.calendar_event_id || "",
     document_file_id: existing?.document_file_id || "",
     created_at: existing?.created_at || now,
@@ -7229,7 +7334,7 @@ async function savePayment(form) {
   const patientId = form.dataset.patientId || "";
   const existingId = form.dataset.id || "";
   const existingPayment = existingId ? state.payments.find((payment) => payment.id === existingId) : null;
-  const receiptUpload = form.elements.receipt_upload?.files?.[0];
+  const receiptUpload = form.elements.receipt_upload?.files?.[0] || form.elements.receipt_upload_camera?.files?.[0];
 
   if (!patientId) throw new Error("לא נמצא מטופל לשמירת התשלום.");
   if (!data.amount) throw new Error("סכום התשלום הוא שדה חובה.");
@@ -8025,6 +8130,24 @@ function bindEvents() {
       render();
       focusRowMenuToggle(rowId);
     }
+    if (action === "set-goal-outcome") {
+      // Selecting an outcome only changes the open form; it is persisted with the session itself.
+      const group = target.closest("[data-goal-outcome-group]");
+      const form = target.closest("form");
+      const outcome = target.dataset.outcome || "";
+      if (group && form && isGoalOutcome(outcome)) {
+        for (const button of group.querySelectorAll('[data-action="set-goal-outcome"]')) {
+          button.setAttribute("aria-pressed", button.dataset.outcome === outcome ? "true" : "false");
+        }
+        const hidden = form.elements[`goal_outcome_${target.dataset.goalId}`];
+        if (hidden) hidden.value = outcome;
+        // Only "המטרה הושגה" derives a numeric value; the other outcomes leave progress alone.
+        if (outcome === "achieved") {
+          const progressField = form.elements[`goal_progress_${target.dataset.goalId}`];
+          if (progressField) progressField.value = "100";
+        }
+      }
+    }
     if (action === "set-payments-view") {
       state.paymentsView = target.dataset.view === "receipts-pending" ? "receipts-pending" : "all";
       state.error = "";
@@ -8799,6 +8922,24 @@ function bindEvents() {
         ?.querySelector(`[data-upload-name="${uploadInput.id}"]`);
       if (display) {
         display.textContent = uploadInput.files?.[0]?.name || "לא נבחר קובץ";
+      }
+      const group = uploadInput.closest("[data-upload-group]");
+      if (group) {
+        // Only one file may be uploaded: choosing here clears the other control in the group.
+        if (uploadInput.files?.length) {
+          for (const other of group.querySelectorAll('input[type="file"]')) {
+            if (other === uploadInput) continue;
+            other.value = "";
+            const otherDisplay = group.querySelector(`[data-upload-name="${other.id}"]`);
+            if (otherDisplay) otherDisplay.textContent = "לא נבחר קובץ";
+          }
+        }
+        // A camera image satisfies a required upload just as a chosen file does.
+        const requiredInput = group.querySelector('input[type="file"][data-upload-required]');
+        if (requiredInput) {
+          const cameraInput = group.querySelector('input[type="file"][capture]');
+          requiredInput.required = !(cameraInput && cameraInput !== requiredInput && cameraInput.files?.length);
+        }
       }
     }
     const chargeCheckbox = event.target.closest('[data-charge-select] input[name="charge_ids"]');

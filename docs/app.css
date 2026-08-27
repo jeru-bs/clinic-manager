@@ -1097,6 +1097,36 @@ fieldset,
   padding: 12px 14px;
 }
 
+/* Quick outcome markers for a goal; exactly one of them is pressed at a time. */
+.goal-outcome-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-xs);
+}
+
+.goal-outcome-button[aria-pressed="true"] {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #ffffff;
+}
+
+/* Read-only reminder of what the previous session planned for this one. */
+.session-plan-callout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+}
+
+.session-plan-callout p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.session-plan-source {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 legend {
   padding-inline: 4px;
   color: var(--text);
@@ -1126,6 +1156,13 @@ legend {
   flex: 0 0 auto;
   margin: 0;
   accent-color: var(--primary);
+}
+
+/* Regular file selection and camera capture stand side by side, stacking on narrow screens. */
+.upload-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--gap-sm);
 }
 
 /* Hebrew RTL upload control wrapping the native file input. */

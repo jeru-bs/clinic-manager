@@ -2,13 +2,13 @@ import { expect, test } from "@playwright/test";
 
 const SHEET_HEADERS = {
   patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at", "fixed_start_date", "fixed_end_date"],
-  sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id"],
+  sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id", "next_plan"],
   payments: ["id", "patient_id", "session_id", "amount", "payment_method", "payment_status", "receipt_status", "paid_at", "receipt_file_id", "notes", "created_at", "updated_at"],
   tasks: ["id", "patient_id", "title", "description", "status", "due_date", "source", "created_at", "updated_at", "reminder_at"],
   files: ["id", "patient_id", "drive_file_id", "drive_folder_id", "name", "file_type", "url", "created_at", "updated_at"],
   contacts: ["id", "patient_id", "contact_type", "name", "relationship", "phone", "email", "organization", "notes", "created_at", "updated_at"],
   goals: ["id", "patient_id", "title", "description", "status", "progress", "target_date", "note", "legacy_source", "created_at", "updated_at"],
-  goal_updates: ["id", "goal_id", "patient_id", "session_id", "progress", "status", "note", "created_at", "updated_at"],
+  goal_updates: ["id", "goal_id", "patient_id", "session_id", "progress", "status", "note", "created_at", "updated_at", "outcome"],
   questionnaire_templates: ["id", "name", "audience", "questions_json", "active", "created_at", "updated_at"],
   questionnaire_assignments: ["id", "patient_id", "contact_id", "template_id", "form_id", "responder_url", "status", "sent_at", "due_date", "responded_at", "last_response_id", "created_at", "updated_at"],
   questionnaire_responses: ["id", "assignment_id", "patient_id", "contact_id", "response_id", "submitted_at", "answers_json", "reviewed_at", "created_at", "updated_at"],
@@ -395,6 +395,40 @@ test("replacing the receipt creates a new business copy and trashes the old one"
   expect(captured.trashes).toContain("biz-copy-1");
   expect(appendsFor(captured, "business_records")).toHaveLength(0);
 });
+test("replacing the receipt from the camera stays idempotent and uploads one file", async ({ page }) => {
+  const { captured } = await setupIncomeMocks(page, { seed: LINKED_SEED });
+
+  await openPaymentsTab(page);
+  await page.locator('button[data-action="edit-payment"][data-id="pay1"]').click();
+  const paymentForm = page.locator('form[data-form="payment"][data-id="pay1"]');
+  // A regular selection first, then a camera image: only the camera image may survive.
+  await paymentForm.locator("#receipt_upload").setInputFiles({
+    name: "receipt2.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("PDF-DATA-2")
+  });
+  await paymentForm.locator("#receipt_upload_camera").setInputFiles({
+    name: "receipt-photo.jpg",
+    mimeType: "image/jpeg",
+    buffer: Buffer.from("CAMERA-DATA")
+  });
+  await expect(paymentForm.locator('[data-upload-name="receipt_upload"]')).toHaveText("לא נבחר קובץ");
+  await paymentForm.getByRole("button", { name: "עדכון תשלום" }).click();
+  await expect(page.getByText("התשלום נשמר במערכת.")).toBeVisible();
+
+  expect(captured.uploads).toEqual([{ id: "receipt-upload-1", name: "receipt-photo.jpg", parent: "folder-p1" }]);
+  expect(captured.copies).toEqual([
+    { sourceId: "receipt-upload-1", id: "biz-copy-new-1", name: "receipt-photo.jpg", parent: "period-folder-old" }
+  ]);
+  const businessPuts = putsFor(captured, "business_records");
+  expect(businessPuts).toHaveLength(1);
+  expect(businessPuts[0].row[6]).toBe("receipt-photo.jpg");
+  // The income row is still updated in place, never duplicated.
+  expect(appendsFor(captured, "business_records")).toHaveLength(0);
+  expect(captured.trashes).toContain("receipt-drive-1");
+  expect(captured.trashes).toContain("biz-copy-1");
+});
+
 
 test("deleting the payment deletes the linked income row and trashes the business copy", async ({ page }) => {
   const { captured } = await setupIncomeMocks(page, { seed: LINKED_SEED });
