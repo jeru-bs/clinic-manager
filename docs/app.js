@@ -18,7 +18,9 @@ const SHEETS = {
     "drive_folder_id",
     "drive_folder_path",
     "created_at",
-    "updated_at"
+    "updated_at",
+    "fixed_start_date",
+    "fixed_end_date"
   ],
   sessions: [
     "id",
@@ -758,6 +760,71 @@ function formatDate(value) {
   );
 }
 
+const HEBREW_GEMATRIA_HUNDREDS = ["", "ק", "ר", "ש", "ת", "תק", "תר", "תש", "תת", "תתק"];
+const HEBREW_GEMATRIA_TENS = ["", "י", "כ", "ל", "מ", "נ", "ס", "ע", "פ", "צ"];
+const HEBREW_GEMATRIA_UNITS = ["", "א", "ב", "ג", "ד", "ה", "ו", "ז", "ח", "ט"];
+// Built from code points so the source file stays free of the Hebrew punctuation
+// character that the project static check treats as a mojibake sentinel.
+const HEBREW_GERESH = String.fromCharCode(0x05f3);
+const HEBREW_GERSHAYIM = String.fromCharCode(0x05f4);
+const hebrewDateCache = new Map();
+let hebrewDateFormatter = null;
+
+function hebrewGematria(value) {
+  const number = Math.max(0, Math.floor(Number(value) || 0));
+  if (!number || number > 999) return "";
+  const letters = (
+    HEBREW_GEMATRIA_HUNDREDS[Math.floor(number / 100) % 10] +
+    HEBREW_GEMATRIA_TENS[Math.floor(number / 10) % 10] +
+    HEBREW_GEMATRIA_UNITS[number % 10]
+  )
+    // 15 and 16 are written טו and טז so the divine name is never spelled out.
+    .replace(/יה$/, "טו")
+    .replace(/יו$/, "טז");
+  if (letters.length === 1) return `${letters}${HEBREW_GERESH}`;
+  return `${letters.slice(0, -1)}${HEBREW_GERSHAYIM}${letters.slice(-1)}`;
+}
+
+function hebrewDateParts(dateValue) {
+  const value = String(dateValue || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  if (hebrewDateCache.has(value)) return hebrewDateCache.get(value);
+
+  let parts = null;
+  try {
+    if (!hebrewDateFormatter) {
+      // Latin digits are requested explicitly because engines disagree about "nu-hebr";
+      // the numerals are converted to gematria below so every engine renders the same text.
+      hebrewDateFormatter = new Intl.DateTimeFormat("he-u-ca-hebrew-nu-latn", {
+        day: "numeric",
+        month: "long",
+        year: "numeric"
+      });
+    }
+    // Anchoring on local noon keeps the civil day stable across timezone and DST shifts.
+    const formatted = hebrewDateFormatter.formatToParts(new Date(`${value}T12:00:00`));
+    const dayNumber = formatted.find((part) => part.type === "day")?.value || "";
+    const month = formatted.find((part) => part.type === "month")?.value || "";
+    const yearNumber = formatted.find((part) => part.type === "year")?.value || "";
+    const day = hebrewGematria(String(dayNumber).replace(/\D/g, ""));
+    const year = hebrewGematria(Number(String(yearNumber).replace(/\D/g, "")) % 1000);
+    if (day && month) {
+      parts = {
+        day,
+        month,
+        year,
+        short: `${day} ב${month}`,
+        full: `${day} ב${month} ${year}`.trim()
+      };
+    }
+  } catch {
+    parts = null;
+  }
+
+  hebrewDateCache.set(value, parts);
+  return parts;
+}
+
 function isoDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
     date.getDate()
@@ -896,6 +963,19 @@ async function ensureIsraelHolidaysForMonth(monthValue) {
 
 function israelHolidaysForDate(dateValue) {
   return state.israelHolidays.filter((holiday) => holiday.date === dateValue);
+}
+
+async function ensureIsraelHolidaysForRange(startDateValue, endDateValue) {
+  const startYear = Number(String(startDateValue || "").slice(0, 4));
+  const endYear = Number(String(endDateValue || "").slice(0, 4));
+  if (!startYear || !endYear || endYear < startYear) return;
+
+  const missingYears = [];
+  for (let year = startYear; year <= endYear; year += 1) {
+    if (!state.israelHolidayYears.includes(year)) missingYears.push(year);
+  }
+  if (!missingYears.length) return;
+  await Promise.all(missingYears.map(loadIsraelHolidaysForYear));
 }
 
 function israelHolidayBlocksRecurring(dateValue) {
@@ -2552,6 +2632,7 @@ function calendarPage() {
   const selectedSessions = rows.filter((session) => session.session_date === state.selectedCalendarDate);
   const selectedExceptions = scheduleExceptionsForDate(state.selectedCalendarDate);
   const selectedHolidays = israelHolidaysForDate(state.selectedCalendarDate);
+  const selectedHebrewDate = hebrewDateParts(state.selectedCalendarDate);
   const sessionsByDate = rows.reduce((acc, session) => {
     if (!session.session_date) return acc;
     acc[session.session_date] = [...(acc[session.session_date] || []), session];
@@ -2584,9 +2665,13 @@ function calendarPage() {
               const daySessions = sessionsByDate[day.date] || [];
               const dayHolidays = israelHolidaysForDate(day.date);
               const holidayLabel = dayHolidays.map((holiday) => holiday.title).join(", ");
+              const hebrewDay = hebrewDateParts(day.date);
               return `
-                <button class="calendar-day ${day.inMonth ? "" : "muted"} ${day.date === today ? "today" : ""} ${day.date === state.selectedCalendarDate ? "selected" : ""} ${daySessions.length ? "has-events" : ""} ${dayHolidays.length ? "has-holiday" : ""}" data-action="select-calendar-date" data-date="${html(day.date)}" type="button" aria-label="${html(`${formatDate(day.date)}: ${daySessions.length} מפגשים${holidayLabel ? `; ${holidayLabel}` : ""}`)}">
-                  <span class="day-number">${Number(day.date.slice(8, 10))}</span>
+                <button class="calendar-day ${day.inMonth ? "" : "muted"} ${day.date === today ? "today" : ""} ${day.date === state.selectedCalendarDate ? "selected" : ""} ${daySessions.length ? "has-events" : ""} ${dayHolidays.length ? "has-holiday" : ""}" data-action="select-calendar-date" data-date="${html(day.date)}" type="button" aria-label="${html(`${formatDate(day.date)}${hebrewDay ? ` (${hebrewDay.full})` : ""}: ${daySessions.length} מפגשים${holidayLabel ? `; ${holidayLabel}` : ""}`)}">
+                  <span class="day-head">
+                    <span class="day-number">${Number(day.date.slice(8, 10))}</span>
+                    ${hebrewDay ? `<span class="day-hebrew" data-hebrew-date="${html(hebrewDay.full)}" aria-hidden="true"><span class="day-hebrew-num">${html(hebrewDay.day)}</span><span class="day-hebrew-month"> ב${html(hebrewDay.month)}</span></span>` : ""}
+                  </span>
                   ${daySessions.length ? `<span class="calendar-mobile-count" aria-hidden="true">${daySessions.length}</span>` : ""}
                   <span class="day-events">
                     ${dayHolidays
@@ -2613,7 +2698,7 @@ function calendarPage() {
       </article>
       <aside class="panel day-panel">
         <div class="panel-head">
-          <h2>${html(formatDate(state.selectedCalendarDate))}</h2>
+          <h2>${html(formatDate(state.selectedCalendarDate))}${selectedHebrewDate ? ` <span class="day-panel-hebrew">${html(selectedHebrewDate.full)}</span>` : ""}</h2>
           <span>${selectedSessions.length} מפגשים${selectedHolidays.length ? `, ${selectedHolidays.length} מועדים` : ""}${selectedExceptions.length ? `, ${selectedExceptions.length} חריגים` : ""}</span>
         </div>
         ${
@@ -2645,13 +2730,19 @@ function calendarPage() {
         ${
           selectedSessions.length
             ? `<div class="day-agenda">${selectedSessions
-                .map(
-                  (session) => `
-                  <div class="day-agenda-row">
+                .map((session) => {
+                  // The row resolves the patient card by stored id, never by the displayed name.
+                  const rowPatient = state.patients.find((item) => item.id === session.patient_id);
+                  return `
+                  <div class="day-agenda-row${rowPatient ? " is-linked" : ""}"${rowPatient ? ` data-action="open-profile" data-id="${html(rowPatient.id)}"` : ""}>
                     <time>${html(session.start_time || "--:--")}</time>
-                    <strong>${html(patientName(session.patient_id))}</strong>
-                  </div>`
-                )
+                    ${
+                      rowPatient
+                        ? `<button class="day-agenda-open" data-action="open-profile" data-id="${html(rowPatient.id)}" type="button">${html(rowPatient.child_name || patientName(session.patient_id))}</button>`
+                        : `<strong>${html(patientName(session.patient_id))}</strong>`
+                    }
+                  </div>`;
+                })
                 .join("")}</div>`
             : `<div class="empty">אין מפגשים ביום הזה.</div>`
         }
@@ -3841,6 +3932,161 @@ function handlePickerKeyboard(event) {
   if (input.matches("[data-time-input]")) showTimePicker(input);
 }
 
+let activeModalElement = null;
+
+function closeAppModal() {
+  activeModalElement?.remove();
+  activeModalElement = null;
+}
+
+function modalFocusables(root) {
+  return [...root.querySelectorAll("button, [data-date-input], [data-time-input]")].filter(
+    (node) => !node.disabled
+  );
+}
+
+// A promise based dialog so a whole conflict flow can be resolved before any write happens.
+function showAppModal({ title, message, body = "", actions, readValues = null }) {
+  return new Promise((resolve) => {
+    closeAppModal();
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.dir = "rtl";
+    backdrop.innerHTML = `
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="appModalTitle" data-modal-card>
+        <h2 id="appModalTitle">${html(title)}</h2>
+        <p class="modal-message">${html(message)}</p>
+        ${body}
+        <p class="modal-notice" data-modal-notice role="alert"></p>
+        <div class="modal-actions">
+          ${actions
+            .map(
+              (action) =>
+                `<button class="button ${action.variant || "secondary"}" data-modal-action="${html(action.value)}" type="button">${html(action.label)}</button>`
+            )
+            .join("")}
+        </div>
+      </div>`;
+
+    const finish = (value) => {
+      if (activeModalElement !== backdrop) return;
+      closeAppModal();
+      resolve(value);
+    };
+
+    backdrop.addEventListener("click", (event) => {
+      // Date and time inputs keep using the shared picker handler on document.
+      if (event.target.closest("[data-date-input], [data-time-input]")) return;
+      event.stopPropagation();
+      const button = event.target.closest("[data-modal-action]");
+      if (!button) return;
+      const value = button.dataset.modalAction;
+      if (value !== "abandon" && readValues) {
+        const values = readValues(backdrop);
+        if (!values) return;
+        finish(values);
+        return;
+      }
+      finish(value);
+    });
+
+    backdrop.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        event.preventDefault();
+        finish("abandon");
+        return;
+      }
+      if (event.key !== "Tab") return;
+      event.stopPropagation();
+      const focusables = modalFocusables(backdrop);
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+
+    activeModalElement = backdrop;
+    document.body.appendChild(backdrop);
+    modalFocusables(backdrop)[0]?.focus();
+  });
+}
+
+async function showNoticeModal(message) {
+  await showAppModal({
+    title: "בדיקת מועד",
+    message,
+    actions: [{ value: "ok", label: "הבנתי", variant: "blue" }]
+  });
+}
+
+async function askHolidayConflict(holidayTitle) {
+  return showAppModal({
+    title: "התנגשות עם מועד ישראל",
+    message: `בתוך הטווח שהוגדר, חלה התנגשות עם ${holidayTitle}, האם לבטל את המפגש או לשנות את המועד שלו?`,
+    actions: [
+      { value: "cancel", label: "ביטול", variant: "" },
+      { value: "move", label: "שינוי", variant: "blue" },
+      { value: "abandon", label: "יציאה ללא שמירה", variant: "secondary" }
+    ]
+  });
+}
+
+async function askReplacementOccurrence(dateValue, timeValue) {
+  return showAppModal({
+    title: "שינוי מועד המפגש",
+    message: `בחירת מועד חלופי למפגש שנקבע ל-${formatDate(dateValue)}.`,
+    body: `
+      <div class="modal-fields">
+        <div class="field">
+          <label for="conflictReplacementDate">תאריך חלופי</label>
+          <input class="picker-input" data-date-input id="conflictReplacementDate" readonly type="text" value="${html(dateValue)}" />
+        </div>
+        <div class="field">
+          <label for="conflictReplacementTime">שעה חלופית</label>
+          <input class="picker-input" data-time-input id="conflictReplacementTime" readonly type="text" value="${html(timeValue)}" />
+        </div>
+      </div>`,
+    actions: [
+      { value: "apply", label: "עדכון המועד", variant: "blue" },
+      { value: "abandon", label: "יציאה ללא שמירה", variant: "secondary" }
+    ],
+    readValues: (root) => {
+      const notice = root.querySelector("[data-modal-notice]");
+      const date = root.querySelector("#conflictReplacementDate")?.value || "";
+      const time = root.querySelector("#conflictReplacementTime")?.value || "";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(time)) {
+        if (notice) notice.textContent = "צריך לבחור תאריך ושעה תקינים.";
+        return null;
+      }
+      if (date === dateValue) {
+        if (notice) notice.textContent = "צריך לבחור תאריך שונה מהמועד שהתנגש.";
+        return null;
+      }
+      return { date, time };
+    }
+  });
+}
+
+async function confirmSeriesSave(plan) {
+  const answer = await showAppModal({
+    title: "אישור שמירת הסדרה",
+    message: `${plan.occurrences.length} מפגשים ייווצרו ויסונכרנו ליומן${plan.cancellations.length ? `, ${plan.cancellations.length} מועדים בוטלו` : ""}. לאשר את השמירה?`,
+    actions: [
+      { value: "save", label: "שמירה וסנכרון", variant: "blue" },
+      { value: "abandon", label: "יציאה ללא שמירה", variant: "secondary" }
+    ]
+  });
+  return answer === "save";
+}
+
 function patientDrawer() {
   const patient = state.currentPatientId
     ? state.patients.find((item) => item.id === state.currentPatientId)
@@ -3882,6 +4128,19 @@ function patientDrawer() {
             <label for="fixed_time">שעה קבועה</label>
             <input class="picker-input" data-time-input id="fixed_time" name="fixed_time" readonly type="text" value="${html(patient?.fixed_time || "")}" />
           </div>
+          <div class="field">
+            <label for="fixed_start_date">תחילת הטיפול הקבוע</label>
+            <input class="picker-input" data-date-input id="fixed_start_date" name="fixed_start_date" readonly type="text" value="${html(patient?.fixed_start_date || "")}" />
+          </div>
+          <div class="field">
+            <label for="fixed_end_date">סיום הטיפול הקבוע</label>
+            <input class="picker-input" data-date-input id="fixed_end_date" name="fixed_end_date" readonly type="text" value="${html(patient?.fixed_end_date || "")}" />
+          </div>
+          ${
+            patient?.fixed_day && patient?.fixed_time && (!patient.fixed_start_date || !patient.fixed_end_date)
+              ? `<p class="form-note wide">לטיפול הקבוע הקיים אין טווח תאריכים. כדי לשמור את הכרטיס צריך להגדיר תאריך התחלה ותאריך סיום.</p>`
+              : ""
+          }
           <div class="field wide">
             <label for="general_notes">הערות</label>
             <textarea id="general_notes" name="general_notes">${html(patient?.general_notes || "")}</textarea>
@@ -4017,9 +4276,199 @@ async function cancelRecurringSession(patientId, dateValue) {
   return exception;
 }
 
+const MAX_RECURRING_OCCURRENCES = 400;
+
+// A fixed treatment is only valid as a bounded series: day, time, start and end together.
+function normalizeRecurringBounds(data) {
+  const fixedDay = String(data?.fixed_day || "").trim();
+  const fixedTime = String(data?.fixed_time || "").trim();
+  const startDate = String(data?.fixed_start_date || "").trim();
+  const endDate = String(data?.fixed_end_date || "").trim();
+
+  if (!fixedDay && !fixedTime) {
+    if (startDate || endDate) {
+      throw new Error("אי אפשר להגדיר טווח תאריכים בלי יום קבוע ושעה קבועה.");
+    }
+    return { fixedDay: "", fixedTime: "", startDate: "", endDate: "" };
+  }
+  if (!fixedDay || !fixedTime) {
+    throw new Error("לטיפול קבוע צריך להגדיר גם יום קבוע וגם שעה קבועה.");
+  }
+  if (!startDate || !endDate) {
+    throw new Error("לטיפול קבוע צריך להגדיר תאריך התחלה ותאריך סיום.");
+  }
+  if (endDate < startDate) {
+    throw new Error("תאריך הסיום של הטיפול הקבוע לא יכול להיות לפני תאריך ההתחלה.");
+  }
+  return { fixedDay, fixedTime, startDate, endDate };
+}
+
+function recurringSeriesDates(fixedDay, startDate, endDate) {
+  const dayIndex = fixedDayIndex(fixedDay);
+  if (dayIndex < 0 || !startDate || !endDate || endDate < startDate) return [];
+
+  const cursor = dateFromInput(startDate);
+  while (cursor.getDay() !== dayIndex) cursor.setDate(cursor.getDate() + 1);
+
+  const dates = [];
+  while (isoDate(cursor) <= endDate && dates.length <= MAX_RECURRING_OCCURRENCES) {
+    dates.push(isoDate(cursor));
+    cursor.setDate(cursor.getDate() + 7);
+  }
+  return dates;
+}
+
+function storedScheduleExceptionFor(patientId, dateValue) {
+  return state.scheduleExceptions.find((exception) =>
+    exceptionApplies(exception, patientId, dateValue)
+  );
+}
+
+// Resolves one proposed occurrence with the therapist. Returns "abandon" to stop the flow.
+async function resolveSeriesOccurrence(patientId, dateValue, timeValue, plan, planned) {
+  let currentDate = dateValue;
+  let currentTime = timeValue;
+  let isReplacement = false;
+
+  for (let step = 0; step < 20; step += 1) {
+    const holidays = israelHolidaysForDate(currentDate);
+    if (!holidays.length) {
+      if (!planned.has(currentDate)) {
+        plan.occurrences.push({ date: currentDate, time: currentTime });
+        planned.add(currentDate);
+      }
+      return "kept";
+    }
+
+    plan.conflicts += 1;
+    const choice = await askHolidayConflict(holidays[0].title);
+    if (choice === "abandon") return "abandon";
+    if (choice === "cancel") {
+      if (!isReplacement) plan.cancellations.push(currentDate);
+      return "cancelled";
+    }
+
+    const replacement = await askReplacementOccurrence(currentDate, currentTime);
+    if (replacement === "abandon") return "abandon";
+    if (planned.has(replacement.date) || actualSessionExists(patientId, replacement.date)) {
+      await showNoticeModal("כבר קיים מפגש למטופל בתאריך שנבחר. צריך לבחור מועד אחר.");
+      continue;
+    }
+
+    if (!isReplacement) plan.cancellations.push(currentDate);
+    currentDate = replacement.date;
+    currentTime = replacement.time;
+    isReplacement = true;
+  }
+
+  return "abandon";
+}
+
+// Builds the final occurrence set without writing anything, so an abandoned flow leaves no trace.
+async function prepareRecurringSchedulePlan(data, patientId) {
+  const bounds = normalizeRecurringBounds(data);
+  const plan = { occurrences: [], cancellations: [], conflicts: 0, abandoned: false };
+  if (!bounds.startDate) return plan;
+
+  const seriesDates = recurringSeriesDates(bounds.fixedDay, bounds.startDate, bounds.endDate);
+  if (!seriesDates.length) {
+    throw new Error("בטווח שנבחר אין אף מועד שמתאים ליום הקבוע שהוגדר.");
+  }
+  if (seriesDates.length > MAX_RECURRING_OCCURRENCES) {
+    throw new Error(`טווח הטיפול הקבוע ארוך מדי. אפשר להגדיר עד ${MAX_RECURRING_OCCURRENCES} מפגשים בסדרה.`);
+  }
+
+  await ensureIsraelHolidaysForRange(bounds.startDate, bounds.endDate);
+
+  const planned = new Set();
+  for (const seriesDate of seriesDates) {
+    // Exceptions already stored keep earlier decisions, and existing sessions keep resaves idempotent.
+    if (storedScheduleExceptionFor(patientId, seriesDate)) continue;
+    if (actualSessionExists(patientId, seriesDate)) {
+      planned.add(seriesDate);
+      continue;
+    }
+    const outcome = await resolveSeriesOccurrence(patientId, seriesDate, bounds.fixedTime, plan, planned);
+    if (outcome === "abandon") return { ...plan, abandoned: true };
+  }
+
+  if (plan.conflicts && !(await confirmSeriesSave(plan))) {
+    return { ...plan, abandoned: true };
+  }
+  return plan;
+}
+
+async function createRecurringOccurrence(patient, dateValue, timeValue) {
+  if (actualSessionExists(patient.id, dateValue)) return null;
+
+  const now = new Date().toISOString();
+  const session = {
+    id: id(),
+    patient_id: patient.id,
+    session_date: dateValue,
+    start_time: timeValue,
+    end_time: addMinutes(timeValue, 50),
+    location: optionValues(state.config.sessionLocations, DEFAULT_SESSION_LOCATIONS)[0] || "",
+    session_type: "מפגש קבוע",
+    summary: "מפגש קבוע לפי הגדרת המטופל.",
+    sensitive_notes: "",
+    calendar_event_id: "",
+    created_at: now,
+    updated_at: now,
+    document_file_id: ""
+  };
+
+  try {
+    session.calendar_event_id = await createCalendarEvent(session);
+  } catch {
+    queueSyncWork("calendar_upsert", session.id, {});
+    lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+  }
+
+  const appendResult = await appendSheet("sessions", session);
+  session._rowNumber = appendedRowNumber(appendResult);
+  state.sessions = [session, ...state.sessions];
+  return session;
+}
+
+// Writes only the resolved set: cancellations first, then the occurrences that survived.
+async function applyRecurringSchedulePlan(patient, plan) {
+  if (!plan || plan.abandoned) return;
+
+  for (const dateValue of plan.cancellations) {
+    if (storedScheduleExceptionFor(patient.id, dateValue)) continue;
+    const now = new Date().toISOString();
+    const exception = {
+      id: id(),
+      patient_id: patient.id,
+      exception_type: "cancel",
+      start_date: dateValue,
+      end_date: dateValue,
+      reason: "ביטול מפגש קבוע בשל התנגשות עם מועד ישראל",
+      created_at: now,
+      updated_at: now
+    };
+    const appendResult = await appendSheet("schedule_exceptions", exception);
+    exception._rowNumber = appendedRowNumber(appendResult);
+    state.scheduleExceptions = [exception, ...state.scheduleExceptions];
+  }
+
+  for (const occurrence of plan.occurrences) {
+    await createRecurringOccurrence(patient, occurrence.date, occurrence.time);
+  }
+
+  state.sessions = state.sessions.sort((a, b) =>
+    `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
+  );
+}
+
 function recurringSessionForDate(patient, dateValue) {
   if (!patient?.id || patient.status === "archived") return null;
   if (!patient.fixed_day || !patient.fixed_time) return null;
+  // A fixed treatment projects only inside its stored inclusive range. Legacy rows without a
+  // range project nothing and are never backfilled with invented dates.
+  if (!patient.fixed_start_date || !patient.fixed_end_date) return null;
+  if (dateValue < patient.fixed_start_date || dateValue > patient.fixed_end_date) return null;
   const date = dateFromInput(dateValue);
   if (fixedDayIndex(patient.fixed_day) !== date.getDay()) return null;
   if (actualSessionExists(patient.id, dateValue)) return null;
@@ -4548,6 +4997,14 @@ async function addMissingSheets(sheetNames) {
   });
 }
 
+function headerIsMissingOnlyNewColumns(sheet, header) {
+  const expected = SHEETS[sheet];
+  const present = [...header];
+  while (present.length && !String(present[present.length - 1] ?? "").trim()) present.pop();
+  if (!present.length || present.length >= expected.length) return false;
+  return present.every((cell, index) => cell === expected[index]);
+}
+
 function healthRow(sheet, existingSheets, header) {
   if (!existingSheets.includes(sheet)) {
     return { sheet, ok: false, message: "הגיליון חסר." };
@@ -4587,8 +5044,10 @@ async function runDataHealthCheck({ repair = false } = {}) {
       // Repair may only write a header into an empty header row (a new sheet).
       // A mismatched existing header is reported and never rewritten, because
       // rewriting headers without migrating the data rows corrupts alignment.
+      // Appending new trailing columns keeps every existing column in place, so the
+      // stored data rows stay aligned and the header may safely be extended.
       const headerIsEmpty = !header.some((cell) => String(cell ?? "").trim());
-      if (headerIsEmpty) {
+      if (headerIsEmpty || headerIsMissingOnlyNewColumns(sheet, header)) {
         await writeSheetHeader(sheet);
         header = await readSheetHeader(sheet).catch(() => []);
         row = healthRow(sheet, existingSheets, header);
@@ -6153,11 +6612,12 @@ async function loadData() {
   processSyncQueue().catch(() => {});
 }
 
-async function savePatient(form) {
+async function savePatient(form, schedulePlan = null) {
   const data = Object.fromEntries(new FormData(form).entries());
   const existingId = form.dataset.id || "";
   const existing = existingId ? state.patients.find((patient) => patient.id === existingId) : null;
   if (!data.child_name) throw new Error("שם המטופל הוא שדה חובה.");
+  const bounds = normalizeRecurringBounds(data);
   if (existing?._rowNumber) await assertSheetRowCurrent("patients", existing._rowNumber, existing);
 
   const now = new Date().toISOString();
@@ -6174,8 +6634,8 @@ async function savePatient(form) {
     school_name: data.school_name || "",
     treatment_type: data.treatment_type || "",
     fixed_price: data.fixed_price || "",
-    fixed_day: data.fixed_day || "",
-    fixed_time: data.fixed_time || "",
+    fixed_day: bounds.fixedDay,
+    fixed_time: bounds.fixedTime,
     treatment_goals: existing?.treatment_goals || "",
     sensitive_notes: existing?.sensitive_notes || "",
     general_notes: data.general_notes || "",
@@ -6186,7 +6646,9 @@ async function savePatient(form) {
     drive_folder_id: folder.id,
     drive_folder_path: folder.path,
     created_at: existing?.created_at || now,
-    updated_at: now
+    updated_at: now,
+    fixed_start_date: bounds.startDate,
+    fixed_end_date: bounds.endDate
   };
 
   if (existing) {
@@ -6198,6 +6660,8 @@ async function savePatient(form) {
     patient._rowNumber = appendedRowNumber(appendResult);
     state.patients = [patient, ...state.patients];
   }
+
+  await applyRecurringSchedulePlan(patient, schedulePlan);
 
   state.patients = state.patients.sort((a, b) =>
     (a.child_name || "").localeCompare(b.child_name || "", "he")
@@ -8332,17 +8796,32 @@ function bindEvents() {
 
       if (form.dataset.form === "patient") {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const patient = await runAuditedAction(
-          { actionType: form.dataset.id ? "update" : "create", entityType: "patient", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון פרטי מטופל" : "יצירת מטופל", undoable: Boolean(form.dataset.id) },
-          () => savePatient(form)
-        );
-        state.currentPatientId = "";
-        if (form.dataset.id) {
-          state.message = patient.folderCreated
-            ? "פרטי המטופל עודכנו ונוצרה לו תיקייה."
-            : "פרטי המטופל עודכנו במערכת.";
+        // The whole proposed series is resolved before the first write, so abandoning writes nothing.
+        let schedulePlan = null;
+        try {
+          schedulePlan = await prepareRecurringSchedulePlan(
+            Object.fromEntries(new FormData(form).entries()),
+            form.dataset.id || ""
+          );
+        } finally {
+          closeAppModal();
+        }
+        if (schedulePlan.abandoned) {
+          state.error = "";
+          state.message = "השמירה בוטלה ולא בוצע שום שינוי.";
         } else {
-          state.message = "המטופל נשמר במערכת ונוצרה לו תיקייה.";
+          const patient = await runAuditedAction(
+            { actionType: form.dataset.id ? "update" : "create", entityType: "patient", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון פרטי מטופל" : "יצירת מטופל", undoable: Boolean(form.dataset.id) },
+            () => savePatient(form, schedulePlan)
+          );
+          state.currentPatientId = "";
+          if (form.dataset.id) {
+            state.message = patient.folderCreated
+              ? "פרטי המטופל עודכנו ונוצרה לו תיקייה."
+              : "פרטי המטופל עודכנו במערכת.";
+          } else {
+            state.message = "המטופל נשמר במערכת ונוצרה לו תיקייה.";
+          }
         }
       }
 

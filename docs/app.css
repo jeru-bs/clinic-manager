@@ -1736,6 +1736,34 @@ legend {
 .calendar-day.has-holiday {
   border-top: 3px solid var(--accent);
 }
+.day-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+
+.day-hebrew {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.63rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-day.today .day-hebrew {
+  color: var(--primary-strong);
+}
+
+.day-panel-hebrew {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
 
 .day-number {
   direction: ltr;
@@ -1817,6 +1845,35 @@ legend {
   text-align: start;
 }
 
+.day-agenda-row.is-linked {
+  cursor: pointer;
+}
+
+.day-agenda-row.is-linked:hover {
+  border-color: var(--primary);
+}
+
+.day-agenda-open {
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.day-agenda-open:hover {
+  color: var(--primary-strong);
+  text-decoration: underline;
+}
+
 .day-agenda-row strong {
   min-width: 0;
   overflow: hidden;
@@ -1854,6 +1911,71 @@ legend {
 .exception-note span {
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.form-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+/* Conflict dialogs sit under the shared pickers so a date can be chosen inside them. */
+.modal-backdrop {
+  position: fixed;
+  z-index: 900;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(16, 16, 29, 0.42);
+  padding: 16px;
+}
+
+.modal-card {
+  display: grid;
+  width: min(94vw, 430px);
+  max-height: calc(100vh - 32px);
+  gap: 12px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  padding: 18px;
+  box-shadow: var(--shadow-overlay);
+}
+
+.modal-card h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.modal-message {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.modal-notice {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.modal-notice:empty {
+  display: none;
+}
+
+.modal-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap-sm);
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-xs);
 }
 
 .hebcal-credit {
@@ -2265,6 +2387,14 @@ legend {
 
   .calendar-day .day-events {
     display: none;
+  }
+
+  .calendar-day .day-hebrew-month {
+    display: none;
+  }
+
+  .modal-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .calendar-mobile-count {

@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const SHEET_HEADERS = {
-  patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at"],
+  patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at", "fixed_start_date", "fixed_end_date"],
   sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id"],
   payments: ["id", "patient_id", "session_id", "amount", "payment_method", "payment_status", "receipt_status", "paid_at", "receipt_file_id", "notes", "created_at", "updated_at"],
   tasks: ["id", "patient_id", "title", "description", "status", "due_date", "source", "created_at", "updated_at", "reminder_at"],
@@ -215,7 +215,7 @@ async function setupIncomeMocks(page, { seed = {}, queuedItems = null, failBusin
 const TS = "2026-08-01T08:00:00.000Z";
 
 function patientRow(id, name) {
-  return [id, name, "", "בית ספר", "רגשי", "300", "", "", "", "", "", "active", "cash", "unpaid", "not_needed", `folder-${id}`, "", TS, TS];
+  return [id, name, "", "בית ספר", "רגשי", "300", "", "", "", "", "", "active", "cash", "unpaid", "not_needed", `folder-${id}`, "", TS, TS, "", ""];
 }
 
 function chargeRow(id, sessionId, patientId, date, amount) {

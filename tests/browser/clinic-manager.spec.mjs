@@ -79,7 +79,7 @@ test("parents and professionals can be viewed and edited from the patient card",
   const appendedRows = {};
   let documentSequence = 0;
   const headers = {
-    patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at"],
+    patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at", "fixed_start_date", "fixed_end_date"],
     sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id"],
     payments: ["id", "patient_id", "session_id", "amount", "payment_method", "payment_status", "receipt_status", "paid_at", "receipt_file_id", "notes", "created_at", "updated_at"],
     tasks: ["id", "patient_id", "title", "description", "status", "due_date", "source", "created_at", "updated_at", "reminder_at"],
@@ -97,7 +97,7 @@ test("parents and professionals can be viewed and edited from the patient card",
     payment_allocations: ["id", "payment_id", "charge_id", "session_id", "patient_id", "amount", "created_at", "updated_at"],
     audit_log: ["id", "action_type", "entity_type", "entity_id", "summary", "actor_email", "mutations_json", "undoable", "undone_at", "created_at"]
   };
-  const patientRow = ["p1", "נועם", "", "בית ספר", "רגשי", "", "", "", "חיזוק ביטחון עצמי", "אסור לפרסום", "", "active", "bank_transfer", "unpaid", "needed", "folder1", "", "2026-01-01", "2026-01-01"];
+  const patientRow = ["p1", "נועם", "", "בית ספר", "רגשי", "", "", "", "חיזוק ביטחון עצמי", "אסור לפרסום", "", "active", "bank_transfer", "unpaid", "needed", "folder1", "", "2026-01-01", "2026-01-01", "", ""];
   const contactRow = ["c1", "p1", "professional", "דנה כהן", "קלינאית תקשורת", "0501234567", "dana@example.com", "בית ספר", "לתיאום ישיר", "2026-01-01", "2026-01-01"];
 
   await page.addInitScript(() => {
