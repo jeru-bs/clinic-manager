@@ -91,13 +91,16 @@ test("the overflow menu is keyboard operable and closes on Escape", async ({ pag
 });
 
 test("the archive action still works from inside the overflow menu", async ({ page }) => {
-  page.on("dialog", (dialog) => dialog.accept());
   await setupUiMocks(page, { seed: SEED });
   await openApp(page, "/#/patients");
 
   const row = page.locator("tbody tr.row-link", { hasText: "נועם" });
   await row.locator('[data-action="toggle-row-menu"]').click();
   await page.getByRole("menuitem", { name: "ארכוב" }).click();
+
+  // Archiving is an intentional workflow now: a summary modal asks for confirmation.
+  await expect(page.locator(".modal-backdrop")).toBeVisible();
+  await page.locator('.modal-backdrop [data-modal-action="archive"]').click();
 
   await expect(row.getByText("ארכיון", { exact: true })).toBeVisible();
   await row.locator('[data-action="toggle-row-menu"]').click();

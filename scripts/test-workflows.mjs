@@ -101,3 +101,34 @@ try {
 assert.deepEqual(live, rollback, "failed restore should roll back to the complete pre-restore snapshot");
 
 console.log("Workflow tests: concurrency, audit/undo, reminders, Google failures, backup validation and restore rollback: ok");
+
+// Scheduling conflict detection used by the calendar and session workflows.
+const busyDay = [{ id: "s1", start_time: "10:00", end_time: "10:50" }];
+const fullHit = core.findScheduleConflict({ startTime: "10:00", endTime: "10:50" }, busyDay);
+assert.equal(fullHit.kind, "full", "an identical slot must be a full overlap");
+assert.equal(fullHit.occupiedRange, "10:00-10:50", "the conflict must report the occupied range");
+assert.equal(fullHit.appointment.id, "s1", "the conflicting appointment must be identified");
+const partialHit = core.findScheduleConflict({ startTime: "10:30", endTime: "11:15" }, busyDay);
+assert.equal(partialHit.kind, "partial", "a partly overlapping slot must be a partial overlap");
+assert.equal(
+  core.findScheduleConflict({ startTime: "11:00", endTime: "11:50" }, busyDay),
+  null,
+  "back-to-back appointments must not be flagged as a conflict"
+);
+assert.equal(
+  core.findScheduleConflict({ startTime: "10:00", endTime: "10:50", excludeIds: ["s1"] }, busyDay),
+  null,
+  "editing an appointment must not conflict with itself"
+);
+assert.equal(
+  core.findScheduleConflict({ startTime: "", endTime: "" }, busyDay),
+  null,
+  "a slot without a start time cannot conflict"
+);
+assert.deepEqual(
+  [...core.suggestFreeSlots({ startTime: "10:00", endTime: "10:50" }, busyDay)],
+  ["09:00", "11:00"],
+  "nearby free slots must be offered before and after the occupied range"
+);
+
+console.log("Workflow tests: schedule conflict detection and free-slot suggestions: ok");

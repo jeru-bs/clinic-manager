@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { patientRow, sessionRow, setupUiMocks } from "./helpers/ui-mocks.mjs";
+import { chargeRow, patientRow, sessionRow, setupUiMocks } from "./helpers/ui-mocks.mjs";
 
 // שומר על נוכחות הצבע המאושרת: אם מישהו יחזיר את הממשק לגווני אפור, הבדיקות ייפלו.
 const COLOR = {
@@ -54,7 +54,12 @@ function taskRow(id, patientId, title, status) {
 
 const SEED = {
   patients: [patientRow("p1", "נועם", "300"), patientRow("p2", "יעל", "250")],
-  sessions: [sessionRow("s1", "p1", "2026-08-03", "מפגש מתועד")],
+  sessions: [
+    sessionRow("s1", "p1", "2026-08-03", "מפגש מתועד"),
+    sessionRow("s2", "p2", "2026-08-04", "מפגש מתועד")
+  ],
+  // The danger pill must be backed by a real open charge, not by the legacy payment_status flag.
+  session_charges: [chargeRow("c1", "s2", "p2", "2026-08-04", "250")],
   payments: [
     paymentRow("pay1", "p1", "300", "paid", "needed"),
     paymentRow("pay2", "p2", "250", "unpaid", "not_needed")

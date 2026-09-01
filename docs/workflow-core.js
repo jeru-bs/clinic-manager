@@ -122,8 +122,100 @@
     return "unknown";
   }
 
+  const DEFAULT_SESSION_MINUTES = 50;
+
+  function timeToMinutes(timeValue) {
+    const text = String(timeValue || "").trim();
+    if (!text.includes(":")) return null;
+    const [hoursText, minutesText] = text.split(":");
+    const hours = Number(hoursText);
+    const minutes = Number(minutesText);
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+    return hours * 60 + minutes;
+  }
+
+  function minutesToTime(totalMinutes) {
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return String(hours).padStart(2, "0") + ":" + String(minutes).padStart(2, "0");
+  }
+
+  function appointmentInterval(startTime, endTime) {
+    const start = timeToMinutes(startTime);
+    if (start === null) return null;
+    const end = timeToMinutes(endTime);
+    if (end !== null && end > start) return { start, end };
+    return { start, end: start + DEFAULT_SESSION_MINUTES };
+  }
+
+  function overlapKind(candidate, occupied) {
+    if (candidate.start >= occupied.end || candidate.end <= occupied.start) return null;
+    const contained = candidate.start >= occupied.start && candidate.end <= occupied.end;
+    const containing = occupied.start >= candidate.start && occupied.end <= candidate.end;
+    return contained || containing ? "full" : "partial";
+  }
+
+  function findScheduleConflict(candidate, appointments) {
+    const interval = appointmentInterval(candidate.startTime, candidate.endTime);
+    if (!interval) return null;
+    const excluded = new Set(candidate.excludeIds || []);
+    for (const appointment of appointments || []) {
+      if (appointment.id && excluded.has(appointment.id)) continue;
+      const occupied = appointmentInterval(appointment.start_time, appointment.end_time);
+      if (!occupied) continue;
+      const kind = overlapKind(interval, occupied);
+      if (!kind) continue;
+      return {
+        appointment,
+        kind,
+        occupiedRange: minutesToTime(occupied.start) + "-" + minutesToTime(occupied.end)
+      };
+    }
+    return null;
+  }
+
+  function suggestFreeSlots(candidate, appointments, options) {
+    const interval = appointmentInterval(candidate.startTime, candidate.endTime);
+    if (!interval) return [];
+    const settings = options || {};
+    const dayStart = timeToMinutes(settings.dayStart || "08:00");
+    const dayEnd = timeToMinutes(settings.dayEnd || "20:00");
+    const step = settings.stepMinutes || 30;
+    const duration = interval.end - interval.start;
+    const excluded = new Set(candidate.excludeIds || []);
+    const relevant = (appointments || []).filter((appointment) => !appointment.id || !excluded.has(appointment.id));
+    const slotIsFree = (start) => {
+      const slot = { start, end: start + duration };
+      if (slot.start < dayStart || slot.end > dayEnd) return false;
+      return relevant.every((appointment) => {
+        const occupied = appointmentInterval(appointment.start_time, appointment.end_time);
+        return !occupied || !overlapKind(slot, occupied);
+      });
+    };
+    const suggestions = [];
+    for (let start = interval.start - step; start >= dayStart; start -= step) {
+      if (slotIsFree(start)) {
+        suggestions.push(minutesToTime(start));
+        break;
+      }
+    }
+    for (let start = interval.start + step; start + duration <= dayEnd; start += step) {
+      if (slotIsFree(start)) {
+        suggestions.push(minutesToTime(start));
+        break;
+      }
+    }
+    return suggestions;
+  }
+
   const api = {
     TABLES,
+    timeToMinutes,
+    minutesToTime,
+    appointmentInterval,
+    findScheduleConflict,
+    suggestFreeSlots,
     cleanRecord,
     recordVersion,
     rowConflict,

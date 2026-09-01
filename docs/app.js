@@ -36,7 +36,8 @@ const SHEETS = {
     "created_at",
     "updated_at",
     "document_file_id",
-    "next_plan"
+    "next_plan",
+    "status"
   ],
   payments: [
     "id",
@@ -62,7 +63,8 @@ const SHEETS = {
     "source",
     "created_at",
     "updated_at",
-    "reminder_at"
+    "reminder_at",
+    "task_key"
   ],
   files: [
     "id",
@@ -170,7 +172,9 @@ const SHEETS = {
     "end_date",
     "reason",
     "created_at",
-    "updated_at"
+    "updated_at",
+    "moved_to_date",
+    "moved_to_time"
   ],
   business_records: [
     "id",
@@ -1442,7 +1446,7 @@ function todayAgendaPanel(todayRows) {
 }
 
 function openPaymentsPanel() {
-  const openRows = state.payments.filter((payment) => payment.payment_status !== "paid");
+  const openRows = allChargeBalances().filter((balance) => balance.remainingAgorot > 0);
   return `
     <article class="panel">
       <div class="panel-head"><h2>תשלומים פתוחים</h2><span>${openRows.length} רשומות</span></div>
@@ -1451,15 +1455,15 @@ function openPaymentsPanel() {
           ? `<div class="attention-list">${openRows
               .slice(0, 6)
               .map(
-                (payment) => `
+                (balance) => `
                   <div class="attention-row is-warning">
                     <div>
-                      <strong>${html(patientName(payment.patient_id))}</strong>
-                      <span>${html(formatDate(payment.paid_at))} · ${html(paymentMethodLabel(payment.payment_method))}</span>
+                      <strong>${html(patientName(balance.patientId))}</strong>
+                      <span>${html(formatDate(balance.sessionDate))}</span>
                     </div>
                     <div class="actions">
-                      <span class="attention-time">${html(formatAmount(payment.amount))}</span>
-                      ${statusPill(paymentStatusLabel(payment.payment_status), payment.payment_status === "partial" ? "warning" : "danger")}
+                      <span class="attention-time">${html(formatAgorotAmount(balance.remainingAgorot))}</span>
+                      ${statusPill(chargeStatusLabel(balance.status), balance.status === "partial" ? "warning" : "danger")}
                     </div>
                   </div>`
               )
@@ -1500,7 +1504,7 @@ function dashboardSpine({ todayRows, todaySessions, reminderCount, openPayments,
 }
 
 function dashboardPage() {
-  const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid").length;
+  const openPayments = allChargeBalances().filter((balance) => balance.remainingAgorot > 0).length;
   const activePatients = state.patients.filter((patient) => patient.status !== "archived").length;
   const today = isoDate(new Date());
   const todayRows = sessionsForDates([today]);
@@ -1536,12 +1540,15 @@ function patientsPage() {
   const filters = state.patientFilter;
   const includes = (value, filter) =>
     !filter || String(value || "").toLowerCase().includes(filter.toLowerCase());
+  const derivedStatusByPatient = new Map(
+    state.patients.map((patient) => [patient.id, patientDerivedPaymentStatus(patient.id)])
+  );
   const filteredPatients = state.patients.filter(
     (patient) =>
       includes(patient.child_name, filters.name) &&
       includes(patient.school_name, filters.school) &&
       includes(patient.treatment_type, filters.treatment) &&
-      includes(paymentStatusLabel(patient.payment_status), filters.status)
+      includes(paymentStatusLabel(derivedStatusByPatient.get(patient.id)), filters.status)
   );
   const activeCount = state.patients.filter((patient) => patient.status !== "archived").length;
   const archivedCount = state.patients.length - activeCount;
@@ -1581,7 +1588,7 @@ function patientsPage() {
       </div>
       ${filterSelect("school", "מוסד", distinct((patient) => patient.school_name))}
       ${filterSelect("treatment", "סוג טיפול", distinct((patient) => patient.treatment_type))}
-      ${filterSelect("status", "תשלום", distinct((patient) => paymentStatusLabel(patient.payment_status)))}`
+      ${filterSelect("status", "תשלום", distinct((patient) => paymentStatusLabel(derivedStatusByPatient.get(patient.id))))}`
     )}
   `);
 
@@ -1634,7 +1641,7 @@ function patientsPage() {
                   </td>
                   <td data-label="מוסד">${html(patient.school_name || "-")}</td>
                   <td data-label="סוג טיפול">${html(patient.treatment_type || "-")}</td>
-                  <td data-label="תשלום">${statusPill(paymentStatusLabel(patient.payment_status), PAYMENT_STATUS_TONES[patient.payment_status] || "")}</td>
+                  <td data-label="תשלום">${statusPill(paymentStatusLabel(derivedStatusByPatient.get(patient.id)), PAYMENT_STATUS_TONES[derivedStatusByPatient.get(patient.id)] || "")}</td>
                   <td data-label="פעולות">${rowMenu(patient)}</td>
                 </tr>`
               )
@@ -1688,15 +1695,25 @@ function profilePage(patientId) {
   );
 }
 
+function patientDerivedPaymentStatus(patientId) {
+  const balances = patientChargeBalances(patientId);
+  // Legacy payment_status is never allowed to claim a debt the charge ledger does not know:
+  // a patient with no charges has no outstanding balance to present.
+  if (!balances.length) return "none";
+  if (PaymentsCore.outstandingTotal(balances) <= 0) return "paid";
+  return balances.some((balance) => balance.paidAgorot > 0) ? "partial" : "unpaid";
+}
+
 function patientSummary(patient, { sessions, tasks }) {
   const balances = patientChargeBalances(patient.id);
   const outstandingAgorot = PaymentsCore.outstandingTotal(balances);
+  const derivedPaymentStatus = patientDerivedPaymentStatus(patient.id);
   const today = isoDate(new Date());
   const upcoming = sessions
-    .filter((session) => String(session.session_date || "") >= today)
+    .filter((session) => sessionOccupiesSlot(session) && String(session.session_date || "") >= today)
     .sort((first, second) => String(first.session_date || "").localeCompare(String(second.session_date || "")))[0];
   const lastSession = sessions
-    .filter((session) => String(session.session_date || "") < today)
+    .filter((session) => sessionOccupiesSlot(session) && String(session.session_date || "") < today)
     .sort((first, second) => String(second.session_date || "").localeCompare(String(first.session_date || "")))[0];
   const openTasks = tasks.filter((task) => task.status !== "done").length;
 
@@ -1705,7 +1722,7 @@ function patientSummary(patient, { sessions, tasks }) {
       <div class="summary-main">
         <div class="summary-title">
           <h2>${html(patient.child_name)}</h2>
-          ${statusPill(paymentStatusLabel(patient.payment_status), PAYMENT_STATUS_TONES[patient.payment_status] || "")}
+          ${statusPill(paymentStatusLabel(derivedPaymentStatus), PAYMENT_STATUS_TONES[derivedPaymentStatus] || "")}
           ${patient.status === "archived" ? `<span class="status-pill muted">ארכיון</span>` : ""}
         </div>
         <div class="summary-facts">
@@ -2448,6 +2465,17 @@ function sessionForm(patientId) {
           ${selectOptions(optionValues(state.config.sessionTypes, DEFAULT_SESSION_TYPES), editedSession?.session_type || "")}
         </select>
       </div>
+      <div class="field">
+        <label for="session_status">סטטוס מפגש</label>
+        <select id="session_status" name="status">
+          ${Object.entries(SESSION_STATUS_LABELS)
+            .map(
+              ([value, label]) =>
+                `<option value="${value}" ${(editedSession ? sessionEffectiveStatus(editedSession) : "scheduled") === value ? "selected" : ""}>${label}</option>`
+            )
+            .join("")}
+        </select>
+      </div>
       <div class="field wide">
         <label for="location">מיקום</label>
         <select id="location" name="location">
@@ -2605,6 +2633,7 @@ function sessionsPanel(items = state.sessions, patientId = "") {
                   <article class="list-item">
                     <div><strong>${html(formatDate(session.session_date))}</strong><span>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "ללא שעה")}</span></div>
                     <div><strong>${html(session.session_type || "מפגש")}</strong><span>${html(patientName(session.patient_id))}</span></div>
+                    ${statusPill(sessionStatusLabel(session), SESSION_STATUS_TONES[sessionEffectiveStatus(session)] || "")}
                     <p>${html(session.summary || "לא נכתב סיכום.")}</p>
                     ${
                       patientMode
@@ -2831,6 +2860,11 @@ function calendarPage() {
                     <div class="exception-note">
                       <strong>${html(exceptionTypeLabel(exception.exception_type))}</strong>
                       <span>${html(exception.patient_id ? patientName(exception.patient_id) : "כל המטופלים")} ${exception.reason ? `- ${exception.reason}` : ""}</span>
+                      ${
+                        exception.exception_type === "holiday_pending" && exception.patient_id
+                          ? `<button class="button blue" data-action="resolve-holiday-decision" data-patient-id="${html(exception.patient_id)}" data-date="${html(exception.start_date)}" type="button">קבלת החלטה</button>`
+                          : ""
+                      }
                     </div>`
                 )
                 .join("")}</div>`
@@ -2850,6 +2884,15 @@ function calendarPage() {
                         ? `<button class="day-agenda-open" data-action="open-profile" data-id="${html(rowPatient.id)}" type="button">${html(rowPatient.child_name || patientName(session.patient_id))}</button>`
                         : `<strong>${html(patientName(session.patient_id))}</strong>`
                     }
+                    <span class="day-agenda-actions">
+                      ${
+                        session.is_recurring
+                          ? `<button class="button secondary" data-action="materialize-recurring" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" type="button">שמירת מפגש</button>
+                             <button class="button secondary" data-action="reschedule-occurrence" data-session-id="" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" data-time="${html(session.start_time || "")}" type="button">שינוי מועד</button>
+                             <button class="button secondary" data-action="cancel-recurring" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" type="button">ביטול</button>`
+                          : `<button class="button secondary" data-action="reschedule-occurrence" data-session-id="${html(session.id)}" data-patient-id="${html(session.patient_id)}" data-date="${html(session.session_date)}" data-time="${html(session.start_time || "")}" type="button">שינוי מועד</button>`
+                      }
+                    </span>
                   </div>`;
                 })
                 .join("")}</div>`
@@ -3017,8 +3060,8 @@ function reportsPage() {
   const paidTotal = monthPayments
     .filter((payment) => payment.payment_status === "paid")
     .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
-  const openPayments = state.payments.filter((payment) => payment.payment_status !== "paid");
-  const openTotal = openPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+  const openChargeBalances = allChargeBalances().filter((balance) => balance.remainingAgorot > 0);
+  const openTotal = PaymentsCore.outstandingTotal(openChargeBalances);
   const missingReceipts = state.payments.filter(
     (payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued"
   );
@@ -3031,9 +3074,7 @@ function reportsPage() {
       const paid = payments
         .filter((payment) => payment.payment_status === "paid")
         .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
-      const open = state.payments
-        .filter((payment) => payment.patient_id === patient.id && payment.payment_status !== "paid")
-        .reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+      const open = PaymentsCore.outstandingTotal(patientChargeBalances(patient.id));
       const receipts = payments.filter(
         (payment) => payment.payment_status === "paid" && payment.receipt_status !== "issued"
       ).length;
@@ -3062,7 +3103,7 @@ function reportsPage() {
     ${connectionBanner()}
     <section class="metric-row reports-metrics">
       <article class="metric blue-card"><strong>${html(formatAmount(paidTotal))}</strong><span>הכנסות בחודש</span></article>
-      <article class="metric pink-card"><strong>${html(formatAmount(openTotal))}</strong><span>תשלומים פתוחים</span></article>
+      <article class="metric pink-card"><strong>${html(formatAgorotAmount(openTotal))}</strong><span>תשלומים פתוחים</span></article>
       <article class="metric teal-card"><strong>${monthSessions.length}</strong><span>מפגשים בחודש</span></article>
       <article class="metric purple-card"><strong>${openTasks.length}</strong><span>משימות פתוחות</span></article>
     </section>
@@ -3089,7 +3130,7 @@ function reportsPage() {
                     <td><strong>${html(row.name || "-")}</strong></td>
                     <td>${row.sessions}</td>
                     <td>${html(formatAmount(row.paid))}</td>
-                    <td>${html(formatAmount(row.open))}</td>
+                    <td>${html(formatAgorotAmount(row.open))}</td>
                     <td>${row.receipts ? `${row.receipts} חסרות` : "תקין"}</td>
                     <td><button class="button secondary table-button" data-action="open-profile" data-id="${html(row.id)}" type="button">כרטיס</button></td>
                   </tr>`
@@ -3100,16 +3141,16 @@ function reportsPage() {
         </div>
       </article>
       <article class="panel">
-        <div class="panel-head"><h2>תשלומים פתוחים</h2><span>${openPayments.length} רשומות</span></div>
+        <div class="panel-head"><h2>תשלומים פתוחים</h2><span>${openChargeBalances.length} רשומות</span></div>
         <div class="report-list">
-          ${openPayments
+          ${openChargeBalances
             .slice(0, 10)
             .map(
-              (payment) => `
+              (balance) => `
               <article class="report-item">
-                <strong>${html(patientName(payment.patient_id))}</strong>
-                <span>${html(formatAmount(payment.amount))} | ${html(paymentStatusLabel(payment.payment_status))}</span>
-                <button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button>
+                <strong>${html(patientName(balance.patientId))}</strong>
+                <span>${html(formatAgorotAmount(balance.remainingAgorot))} | ${html(chargeStatusLabel(balance.status))}</span>
+                <button class="button secondary table-button" data-action="open-profile" data-id="${html(balance.patientId)}" type="button">כרטיס</button>
               </article>`
             )
             .join("") || `<div class="empty">אין תשלומים פתוחים.</div>`}
@@ -3805,6 +3846,114 @@ function sessionChargeForSession(sessionId) {
   return state.sessionCharges.find((charge) => charge.session_id === sessionId) || null;
 }
 
+const RECURRING_PLACEHOLDER_SUMMARY = "מפגש קבוע לפי הגדרת המטופל.";
+
+const SESSION_STATUS_LABELS = {
+  scheduled: "מתוכנן",
+  completed: "התקיים",
+  cancelled: "בוטל",
+  no_show: "לא הגיע"
+};
+
+const SESSION_STATUS_TONES = {
+  scheduled: "",
+  completed: "success",
+  cancelled: "danger",
+  no_show: "warning"
+};
+
+function sessionHasDocumentation(session) {
+  const summary = String(session?.summary || "").trim();
+  return Boolean(summary) && summary !== RECURRING_PLACEHOLDER_SUMMARY;
+}
+
+// Legacy rows have no stored status; documented sessions read as completed and the rest as
+// scheduled, so history keeps its meaning without backfilling invented facts.
+function sessionEffectiveStatus(session) {
+  const stored = String(session?.status || "").trim();
+  if (SESSION_STATUS_LABELS[stored]) return stored;
+  return sessionHasDocumentation(session) ? "completed" : "scheduled";
+}
+
+function sessionStatusLabel(session) {
+  return SESSION_STATUS_LABELS[sessionEffectiveStatus(session)] || SESSION_STATUS_LABELS.scheduled;
+}
+
+function sessionIsCancelled(session) {
+  return sessionEffectiveStatus(session) === "cancelled";
+}
+
+// Cancelled sessions free their calendar slot; no-shows keep it because the time was reserved.
+function sessionOccupiesSlot(session) {
+  return !sessionIsCancelled(session);
+}
+
+function addDaysToDate(dateValue, days) {
+  const date = dateFromInput(dateValue);
+  date.setDate(date.getDate() + days);
+  return isoDate(date);
+}
+
+function maxDateValue(a, b) {
+  return a >= b ? a : b;
+}
+
+// Collects everything that occupies the day: stored sessions that still hold their slot plus
+// the recurring projections of every patient, minus the appointment being edited itself.
+function findScheduleConflictForSlot({ dateValue, startTime, endTime = "", excludeSessionIds = [], ignorePatientId = "" }) {
+  if (!dateValue || !startTime) return null;
+  const excluded = new Set(excludeSessionIds.filter(Boolean));
+  const appointments = [
+    ...state.sessions.filter(
+      (session) => session.session_date === dateValue && sessionOccupiesSlot(session)
+    ),
+    ...state.patients
+      .map((patient) => recurringSessionForDate(patient, dateValue))
+      .filter(Boolean),
+    ...state.patients
+      .map((patient) => pendingHolidaySessionForDate(patient, dateValue))
+      .filter(Boolean)
+  ].filter(
+    (appointment) =>
+      !excluded.has(appointment.id) &&
+      !(ignorePatientId && appointment.patient_id === ignorePatientId)
+  );
+  const candidate = { startTime, endTime };
+  const conflict = WorkflowCore.findScheduleConflict(candidate, appointments);
+  if (!conflict) return null;
+  return { conflict, appointments, candidate };
+}
+
+function scheduleConflictMessage(found) {
+  const { conflict, appointments, candidate } = found;
+  const kindLabel = conflict.kind === "full" ? "חפיפה מלאה" : "חפיפה חלקית";
+  const occupied = `${conflict.occupiedRange.start}–${conflict.occupiedRange.end}`;
+  const withName = patientName(conflict.appointment.patient_id);
+  const suggestions = WorkflowCore.suggestFreeSlots(candidate, appointments);
+  const suggestionText = suggestions.length
+    ? ` מועדים פנויים בסמוך: ${suggestions.join(" או ")}.`
+    : "";
+  return `הטווח ${occupied} תפוס (${kindLabel}) על ידי מפגש של ${withName}.${suggestionText}`;
+}
+
+function assertNoScheduleConflict(options) {
+  if (!options?.startTime) return;
+  const found = findScheduleConflictForSlot(options);
+  if (found) throw new Error(scheduleConflictMessage(found));
+}
+
+async function askScheduleConflictChoice(dateValue, found) {
+  return showAppModal({
+    title: "התנגשות בלוח הזמנים",
+    message: `במועד ${formatDate(dateValue)}: ${scheduleConflictMessage(found)} האם לבטל את המפגש או לשנות את המועד שלו?`,
+    actions: [
+      { value: "cancel", label: "ביטול", variant: "" },
+      { value: "move", label: "שינוי", variant: "blue" },
+      { value: "abandon", label: "יציאה ללא שמירה", variant: "secondary" }
+    ]
+  });
+}
+
 function businessTypeLabel(recordType) {
   if (recordType === "income") return "הכנסה";
   if (recordType === "expense") return "הוצאה";
@@ -4144,6 +4293,7 @@ async function askHolidayConflict(holidayTitle, conflictKind = "required") {
   ];
   // Hanukkah and the minor fasts are working days, so leaving the treatment untouched is offered.
   if (conflictKind === "optional") actions.push({ value: "keep", label: "אל תשנה", variant: "" });
+  actions.push({ value: "defer", label: "החלטה מאוחר יותר", variant: "" });
   actions.push({ value: "abandon", label: "יציאה ללא שמירה", variant: "secondary" });
 
   return showAppModal({
@@ -4153,7 +4303,7 @@ async function askHolidayConflict(holidayTitle, conflictKind = "required") {
   });
 }
 
-async function askReplacementOccurrence(dateValue, timeValue) {
+async function askReplacementOccurrence(dateValue, timeValue, { allowSameDate = false } = {}) {
   return showAppModal({
     title: "שינוי מועד המפגש",
     message: `בחירת מועד חלופי למפגש שנקבע ל-${formatDate(dateValue)}.`,
@@ -4180,8 +4330,12 @@ async function askReplacementOccurrence(dateValue, timeValue) {
         if (notice) notice.textContent = "צריך לבחור תאריך ושעה תקינים.";
         return null;
       }
-      if (date === dateValue) {
+      if (!allowSameDate && date === dateValue) {
         if (notice) notice.textContent = "צריך לבחור תאריך שונה מהמועד שהתנגש.";
+        return null;
+      }
+      if (allowSameDate && date === dateValue && time === timeValue) {
+        if (notice) notice.textContent = "לא נבחר מועד חדש.";
         return null;
       }
       return { date, time };
@@ -4192,7 +4346,7 @@ async function askReplacementOccurrence(dateValue, timeValue) {
 async function confirmSeriesSave(plan) {
   const answer = await showAppModal({
     title: "אישור שמירת הסדרה",
-    message: `${plan.occurrences.length} מפגשים ייווצרו ויסונכרנו ליומן${plan.cancellations.length ? `, ${plan.cancellations.length} מועדים בוטלו` : ""}. לאשר את השמירה?`,
+    message: `${plan.occurrences.length} מפגשים ייווצרו ויסונכרנו ליומן${plan.cancellations.length ? `, ${plan.cancellations.length} מועדים בוטלו` : ""}${plan.deferrals?.length ? `, ${plan.deferrals.length} מועדים ממתינים להחלטה` : ""}. לאשר את השמירה?`,
     actions: [
       { value: "save", label: "שמירה וסנכרון", variant: "blue" },
       { value: "abandon", label: "יציאה ללא שמירה", variant: "secondary" }
@@ -4301,7 +4455,9 @@ function exceptionTypeLabel(type) {
     cancel: "ביטול חד-פעמי",
     vacation: "חופשה",
     holiday: "חג",
-    blocked: "יום חסום"
+    blocked: "יום חסום",
+    reschedule: "שינוי מועד חד-פעמי",
+    holiday_pending: "ממתין להחלטה (חג)"
   }[type] || "חריג יומן";
 }
 
@@ -4443,58 +4599,135 @@ async function resolveSeriesOccurrence(patientId, dateValue, timeValue, plan, pl
   let currentDate = dateValue;
   let currentTime = timeValue;
   let isReplacement = false;
+  const keptHolidayDates = new Set();
 
   for (let step = 0; step < 20; step += 1) {
     const holidays = israelHolidaysForDate(currentDate);
-    if (!holidays.length) {
-      if (!planned.has(currentDate)) {
-        plan.occurrences.push({ date: currentDate, time: currentTime });
-        planned.add(currentDate);
+    if (holidays.length && !keptHolidayDates.has(currentDate)) {
+      plan.conflicts += 1;
+      const choice = await askHolidayConflict(
+        holidays[0].title,
+        israelHolidayConflictKindForDate(holidays)
+      );
+      if (choice === "abandon") return "abandon";
+      if (choice === "defer") {
+        // The date stays out of the confirmed schedule until the therapist decides.
+        if (!isReplacement && !planned.has(currentDate)) {
+          plan.deferrals.push({ date: currentDate, time: currentTime, holiday: holidays[0].title });
+          planned.add(currentDate);
+        }
+        return "deferred";
       }
-      return "kept";
+      if (choice === "cancel") {
+        if (!isReplacement) plan.cancellations.push(currentDate);
+        return "cancelled";
+      }
+      if (choice === "move") {
+        const replacement = await askReplacementOccurrence(currentDate, currentTime);
+        if (replacement === "abandon") return "abandon";
+        if (planned.has(replacement.date) || actualSessionExists(patientId, replacement.date)) {
+          await showNoticeModal("כבר קיים מפגש למטופל בתאריך שנבחר. צריך לבחור מועד אחר.");
+          continue;
+        }
+        if (!isReplacement) plan.cancellations.push(currentDate);
+        currentDate = replacement.date;
+        currentTime = replacement.time;
+        isReplacement = true;
+        continue;
+      }
+      // choice === "keep": the occurrence stays where it is. Materialising it is what persists
+      // the decision; it still has to clear the clinic schedule check below.
+      keptHolidayDates.add(currentDate);
     }
 
-    plan.conflicts += 1;
-    const choice = await askHolidayConflict(
-      holidays[0].title,
-      israelHolidayConflictKindForDate(holidays)
-    );
-    if (choice === "abandon") return "abandon";
-    if (choice === "keep") {
-      // The occurrence stays where it is. Materialising it is what persists the decision:
-      // the stored session makes the same date skip the conflict check on every later save.
-      if (!planned.has(currentDate)) {
-        plan.occurrences.push({ date: currentDate, time: currentTime });
-        planned.add(currentDate);
+    // Holiday-free (or intentionally kept) dates still have to clear the clinic schedule itself.
+    const found = findScheduleConflictForSlot({
+      dateValue: currentDate,
+      startTime: currentTime,
+      ignorePatientId: patientId
+    });
+    if (found) {
+      plan.conflicts += 1;
+      const slotChoice = await askScheduleConflictChoice(currentDate, found);
+      if (slotChoice === "abandon") return "abandon";
+      if (slotChoice === "cancel") {
+        if (!isReplacement) plan.cancellations.push(currentDate);
+        return "cancelled";
       }
-      return "kept";
-    }
-    if (choice === "cancel") {
-      if (!isReplacement) plan.cancellations.push(currentDate);
-      return "cancelled";
-    }
-
-    const replacement = await askReplacementOccurrence(currentDate, currentTime);
-    if (replacement === "abandon") return "abandon";
-    if (planned.has(replacement.date) || actualSessionExists(patientId, replacement.date)) {
-      await showNoticeModal("כבר קיים מפגש למטופל בתאריך שנבחר. צריך לבחור מועד אחר.");
+      const replacement = await askReplacementOccurrence(currentDate, currentTime, { allowSameDate: true });
+      if (replacement === "abandon") return "abandon";
+      if (
+        (replacement.date !== currentDate && planned.has(replacement.date)) ||
+        actualSessionExists(patientId, replacement.date)
+      ) {
+        await showNoticeModal("כבר קיים מפגש למטופל בתאריך שנבחר. צריך לבחור מועד אחר.");
+        continue;
+      }
+      if (!isReplacement && replacement.date !== currentDate) plan.cancellations.push(currentDate);
+      currentDate = replacement.date;
+      currentTime = replacement.time;
+      isReplacement = true;
       continue;
     }
 
-    if (!isReplacement) plan.cancellations.push(currentDate);
-    currentDate = replacement.date;
-    currentTime = replacement.time;
-    isReplacement = true;
+    if (!planned.has(currentDate)) {
+      plan.occurrences.push({ date: currentDate, time: currentTime });
+      planned.add(currentDate);
+    }
+    return "kept";
   }
 
   return "abandon";
 }
 
+function isReplaceableRecurringArtifact(session) {
+  if (!session || session.session_type !== "מפגש קבוע") return false;
+  if (sessionHasDocumentation(session)) return false;
+  if (sessionEffectiveStatus(session) !== "scheduled") return false;
+  if (sessionChargeForSession(session.id)) return false;
+  if (state.payments.some((payment) => payment.session_id === session.id)) return false;
+  return true;
+}
+
+// Future placeholder occurrences that only exist because of the previous series definition.
+// Documented, statused, paid or charged sessions are genuine history and are never touched.
+function staleRecurringArtifacts(patientId, newSlotKeys) {
+  const today = isoDate(new Date());
+  return state.sessions.filter(
+    (session) =>
+      session.patient_id === patientId &&
+      session.session_date > today &&
+      recurringSeriesSlotFor(session) &&
+      isReplaceableRecurringArtifact(session) &&
+      !newSlotKeys.has(`${session.session_date} ${session.start_time}`)
+  );
+}
+
+function liveSessionExists(patientId, dateValue, ignoredIds) {
+  return state.sessions.some(
+    (session) =>
+      session.patient_id === patientId &&
+      session.session_date === dateValue &&
+      !ignoredIds.has(session.id)
+  );
+}
+
 // Builds the final occurrence set without writing anything, so an abandoned flow leaves no trace.
 async function prepareRecurringSchedulePlan(data, patientId) {
   const bounds = normalizeRecurringBounds(data);
-  const plan = { occurrences: [], cancellations: [], conflicts: 0, abandoned: false };
-  if (!bounds.startDate) return plan;
+  const plan = {
+    occurrences: [],
+    cancellations: [],
+    deferrals: [],
+    staleSessionIds: [],
+    conflicts: 0,
+    abandoned: false
+  };
+  if (!bounds.startDate) {
+    // The series was removed entirely: every future placeholder of the old pattern is stale.
+    plan.staleSessionIds = staleRecurringArtifacts(patientId, new Set()).map((session) => session.id);
+    return plan;
+  }
 
   const seriesDates = recurringSeriesDates(bounds.fixedDay, bounds.startDate, bounds.endDate);
   if (!seriesDates.length) {
@@ -4506,11 +4739,16 @@ async function prepareRecurringSchedulePlan(data, patientId) {
 
   await ensureIsraelHolidaysForRange(bounds.startDate, bounds.endDate);
 
+  const newSlotKeys = new Set(seriesDates.map((seriesDate) => `${seriesDate} ${bounds.fixedTime}`));
+  plan.staleSessionIds = staleRecurringArtifacts(patientId, newSlotKeys).map((session) => session.id);
+  const staleIds = new Set(plan.staleSessionIds);
+
   const planned = new Set();
   for (const seriesDate of seriesDates) {
     // Exceptions already stored keep earlier decisions, and existing sessions keep resaves idempotent.
+    // Stale placeholders of the old pattern are ignored so a changed time recreates the slot.
     if (storedScheduleExceptionFor(patientId, seriesDate)) continue;
-    if (actualSessionExists(patientId, seriesDate)) {
+    if (liveSessionExists(patientId, seriesDate, staleIds)) {
       planned.add(seriesDate);
       continue;
     }
@@ -4536,8 +4774,9 @@ async function createRecurringOccurrence(patient, dateValue, timeValue) {
     end_time: addMinutes(timeValue, 50),
     location: optionValues(state.config.sessionLocations, DEFAULT_SESSION_LOCATIONS)[0] || "",
     session_type: "מפגש קבוע",
-    summary: "מפגש קבוע לפי הגדרת המטופל.",
+    summary: RECURRING_PLACEHOLDER_SUMMARY,
     sensitive_notes: "",
+    status: "scheduled",
     calendar_event_id: "",
     created_at: now,
     updated_at: now,
@@ -4579,6 +4818,39 @@ async function applyRecurringSchedulePlan(patient, plan) {
     state.scheduleExceptions = [exception, ...state.scheduleExceptions];
   }
 
+  for (const deferral of plan.deferrals || []) {
+    // The pending exception keeps the date off the confirmed schedule; the keyed task carries
+    // the reminder. Repeated saves reuse both instead of duplicating them.
+    if (!storedScheduleExceptionFor(patient.id, deferral.date)) {
+      const now = new Date().toISOString();
+      const exception = {
+        id: id(),
+        patient_id: patient.id,
+        exception_type: "holiday_pending",
+        start_date: deferral.date,
+        end_date: deferral.date,
+        reason: `ממתין להחלטה: התנגשות עם ${deferral.holiday}`,
+        created_at: now,
+        updated_at: now,
+        moved_to_date: "",
+        moved_to_time: deferral.time || ""
+      };
+      const appendResult = await appendSheet("schedule_exceptions", exception);
+      exception._rowNumber = appendedRowNumber(appendResult);
+      state.scheduleExceptions = [exception, ...state.scheduleExceptions];
+    }
+    await createSystemTask(
+      patient.id,
+      "החלטה על מפגש בתאריך חג",
+      `מפגש קבוע בתאריך ${formatDate(deferral.date)} מתנגש עם ${deferral.holiday}. צריך להחליט: ביטול, שינוי מועד או השארת המפגש.`,
+      deferral.date,
+      {
+        taskKey: `holiday-decision:${patient.id}:${deferral.date}`,
+        reminderAt: maxDateValue(isoDate(new Date()), addDaysToDate(deferral.date, -7))
+      }
+    );
+  }
+
   for (const occurrence of plan.occurrences) {
     await createRecurringOccurrence(patient, occurrence.date, occurrence.time);
   }
@@ -4600,6 +4872,186 @@ function recurringSeriesSlotFor(session) {
   if (patient.fixed_end_date && dateValue > patient.fixed_end_date) return null;
   if (fixedDayIndex(patient.fixed_day) !== dateFromInput(dateValue).getDay()) return null;
   return { patientId: patient.id, dateValue };
+}
+
+// Moves an existing stored session to a new slot, keeping its documentation, charge and files.
+async function rescheduleSessionRecord(sessionId, newDate, newTime) {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  if (!session) throw new Error("המפגש לא נמצא.");
+  if (!session._rowNumber) throw new Error("צריך לרענן נתונים לפני שינוי מועד.");
+  if (sessionIsCancelled(session)) throw new Error("אי אפשר לשנות מועד של מפגש שבוטל.");
+  await assertSheetRowCurrent("sessions", session._rowNumber, session);
+
+  const sameDate = session.session_date === newDate;
+  if (sameDate && session.start_time === newTime) throw new Error("לא נבחר מועד חדש.");
+  if (
+    !sameDate &&
+    state.sessions.some(
+      (item) =>
+        item.id !== session.id &&
+        item.patient_id === session.patient_id &&
+        item.session_date === newDate
+    )
+  ) {
+    throw new Error("כבר קיים מפגש למטופל בתאריך שנבחר. צריך לבחור מועד אחר.");
+  }
+
+  const storedDuration =
+    session.start_time && session.end_time
+      ? WorkflowCore.timeToMinutes(session.end_time) - WorkflowCore.timeToMinutes(session.start_time)
+      : 0;
+  const durationMinutes = storedDuration > 0 ? storedDuration : WorkflowCore.DEFAULT_SESSION_MINUTES;
+  const newEnd = addMinutes(newTime, durationMinutes);
+
+  assertNoScheduleConflict({
+    dateValue: newDate,
+    startTime: newTime,
+    endTime: newEnd,
+    excludeSessionIds: [session.id, `recurring-${session.patient_id}-${newDate}`]
+  });
+
+  // The vacated series slot is blocked first so it can never reappear as a projection.
+  if (!sameDate) await recordRescheduledSeriesSlot(session, newDate, newTime);
+
+  const updated = {
+    ...session,
+    session_date: newDate,
+    start_time: newTime,
+    end_time: newEnd,
+    updated_at: new Date().toISOString()
+  };
+  try {
+    updated.calendar_event_id = await updateCalendarEvent(updated);
+  } catch {
+    queueSyncWork("calendar_upsert", updated.id, {});
+    lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+  }
+  await updateSheetRow("sessions", session._rowNumber, updated);
+  state.sessions = state.sessions
+    .map((item) => (item.id === updated.id ? updated : item))
+    .sort((a, b) => `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`));
+
+  const linkedCharge = sessionChargeForSession(updated.id);
+  if (linkedCharge && linkedCharge._rowNumber && linkedCharge.session_date !== newDate) {
+    const updatedCharge = {
+      ...linkedCharge,
+      session_date: newDate,
+      updated_at: new Date().toISOString()
+    };
+    await updateSheetRow("session_charges", linkedCharge._rowNumber, updatedCharge);
+    state.sessionCharges = state.sessionCharges.map((item) =>
+      item.id === updatedCharge.id ? updatedCharge : item
+    );
+  }
+  return updated;
+}
+
+// Moves a not-yet-materialised projection: blocks the original slot and stores the new one.
+async function rescheduleRecurringOccurrence(patientId, originalDate, newDate, newTime) {
+  const patient = state.patients.find((item) => item.id === patientId);
+  if (!patient) throw new Error("המטופל לא נמצא.");
+  if (!recurringSessionForDate(patient, originalDate)) {
+    throw new Error("לא נמצא מפגש קבוע לשינוי בתאריך הזה.");
+  }
+  if (actualSessionExists(patientId, newDate)) {
+    throw new Error("כבר קיים מפגש למטופל בתאריך שנבחר. צריך לבחור מועד אחר.");
+  }
+
+  assertNoScheduleConflict({
+    dateValue: newDate,
+    startTime: newTime,
+    excludeSessionIds: [`recurring-${patientId}-${originalDate}`, `recurring-${patientId}-${newDate}`]
+  });
+
+  if (newDate !== originalDate) {
+    await recordRescheduledSeriesSlot({ patient_id: patientId, session_date: originalDate }, newDate, newTime);
+  }
+  const session = await createRecurringOccurrence(patient, newDate, newTime);
+  if (!session) throw new Error("שינוי המועד נכשל: כבר קיים מפגש בתאריך שנבחר.");
+  return session;
+}
+
+// Resolves a deferred holiday decision with the same choices as the original conflict dialog.
+async function resolveHolidayDecisionFlow(patientId, dateValue) {
+  const patient = state.patients.find((item) => item.id === patientId);
+  if (!patient) throw new Error("המטופל לא נמצא.");
+  const exception = state.scheduleExceptions.find(
+    (item) =>
+      item.patient_id === patientId &&
+      item.exception_type === "holiday_pending" &&
+      item.start_date === dateValue
+  );
+  if (!exception) throw new Error("לא נמצאה החלטה ממתינה לתאריך הזה.");
+  if (!exception._rowNumber) throw new Error("צריך לרענן נתונים לפני קבלת ההחלטה.");
+
+  const occurrenceTime = exception.moved_to_time || patient.fixed_time || "";
+  await ensureIsraelHolidaysForRange(dateValue, dateValue);
+  const holidays = israelHolidaysForDate(dateValue);
+  const holidayTitle = holidays[0]?.title || "מועד ישראל";
+  const conflictKind = holidays.length ? israelHolidayConflictKindForDate(holidays) : "optional";
+  const taskKey = `holiday-decision:${patientId}:${dateValue}`;
+
+  const choice = await askHolidayConflict(holidayTitle, conflictKind);
+  if (choice === "abandon" || choice === "defer") return null;
+
+  if (choice === "cancel") {
+    const updated = {
+      ...exception,
+      exception_type: "cancel",
+      reason: `ביטול מפגש קבוע בשל התנגשות עם ${holidayTitle}`,
+      updated_at: new Date().toISOString()
+    };
+    await updateSheetRow("schedule_exceptions", exception._rowNumber, updated);
+    state.scheduleExceptions = state.scheduleExceptions.map((item) =>
+      item.id === updated.id ? updated : item
+    );
+    await closeSystemTaskByKey(patientId, taskKey);
+    return "cancelled";
+  }
+
+  if (choice === "keep") {
+    assertNoScheduleConflict({ dateValue, startTime: occurrenceTime, ignorePatientId: patientId });
+    await deleteScheduleException(exception.id);
+    const created = await createRecurringOccurrence(patient, dateValue, occurrenceTime);
+    if (!created) throw new Error("שמירת המפגש נכשלה: כבר קיים מפגש בתאריך הזה.");
+    await closeSystemTaskByKey(patientId, taskKey);
+    return "kept";
+  }
+
+  for (let step = 0; step < 20; step += 1) {
+    const replacement = await askReplacementOccurrence(dateValue, occurrenceTime);
+    if (replacement === "abandon") return null;
+    if (actualSessionExists(patientId, replacement.date)) {
+      await showNoticeModal("כבר קיים מפגש למטופל בתאריך שנבחר. צריך לבחור מועד אחר.");
+      continue;
+    }
+    const found = findScheduleConflictForSlot({
+      dateValue: replacement.date,
+      startTime: replacement.time,
+      excludeSessionIds: [`recurring-${patientId}-${replacement.date}`]
+    });
+    if (found) {
+      await showNoticeModal(scheduleConflictMessage(found));
+      continue;
+    }
+    const updated = {
+      ...exception,
+      exception_type: "cancel",
+      reason: `שינוי מועד בשל התנגשות עם ${holidayTitle}`,
+      moved_to_date: replacement.date,
+      moved_to_time: replacement.time,
+      updated_at: new Date().toISOString()
+    };
+    await updateSheetRow("schedule_exceptions", exception._rowNumber, updated);
+    state.scheduleExceptions = state.scheduleExceptions.map((item) =>
+      item.id === updated.id ? updated : item
+    );
+    const created = await createRecurringOccurrence(patient, replacement.date, replacement.time);
+    if (!created) throw new Error("שינוי המועד נכשל: כבר קיים מפגש בתאריך שנבחר.");
+    await closeSystemTaskByKey(patientId, taskKey);
+    return "moved";
+  }
+  return null;
 }
 
 async function cancelDeletedRecurringOccurrence(session) {
@@ -4645,13 +5097,42 @@ function recurringSessionForDate(patient, dateValue) {
     end_time: "",
     location: optionValues(state.config.sessionLocations, DEFAULT_SESSION_LOCATIONS)[0] || "",
     session_type: "מפגש קבוע",
-    summary: "מפגש קבוע לפי הגדרת המטופל.",
+    summary: RECURRING_PLACEHOLDER_SUMMARY,
     sensitive_notes: "",
+    status: "scheduled",
     calendar_event_id: "",
     created_at: "",
     updated_at: "",
     document_file_id: "",
     is_recurring: true
+  };
+}
+
+// A holiday decision that is still pending is not a cancellation: the original occurrence keeps
+// its slot reserved so another booking cannot silently take the time before the decision is made.
+// Resolution releases it: cancel frees the slot, keep/move materialize a real session instead.
+function pendingHolidaySessionForDate(patient, dateValue) {
+  if (!patient?.id || patient.status === "archived") return null;
+  if (!patient.fixed_day || !patient.fixed_time) return null;
+  if (patient.fixed_start_date && dateValue < patient.fixed_start_date) return null;
+  if (patient.fixed_end_date && dateValue > patient.fixed_end_date) return null;
+  const date = dateFromInput(dateValue);
+  if (fixedDayIndex(patient.fixed_day) !== date.getDay()) return null;
+  if (actualSessionExists(patient.id, dateValue)) return null;
+  const pending = state.scheduleExceptions.find(
+    (exception) =>
+      exception.exception_type === "holiday_pending" &&
+      exception.patient_id === patient.id &&
+      exceptionApplies(exception, patient.id, dateValue)
+  );
+  if (!pending) return null;
+  return {
+    id: `pending-${patient.id}-${dateValue}`,
+    patient_id: patient.id,
+    session_date: dateValue,
+    start_time: patient.fixed_time,
+    end_time: "",
+    status: "scheduled"
   };
 }
 
@@ -4676,6 +5157,7 @@ async function materializeRecurringSession(patientId, dateValue) {
     session_type: recurring.session_type,
     summary: recurring.summary,
     sensitive_notes: "",
+    status: "scheduled",
     calendar_event_id: "",
     created_at: now,
     updated_at: now,
@@ -4724,7 +5206,9 @@ function dateRange(startDateValue, numberOfDays) {
 
 function sessionsForDates(dateValues) {
   const wantedDates = new Set(dateValues);
-  const actualSessions = state.sessions.filter((session) => wantedDates.has(session.session_date));
+  const actualSessions = state.sessions.filter(
+    (session) => wantedDates.has(session.session_date) && sessionOccupiesSlot(session)
+  );
   const recurringSessions = dateValues.flatMap((dateValue) =>
     state.patients
       .map((patient) => recurringSessionForDate(patient, dateValue))
@@ -4758,7 +5242,8 @@ function paymentStatusLabel(value) {
     paid: "שולם",
     partial: "חלקי",
     pending: "ממתין",
-    unpaid: "פתוח"
+    unpaid: "פתוח",
+    none: "ללא חיובים"
   }[value] || "פתוח";
 }
 
@@ -6802,6 +7287,7 @@ async function loadData() {
   state.templates = templates.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
   await seedQuestionnaireTemplates();
   await migrateLegacyGoals();
+  await reconcileOverdueDocumentationTasks();
   state.lastRefreshAt = new Date().toISOString();
   saveSyncState();
   queueCalendarPrivacyMigration();
@@ -6857,7 +7343,9 @@ async function savePatient(form, schedulePlan = null) {
     state.patients = [patient, ...state.patients];
   }
 
+  await removeStaleRecurringSessions(schedulePlan);
   await applyRecurringSchedulePlan(patient, schedulePlan);
+  await reconcileSeriesSideEffects(patient, schedulePlan);
 
   state.patients = state.patients.sort((a, b) =>
     (a.child_name || "").localeCompare(b.child_name || "", "he")
@@ -6867,6 +7355,251 @@ async function savePatient(form, schedulePlan = null) {
     ...patient,
     folderCreated: !existing?.drive_folder_id
   };
+}
+
+// Deletes only the placeholder rows the old series definition materialised for the future.
+// Runs before the new occurrences are written so the freed slots can be recreated.
+async function removeStaleRecurringSessions(plan) {
+  if (!plan || plan.abandoned || !plan.staleSessionIds?.length) return;
+  for (const sessionId of plan.staleSessionIds) {
+    const session = state.sessions.find((item) => item.id === sessionId);
+    if (!session || !session._rowNumber) continue;
+    if (!isReplaceableRecurringArtifact(session)) continue;
+    if (session.calendar_event_id) {
+      try {
+        await deleteCalendarEvent(session.calendar_event_id);
+      } catch {
+        queueSyncWork("calendar_delete", session.id, { eventId: session.calendar_event_id });
+      }
+    }
+    const documentRecord = sessionDocumentRecord(session);
+    if (documentRecord) {
+      try {
+        await deleteFileRecord(documentRecord.id);
+      } catch {
+        // The stray placeholder document is not worth blocking the schedule change.
+      }
+    }
+    await clearSheetRow("sessions", session._rowNumber, session);
+    state.sessions = state.sessions.filter((item) => item.id !== session.id);
+  }
+}
+
+// After a series change: drop pending holiday decisions that no longer match a series date,
+// close their tasks, and keep exactly one end-of-series follow-up task per patient.
+async function reconcileSeriesSideEffects(patient, plan) {
+  if (plan?.abandoned) return;
+  const today = isoDate(new Date());
+  const seriesDates = new Set(
+    patient.fixed_day && patient.fixed_time && patient.fixed_start_date && patient.fixed_end_date
+      ? recurringSeriesDates(patient.fixed_day, patient.fixed_start_date, patient.fixed_end_date)
+      : []
+  );
+
+  const stalePending = state.scheduleExceptions.filter(
+    (exception) =>
+      exception.patient_id === patient.id &&
+      exception.exception_type === "holiday_pending" &&
+      !seriesDates.has(exception.start_date)
+  );
+  for (const exception of stalePending) {
+    if (exception._rowNumber) await deleteScheduleException(exception.id);
+    await closeSystemTaskByKey(patient.id, `holiday-decision:${patient.id}:${exception.start_date}`);
+  }
+
+  const seriesActive =
+    patient.status !== "archived" &&
+    Boolean(patient.fixed_day && patient.fixed_time && patient.fixed_end_date) &&
+    patient.fixed_end_date >= today;
+  if (seriesActive) {
+    await createSystemTask(
+      patient.id,
+      "סיום טווח טיפול קבוע",
+      `הטיפול הקבוע מסתיים בתאריך ${formatDate(patient.fixed_end_date)}. צריך להחליט: הארכת הטווח, סיום הטיפול או השארת המצב כפי שהוא.`,
+      patient.fixed_end_date,
+      {
+        taskKey: `series-end:${patient.id}`,
+        reminderAt: maxDateValue(today, addDaysToDate(patient.fixed_end_date, -14))
+      }
+    );
+  } else {
+    await closeSystemTaskByKey(patient.id, `series-end:${patient.id}`);
+  }
+}
+
+function sessionEndTimeValue(session) {
+  if (session?.end_time) return session.end_time;
+  return session?.start_time ? addMinutes(session.start_time, 50) : "";
+}
+
+// An appointment whose time passed while it is still effectively scheduled and undocumented
+// surfaces exactly one keyed reminder on the next data load; documenting the session or marking
+// it cancelled/no-show clears the reminder. The recurring placeholder text is not documentation.
+async function reconcileOverdueDocumentationTasks() {
+  const now = new Date();
+  const today = isoDate(now);
+  const nowTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const activePatients = new Set(
+    state.patients.filter((patient) => patient.status !== "archived").map((patient) => patient.id)
+  );
+  const sessionById = new Map(state.sessions.map((session) => [session.id, session]));
+
+  for (const session of state.sessions) {
+    if (!session.session_date || !activePatients.has(session.patient_id)) continue;
+    if (sessionEffectiveStatus(session) !== "scheduled") continue;
+    if (sessionHasDocumentation(session)) continue;
+    const endTime = sessionEndTimeValue(session);
+    const ended =
+      session.session_date < today ||
+      (session.session_date === today && Boolean(endTime) && endTime <= nowTime);
+    if (!ended) continue;
+    // An open reminder for this session (for example the one the save flow wrote) is left
+    // untouched so repeated loads never rewrite or duplicate it.
+    const openExists = state.tasks.some(
+      (task) => task.task_key === `doc:${session.id}` && task.status !== "done"
+    );
+    if (openExists) continue;
+    await createSystemTask(
+      session.patient_id,
+      "השלמת תיעוד מפגש",
+      `מפגש מתאריך ${formatDate(session.session_date)} הסתיים ללא תיעוד.`,
+      session.session_date,
+      { taskKey: `doc:${session.id}` }
+    );
+  }
+
+  // Reminders whose session was documented, cancelled, marked no-show or removed are closed here
+  // as a safety net, so no stale documentation task survives a legitimate state change.
+  await closeSystemTasks((task) => {
+    const key = String(task.task_key || "");
+    if (!key.startsWith("doc:")) return false;
+    const session = sessionById.get(key.slice(4));
+    if (!session) return true;
+    const effective = sessionEffectiveStatus(session);
+    return effective === "cancelled" || effective === "no_show" || sessionHasDocumentation(session);
+  });
+}
+
+function archiveImpactSummary(patientId) {
+  const patient = state.patients.find((item) => item.id === patientId);
+  if (!patient) throw new Error("המטופל לא נמצא.");
+  const today = isoDate(new Date());
+  const futureAuto = state.sessions.filter(
+    (session) =>
+      session.patient_id === patientId &&
+      session.session_date > today &&
+      isReplaceableRecurringArtifact(session)
+  );
+  const futureManual = state.sessions.filter(
+    (session) =>
+      session.patient_id === patientId &&
+      session.session_date > today &&
+      !isReplaceableRecurringArtifact(session) &&
+      !sessionIsCancelled(session)
+  );
+  const pendingDecisions = state.scheduleExceptions.filter(
+    (exception) =>
+      exception.patient_id === patientId && exception.exception_type === "holiday_pending"
+  );
+  const outstandingAgorot = PaymentsCore.outstandingTotal(patientChargeBalances(patientId));
+  return { patient, futureAuto, futureManual, pendingDecisions, outstandingAgorot };
+}
+
+function archiveImpactMessage(impact) {
+  const lines = ["סיום הטיפול יעצור את הלוח הקבוע של המטופל."];
+  if (impact.futureAuto.length) {
+    lines.push(`${impact.futureAuto.length} מפגשים קבועים עתידיים שטרם תועדו יוסרו מהיומן.`);
+  }
+  if (impact.futureManual.length) {
+    lines.push(
+      `${impact.futureManual.length} מפגשים עתידיים נוספים יבוטלו ויוסרו מהיומן; התיעוד והחיובים שלהם נשמרים.`
+    );
+  }
+  if (impact.pendingDecisions.length) {
+    lines.push(`${impact.pendingDecisions.length} החלטות ממתינות על התנגשות עם חג ייסגרו.`);
+  }
+  if (impact.outstandingAgorot > 0) {
+    lines.push(
+      `קיימת יתרת חוב פתוחה של ${formatAgorotAmount(impact.outstandingAgorot)}; החוב יישמר ויוצג בכרטיס המטופל.`
+    );
+  }
+  lines.push("התיעוד, הקבצים וההיסטוריה הכספית נשמרים במלואם ותמיד אפשר להחזיר מהארכיון.");
+  return lines.join(" ");
+}
+
+function archiveDoneMessage(impact) {
+  return impact.outstandingAgorot > 0
+    ? `המטופל הועבר לארכיון. שימי לב: נותרה יתרת חוב פתוחה של ${formatAgorotAmount(impact.outstandingAgorot)}.`
+    : "המטופל הועבר לארכיון.";
+}
+
+// Ending a treatment is an intentional workflow: future auto-created occurrences are removed,
+// pending holiday decisions are closed, and reminders tied to the schedule are completed.
+// Documentation, files and the financial history are never deleted.
+async function archivePatientWorkflow(patientId) {
+  const impact = archiveImpactSummary(patientId);
+  for (const session of impact.futureAuto) {
+    if (!session._rowNumber) continue;
+    if (session.calendar_event_id) {
+      try {
+        await deleteCalendarEvent(session.calendar_event_id);
+      } catch {
+        queueSyncWork("calendar_delete", session.id, { eventId: session.calendar_event_id });
+      }
+    }
+    const documentRecord = sessionDocumentRecord(session);
+    if (documentRecord) {
+      try {
+        await deleteFileRecord(documentRecord.id);
+      } catch {
+        // A stray placeholder document must not block ending the treatment.
+      }
+    }
+    await clearSheetRow("sessions", session._rowNumber, session);
+    state.sessions = state.sessions.filter((item) => item.id !== session.id);
+  }
+  // Ending the treatment cancels every remaining future appointment, including manually created
+  // or already documented ones: the rows stay as history, only the booking and its calendar
+  // event are released. Nothing financial or clinical is deleted.
+  for (const session of impact.futureManual) {
+    if (!session._rowNumber) continue;
+    const updated = { ...session, status: "cancelled", updated_at: new Date().toISOString() };
+    if (session.calendar_event_id) {
+      try {
+        await deleteCalendarEvent(session.calendar_event_id);
+      } catch {
+        queueSyncWork("calendar_delete", session.id, { eventId: session.calendar_event_id });
+      }
+      updated.calendar_event_id = "";
+    }
+    await updateSheetRow("sessions", session._rowNumber, updated);
+    state.sessions = state.sessions.map((item) => (item.id === updated.id ? updated : item));
+  }
+  for (const exception of impact.pendingDecisions) {
+    if (!exception._rowNumber) continue;
+    const updated = {
+      ...exception,
+      exception_type: "cancel",
+      reason: "סיום טיפול: ההתנגשות כבר לא רלוונטית",
+      updated_at: new Date().toISOString()
+    };
+    await updateSheetRow("schedule_exceptions", exception._rowNumber, updated);
+    state.scheduleExceptions = state.scheduleExceptions.map((item) =>
+      item.id === updated.id ? updated : item
+    );
+  }
+  const clearedDocKeys = new Set(
+    [...impact.futureAuto, ...impact.futureManual].map((session) => `doc:${session.id}`)
+  );
+  await closeSystemTasks(
+    (task) =>
+      task.patient_id === patientId &&
+      (String(task.task_key || "").startsWith("holiday-decision:") ||
+        String(task.task_key || "").startsWith("series-end:") ||
+        clearedDocKeys.has(String(task.task_key || "")))
+  );
+  await togglePatientArchive(patientId, true);
+  return impact;
 }
 
 async function togglePatientArchive(patientId, shouldArchive) {
@@ -7187,7 +7920,19 @@ async function saveSession(form) {
   if (existing && !existing._rowNumber) throw new Error("צריך לרענן נתונים לפני עריכת מפגש קיים.");
   if (existing) await assertSheetRowCurrent("sessions", existing._rowNumber, existing);
 
-  const chargeNeeded = Boolean(String(data.summary || "").trim()) && !(existing && sessionChargeForSession(existing.id));
+  const requestedStatus = SESSION_STATUS_LABELS[String(data.status || "").trim()]
+    ? String(data.status || "").trim()
+    : existing
+      ? sessionEffectiveStatus(existing)
+      : "scheduled";
+  const documented =
+    Boolean(String(data.summary || "").trim()) &&
+    String(data.summary || "").trim() !== RECURRING_PLACEHOLDER_SUMMARY;
+  // Writing a real summary marks the session as held. Scheduling alone never creates a charge,
+  // and cancelled or no-show sessions are not billable treatments.
+  const sessionStatus = requestedStatus === "scheduled" && documented ? "completed" : requestedStatus;
+  const billable = sessionStatus !== "cancelled" && sessionStatus !== "no_show";
+  const chargeNeeded = documented && billable && !(existing && sessionChargeForSession(existing.id));
   let chargePriceAgorot = null;
   if (chargeNeeded) {
     const patient = state.patients.find((item) => item.id === patientId);
@@ -7195,6 +7940,15 @@ async function saveSession(form) {
     if (chargePriceAgorot === null) {
       throw new Error("לא הוגדר מחיר טיפול קבוע תקין למטופל. יש להגדיר מחיר קבוע בכרטיס המטופל לפני שמירת תיעוד המפגש.");
     }
+  }
+
+  if (billable) {
+    assertNoScheduleConflict({
+      dateValue: data.session_date,
+      startTime: data.start_time || "",
+      endTime: data.end_time || "",
+      excludeSessionIds: [existing?.id || "", `recurring-${patientId}-${data.session_date}`]
+    });
   }
 
   const now = new Date().toISOString();
@@ -7210,19 +7964,38 @@ async function saveSession(form) {
     summary: data.summary || "",
     sensitive_notes: data.sensitive_notes || "",
     next_plan: data.next_plan || "",
+    status: sessionStatus,
     calendar_event_id: existing?.calendar_event_id || "",
     document_file_id: existing?.document_file_id || "",
     created_at: existing?.created_at || now,
     updated_at: now
   };
 
-  try {
-    session.calendar_event_id = existing
-      ? await updateCalendarEvent(session)
-      : await createCalendarEvent(session);
-  } catch {
-    queueSyncWork("calendar_upsert", session.id, {});
-    lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+  if (sessionStatus === "cancelled") {
+    // A cancelled occurrence frees its calendar slot; the record itself stays for history.
+    if (session.calendar_event_id) {
+      const eventId = session.calendar_event_id;
+      try {
+        await deleteCalendarEvent(eventId);
+      } catch {
+        queueSyncWork("calendar_delete", session.id, { eventId });
+        lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+      }
+      session.calendar_event_id = "";
+    }
+  } else {
+    try {
+      session.calendar_event_id = existing
+        ? await updateCalendarEvent(session)
+        : await createCalendarEvent(session);
+    } catch {
+      queueSyncWork("calendar_upsert", session.id, {});
+      lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+    }
+  }
+
+  if (existing && existing.session_date !== session.session_date) {
+    await recordRescheduledSeriesSlot(existing, session.session_date, session.start_time);
   }
 
   if (existing) {
@@ -7269,10 +8042,65 @@ async function saveSession(form) {
 
   await saveSessionGoalUpdates(form, session);
 
-  if (!session.summary?.trim()) {
-    await createSystemTask(patientId, "השלמת תיעוד מפגש", `מפגש מתאריך ${formatDate(session.session_date)} נשמר ללא סיכום.`, session.session_date);
+  const linkedCharge = sessionChargeForSession(session.id);
+  if (linkedCharge && linkedCharge._rowNumber && linkedCharge.session_date !== session.session_date) {
+    const updatedCharge = {
+      ...linkedCharge,
+      session_date: session.session_date,
+      updated_at: new Date().toISOString()
+    };
+    await updateSheetRow("session_charges", linkedCharge._rowNumber, updatedCharge);
+    state.sessionCharges = state.sessionCharges.map((item) =>
+      item.id === updatedCharge.id ? updatedCharge : item
+    );
+  }
+
+  if (!documented && billable) {
+    await createSystemTask(
+      patientId,
+      "השלמת תיעוד מפגש",
+      `מפגש מתאריך ${formatDate(session.session_date)} נשמר ללא סיכום.`,
+      session.session_date,
+      { taskKey: `doc:${session.id}` }
+    );
+  } else {
+    await closeSystemTasks(
+      (task) =>
+        task.patient_id === patientId &&
+        (task.task_key === `doc:${session.id}` ||
+          (!task.task_key &&
+            task.title === "השלמת תיעוד מפגש" &&
+            (task.due_date === session.session_date ||
+              Boolean(existing && task.due_date === existing.session_date))))
+    );
   }
   return session;
+}
+
+// A one-off move of a series occurrence leaves a reschedule exception at the original date so
+// the vacated slot never reappears as a fresh recurring projection.
+async function recordRescheduledSeriesSlot(session, newDate, newTime) {
+  if (!session?.patient_id || !session.session_date) return null;
+  if (!recurringSeriesSlotFor(session)) return null;
+  if (storedScheduleExceptionFor(session.patient_id, session.session_date)) return null;
+
+  const now = new Date().toISOString();
+  const exception = {
+    id: id(),
+    patient_id: session.patient_id,
+    exception_type: "reschedule",
+    start_date: session.session_date,
+    end_date: session.session_date,
+    reason: "שינוי מועד חד-פעמי של מפגש קבוע",
+    created_at: now,
+    updated_at: now,
+    moved_to_date: newDate || "",
+    moved_to_time: newTime || ""
+  };
+  const appendResult = await appendSheet("schedule_exceptions", exception);
+  exception._rowNumber = appendedRowNumber(appendResult);
+  state.scheduleExceptions = [exception, ...state.scheduleExceptions];
+  return exception;
 }
 
 async function unlinkSessionPayments(sessionId) {
@@ -7325,6 +8153,45 @@ async function deleteSessionRecord(sessionId) {
   await clearSheetRow("sessions", session._rowNumber, session);
   state.sessions = state.sessions.filter((item) => item.id !== sessionId);
   if (state.currentSessionId === sessionId) state.currentSessionId = "";
+  await closeSystemTasks(
+    (task) =>
+      task.patient_id === session.patient_id &&
+      (task.task_key === `doc:${sessionId}` ||
+        (!task.task_key && task.title === "השלמת תיעוד מפגש" && (task.due_date || "") === (session.session_date || "")))
+  );
+}
+
+async function reconcilePaymentTasks(payment) {
+  const followupKey = `payment-followup:${payment.id}`;
+  const receiptKey = `receipt:${payment.id}`;
+  if (payment.payment_status !== "paid") {
+    await createSystemTask(payment.patient_id, "מעקב תשלום פתוח", `תשלום פתוח: ${formatAmount(payment.amount)}`, payment.paid_at, {
+      taskKey: followupKey
+    });
+  } else {
+    await closeSystemTaskByKey(payment.patient_id, followupKey);
+    await closeSystemTasks(
+      (task) =>
+        task.patient_id === payment.patient_id &&
+        !task.task_key &&
+        task.title === "מעקב תשלום פתוח" &&
+        (task.due_date || "") === (payment.paid_at || "")
+    );
+  }
+  if (payment.payment_status === "paid" && payment.receipt_status !== "issued") {
+    await createSystemTask(payment.patient_id, "הפקת קבלה", `נדרשת קבלה עבור תשלום: ${formatAmount(payment.amount)}`, payment.paid_at, {
+      taskKey: receiptKey
+    });
+  } else {
+    await closeSystemTaskByKey(payment.patient_id, receiptKey);
+    await closeSystemTasks(
+      (task) =>
+        task.patient_id === payment.patient_id &&
+        !task.task_key &&
+        task.title === "הפקת קבלה" &&
+        (task.due_date || "") === (payment.paid_at || "")
+    );
+  }
 }
 
 async function savePayment(form) {
@@ -7461,12 +8328,7 @@ async function savePayment(form) {
     `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`)
   );
 
-  if (payment.payment_status !== "paid") {
-    await createSystemTask(patientId, "מעקב תשלום פתוח", `תשלום פתוח: ${formatAmount(payment.amount)}`, payment.paid_at);
-  }
-  if (payment.payment_status === "paid" && payment.receipt_status !== "issued") {
-    await createSystemTask(patientId, "הפקת קבלה", `נדרשת קבלה עבור תשלום: ${formatAmount(payment.amount)}`, payment.paid_at);
-  }
+  await reconcilePaymentTasks(payment);
 
   try {
     await syncPaymentIncomeRecord(payment, Boolean(receiptFile));
@@ -7520,6 +8382,8 @@ async function deletePaymentRecord(paymentId) {
   await clearSheetRow("payments", payment._rowNumber, payment);
   state.payments = state.payments.filter((item) => item.id !== paymentId);
   if (state.currentPaymentId === paymentId) state.currentPaymentId = "";
+  await closeSystemTaskByKey(payment.patient_id, `payment-followup:${paymentId}`);
+  await closeSystemTaskByKey(payment.patient_id, `receipt:${paymentId}`);
 }
 
 function chargePaymentBlockError(charge) {
@@ -7581,6 +8445,7 @@ async function deletePaymentReceipt(paymentId) {
   };
   await updateSheetRow("payments", payment._rowNumber, updated);
   state.payments = state.payments.map((item) => (item.id === paymentId ? updated : item));
+  await reconcilePaymentTasks(updated);
 }
 
 async function setPaymentStatus(paymentId, status) {
@@ -7596,12 +8461,7 @@ async function setPaymentStatus(paymentId, status) {
   await updateSheetRow("payments", payment._rowNumber, updated);
   state.payments = state.payments.map((item) => (item.id === paymentId ? updated : item));
 
-  if (updated.payment_status !== "paid") {
-    await createSystemTask(updated.patient_id, "מעקב תשלום פתוח", `תשלום פתוח: ${formatAmount(updated.amount)}`, updated.paid_at);
-  }
-  if (updated.payment_status === "paid" && updated.receipt_status !== "issued") {
-    await createSystemTask(updated.patient_id, "הפקת קבלה", `נדרשת קבלה עבור תשלום: ${formatAmount(updated.amount)}`, updated.paid_at);
-  }
+  await reconcilePaymentTasks(updated);
 }
 
 async function setReceiptStatus(paymentId, status) {
@@ -7616,6 +8476,7 @@ async function setReceiptStatus(paymentId, status) {
   };
   await updateSheetRow("payments", payment._rowNumber, updated);
   state.payments = state.payments.map((item) => (item.id === paymentId ? updated : item));
+  await reconcilePaymentTasks(updated);
 }
 
 function csvValue(value) {
@@ -7834,15 +8695,51 @@ function exportTableCsv(tableKey) {
   return rows.length;
 }
 
-async function createSystemTask(patientId, title, description = "", dueDate = "") {
-  const exists = state.tasks.some(
-    (task) =>
-      task.patient_id === patientId &&
-      task.title === title &&
-      task.status !== "done" &&
-      (task.due_date || "") === (dueDate || "")
-  );
-  if (exists) return null;
+async function createSystemTask(patientId, title, description = "", dueDate = "", options = {}) {
+  const taskKey = options.taskKey || "";
+  if (taskKey) {
+    // Keyed automatic tasks reconcile instead of accumulating: an open task with the same key
+    // is refreshed in place, and one already completed for the same due date is not recreated.
+    const openTask = state.tasks.find(
+      (task) => task.patient_id === patientId && task.task_key === taskKey && task.status !== "done"
+    );
+    if (openTask) {
+      const nextDue = dueDate || openTask.due_date || "";
+      const nextReminder = options.reminderAt || nextDue || openTask.reminder_at || "";
+      const unchanged =
+        (openTask.due_date || "") === nextDue &&
+        (openTask.reminder_at || "") === nextReminder &&
+        (openTask.description || "") === description;
+      if (unchanged || !openTask._rowNumber) return null;
+      const updated = {
+        ...openTask,
+        description,
+        due_date: nextDue,
+        reminder_at: nextReminder,
+        updated_at: new Date().toISOString()
+      };
+      await updateSheetRow("tasks", openTask._rowNumber, updated);
+      state.tasks = state.tasks.map((task) => (task.id === updated.id ? updated : task));
+      return updated;
+    }
+    const doneTask = state.tasks.find(
+      (task) =>
+        task.patient_id === patientId &&
+        task.task_key === taskKey &&
+        task.status === "done" &&
+        (task.due_date || "") === (dueDate || "")
+    );
+    if (doneTask) return null;
+  } else {
+    const exists = state.tasks.some(
+      (task) =>
+        task.patient_id === patientId &&
+        task.title === title &&
+        task.status !== "done" &&
+        (task.due_date || "") === (dueDate || "")
+    );
+    if (exists) return null;
+  }
 
   const now = new Date().toISOString();
   const task = {
@@ -7855,7 +8752,8 @@ async function createSystemTask(patientId, title, description = "", dueDate = ""
     source: "auto",
     created_at: now,
     updated_at: now,
-    reminder_at: dueDate || isoDate(new Date())
+    reminder_at: options.reminderAt || dueDate || isoDate(new Date()),
+    task_key: taskKey
   };
   const appendResult = await appendSheet("tasks", task);
   task._rowNumber = appendedRowNumber(appendResult);
@@ -7863,6 +8761,24 @@ async function createSystemTask(patientId, title, description = "", dueDate = ""
     `${a.due_date || "9999-99-99"} ${a.created_at}`.localeCompare(`${b.due_date || "9999-99-99"} ${b.created_at}`)
   );
   return task;
+}
+
+// Closes only automatic tasks; manually created tasks are never auto-closed, even when their
+// titles look similar, because linkage is by task_key identity and source.
+async function closeSystemTasks(predicate) {
+  const targets = state.tasks.filter(
+    (task) => task.source === "auto" && task.status !== "done" && task._rowNumber && predicate(task)
+  );
+  for (const task of targets) {
+    const updated = { ...task, status: "done", updated_at: new Date().toISOString() };
+    await updateSheetRow("tasks", task._rowNumber, updated);
+    state.tasks = state.tasks.map((item) => (item.id === updated.id ? updated : item));
+  }
+  return targets.length;
+}
+
+async function closeSystemTaskByKey(patientId, taskKey) {
+  return closeSystemTasks((task) => task.patient_id === patientId && task.task_key === taskKey);
 }
 
 async function saveTask(form) {
@@ -8676,22 +9592,45 @@ function bindEvents() {
     }
     if (action === "toggle-patient-archive") {
       const shouldArchive = target.dataset.archive !== "restore";
-      const prompt = shouldArchive
-        ? "להעביר את המטופל לארכיון? המידע יישמר ותמיד אפשר להחזיר."
-        : "להחזיר את המטופל מרשימת הארכיון?";
-      if (!window.confirm(prompt)) return;
-
+      if (!shouldArchive) {
+        if (!window.confirm("להחזיר את המטופל מרשימת הארכיון?")) return;
+        try {
+          if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+          await runAuditedAction(
+            { actionType: "restore", entityType: "patient", entityId: target.dataset.id, summary: "החזרת מטופל לפעילות" },
+            () => togglePatientArchive(target.dataset.id, false)
+          );
+          state.message = "המטופל הוחזר לפעילות.";
+          render();
+        } catch (error) {
+          state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
+          render();
+        }
+        return;
+      }
       try {
         if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: shouldArchive ? "archive" : "restore", entityType: "patient", entityId: target.dataset.id, summary: shouldArchive ? "העברת מטופל לארכיון" : "החזרת מטופל לפעילות" },
-          () => togglePatientArchive(target.dataset.id, shouldArchive)
+        const answer = await showAppModal({
+          title: "סיום טיפול והעברה לארכיון",
+          message: archiveImpactMessage(archiveImpactSummary(target.dataset.id)),
+          actions: [
+            { value: "archive", label: "סיום טיפול וארכוב", variant: "blue" },
+            { value: "abandon", label: "ביטול", variant: "secondary" }
+          ]
+        });
+        if (answer !== "archive") return;
+        const impact = await runAuditedAction(
+          { actionType: "archive", entityType: "patient", entityId: target.dataset.id, summary: "סיום טיפול והעברת מטופל לארכיון", undoable: false },
+          () => archivePatientWorkflow(target.dataset.id)
         );
-        state.message = shouldArchive ? "המטופל הועבר לארכיון." : "המטופל הוחזר לפעילות.";
+        state.message = archiveDoneMessage(impact);
+        state.error = "";
         render();
       } catch (error) {
         state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
         render();
+      } finally {
+        closeAppModal();
       }
     }
     if (action === "calendar-prev") {
@@ -8747,6 +9686,70 @@ function bindEvents() {
         state.error = error instanceof Error ? error.message : "ביטול המפגש הקבוע נכשל.";
         state.message = "";
         render();
+      }
+    }
+    if (action === "reschedule-occurrence") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שינוי מועד.");
+        lastCalendarSyncError = "";
+        const sessionId = target.dataset.sessionId || "";
+        const dateValue = target.dataset.date || "";
+        const timeValue = target.dataset.time || "";
+        const replacement = await askReplacementOccurrence(dateValue, timeValue, { allowSameDate: true });
+        if (replacement === "abandon") return;
+        await runAuditedAction(
+          {
+            actionType: "update",
+            entityType: "session",
+            entityId: sessionId || target.dataset.patientId,
+            summary: "שינוי מועד מפגש",
+            undoable: false
+          },
+          () =>
+            sessionId
+              ? rescheduleSessionRecord(sessionId, replacement.date, replacement.time)
+              : rescheduleRecurringOccurrence(target.dataset.patientId, dateValue, replacement.date, replacement.time)
+        );
+        state.selectedCalendarDate = replacement.date;
+        state.calendarMonth = replacement.date.slice(0, 7);
+        state.message = lastCalendarSyncError
+          ? `מועד המפגש עודכן. ${lastCalendarSyncError}`
+          : "מועד המפגש עודכן וסונכרן ליומן.";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "שינוי המועד נכשל.";
+        state.message = "";
+        render();
+      } finally {
+        closeAppModal();
+      }
+    }
+    if (action === "resolve-holiday-decision") {
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני קבלת החלטה.");
+        const outcome = await runAuditedAction(
+          {
+            actionType: "update",
+            entityType: "schedule_exception",
+            entityId: target.dataset.patientId,
+            summary: "החלטה על מפגש בתאריך חג",
+            undoable: false
+          },
+          () => resolveHolidayDecisionFlow(target.dataset.patientId, target.dataset.date)
+        );
+        if (outcome === "cancelled") state.message = "המפגש בוטל לתאריך הזה.";
+        else if (outcome === "kept") state.message = "המפגש נשמר במועד המקורי.";
+        else if (outcome === "moved") state.message = "מועד המפגש עודכן ונשמר.";
+        else state.message = "";
+        state.error = "";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "קבלת ההחלטה נכשלה.";
+        state.message = "";
+        render();
+      } finally {
+        closeAppModal();
       }
     }
     if (action === "reports-prev") {
