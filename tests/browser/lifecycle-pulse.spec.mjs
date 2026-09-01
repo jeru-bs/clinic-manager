@@ -200,6 +200,68 @@ test("a single occurrence moves to another day without touching the rest of the 
   await expect(page.locator(".day-agenda-row").first()).toContainText("נועם");
 });
 
+test("rescheduling an overdue session clears its stale documentation reminder and recreates it only after the new date passes", async ({ page }) => {
+  await page.clock.install({ time: FIXED_NOW });
+  const { captured } = await setupUiMocks(page, {
+    seed: {
+      patients: [patientRow("p1", "נועם")],
+      sessions: [sessionRow("s1", "p1", "2026-09-01")],
+      tasks: [taskRow("t1", "p1", "השלמת תיעוד מפגש", "2026-09-01", "doc:s1")]
+    }
+  });
+
+  await openApp(page, "/#/calendar");
+  await page.locator(".calendar-day[data-date='2026-09-01']").click();
+  await page.locator('[data-action="reschedule-occurrence"][data-session-id="s1"]').click();
+  await setValue(page, "#conflictReplacementDate", "2026-09-16");
+  await setValue(page, "#conflictReplacementTime", "12:00");
+  await modalAction(page, "apply");
+  await expect(page.locator(".message").first()).toContainText("מועד המפגש עודכן");
+
+  const staleTaskPuts = putsFor(captured, "tasks").filter((entry) => entry.row[0] === "t1");
+  expect(staleTaskPuts.at(-1).row[4]).toBe("done");
+  expect(appendsFor(captured, "tasks")).toHaveLength(0);
+
+  // Once the replacement occurrence itself has passed without documentation, a fresh reminder
+  // is created for the new date rather than reviving the stale overdue date.
+  await page.clock.setSystemTime(new Date("2026-09-17T12:00:00Z"));
+  await page.locator('[data-action="refresh"]').evaluate((button) => button.click());
+  await expect
+    .poll(() => appendsFor(captured, "tasks").filter((entry) => entry.row[10] === "doc:s1").length)
+    .toBe(1);
+  const replacementTasks = appendsFor(captured, "tasks").filter(
+    (entry) => entry.row[10] === "doc:s1"
+  );
+  expect(replacementTasks).toHaveLength(1);
+  expect(replacementTasks[0].row[5]).toBe("2026-09-16");
+  expect(replacementTasks[0].row[3]).toContain("16.9.2026");
+});
+
+test("rescheduling an overdue session to another past date updates its documentation reminder in place", async ({ page }) => {
+  await page.clock.setFixedTime(FIXED_NOW);
+  const { captured } = await setupUiMocks(page, {
+    seed: {
+      patients: [patientRow("p1", "נועם")],
+      sessions: [sessionRow("s1", "p1", "2026-09-01")],
+      tasks: [taskRow("t1", "p1", "השלמת תיעוד מפגש", "2026-09-01", "doc:s1")]
+    }
+  });
+
+  await openApp(page, "/#/calendar");
+  await page.locator(".calendar-day[data-date='2026-09-01']").click();
+  await page.locator('[data-action="reschedule-occurrence"][data-session-id="s1"]').click();
+  await setValue(page, "#conflictReplacementDate", "2026-09-03");
+  await setValue(page, "#conflictReplacementTime", "12:00");
+  await modalAction(page, "apply");
+  await expect(page.locator(".message").first()).toContainText("מועד המפגש עודכן");
+
+  const taskPuts = putsFor(captured, "tasks").filter((entry) => entry.row[0] === "t1");
+  expect(taskPuts.at(-1).row[4]).toBe("open");
+  expect(taskPuts.at(-1).row[5]).toBe("2026-09-03");
+  expect(taskPuts.at(-1).row[3]).toContain("3.9.2026");
+  expect(appendsFor(captured, "tasks")).toHaveLength(0);
+});
+
 test("a deferred holiday decision creates one reminder task, survives resaves and resolves later", async ({ page }) => {
   await page.clock.setFixedTime(FIXED_NOW);
   const { captured } = await setupUiMocks(page, {

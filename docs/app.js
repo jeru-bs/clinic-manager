@@ -4943,6 +4943,7 @@ async function rescheduleSessionRecord(sessionId, newDate, newTime) {
       item.id === updatedCharge.id ? updatedCharge : item
     );
   }
+  await reconcileDocumentationTaskForSession(updated, new Date(), session.session_date);
   return updated;
 }
 
@@ -7432,40 +7433,59 @@ function sessionEndTimeValue(session) {
   return session?.start_time ? addMinutes(session.start_time, 50) : "";
 }
 
-// An appointment whose time passed while it is still effectively scheduled and undocumented
-// surfaces exactly one keyed reminder on the next data load; documenting the session or marking
-// it cancelled/no-show clears the reminder. The recurring placeholder text is not documentation.
-async function reconcileOverdueDocumentationTasks() {
-  const now = new Date();
+function sessionNeedsDocumentationTask(session, now = new Date()) {
+  if (!session?.session_date) return false;
+  const patient = state.patients.find((item) => item.id === session.patient_id);
+  if (!patient || patient.status === "archived") return false;
+  if (sessionEffectiveStatus(session) !== "scheduled") return false;
+  if (sessionHasDocumentation(session)) return false;
   const today = isoDate(now);
+  if (session.session_date < today) return true;
+  if (session.session_date > today) return false;
+  const endTime = sessionEndTimeValue(session);
   const nowTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  const activePatients = new Set(
-    state.patients.filter((patient) => patient.status !== "archived").map((patient) => patient.id)
-  );
-  const sessionById = new Map(state.sessions.map((session) => [session.id, session]));
+  return Boolean(endTime) && endTime <= nowTime;
+}
 
-  for (const session of state.sessions) {
-    if (!session.session_date || !activePatients.has(session.patient_id)) continue;
-    if (sessionEffectiveStatus(session) !== "scheduled") continue;
-    if (sessionHasDocumentation(session)) continue;
-    const endTime = sessionEndTimeValue(session);
-    const ended =
-      session.session_date < today ||
-      (session.session_date === today && Boolean(endTime) && endTime <= nowTime);
-    if (!ended) continue;
-    // An open reminder for this session (for example the one the save flow wrote) is left
-    // untouched so repeated loads never rewrite or duplicate it.
-    const openExists = state.tasks.some(
-      (task) => task.task_key === `doc:${session.id}` && task.status !== "done"
-    );
-    if (openExists) continue;
+async function reconcileDocumentationTaskForSession(session, now = new Date(), previousDate = "") {
+  const taskKey = `doc:${session.id}`;
+  const reminderNeeded = sessionNeedsDocumentationTask(session, now);
+  if (!reminderNeeded) {
+    await closeSystemTaskByKey(session.patient_id, taskKey);
+  } else {
     await createSystemTask(
       session.patient_id,
       "השלמת תיעוד מפגש",
       `מפגש מתאריך ${formatDate(session.session_date)} הסתיים ללא תיעוד.`,
       session.session_date,
-      { taskKey: `doc:${session.id}` }
+      { taskKey }
     );
+  }
+
+  // Older automatic reminders have no task_key. Close the matching old/new-date bridge when a
+  // session changes, or whenever the current session no longer needs a documentation reminder.
+  if (previousDate || !reminderNeeded) {
+    const linkedDates = new Set([session.session_date, previousDate].filter(Boolean));
+    await closeSystemTasks(
+      (task) =>
+        task.patient_id === session.patient_id &&
+        !task.task_key &&
+        task.title === "השלמת תיעוד מפגש" &&
+        linkedDates.has(task.due_date || "")
+    );
+  }
+}
+
+// An appointment whose time passed while it is still effectively scheduled and undocumented
+// surfaces exactly one keyed reminder on the next data load; documenting the session or marking
+// it cancelled/no-show clears the reminder. Rescheduling keeps the task aligned with the current
+// date, and the recurring placeholder text is not documentation.
+async function reconcileOverdueDocumentationTasks() {
+  const now = new Date();
+  const sessionById = new Map(state.sessions.map((session) => [session.id, session]));
+
+  for (const session of state.sessions) {
+    await reconcileDocumentationTaskForSession(session, now);
   }
 
   // Reminders whose session was documented, cancelled, marked no-show or removed are closed here
@@ -8055,25 +8075,7 @@ async function saveSession(form) {
     );
   }
 
-  if (!documented && billable) {
-    await createSystemTask(
-      patientId,
-      "השלמת תיעוד מפגש",
-      `מפגש מתאריך ${formatDate(session.session_date)} נשמר ללא סיכום.`,
-      session.session_date,
-      { taskKey: `doc:${session.id}` }
-    );
-  } else {
-    await closeSystemTasks(
-      (task) =>
-        task.patient_id === patientId &&
-        (task.task_key === `doc:${session.id}` ||
-          (!task.task_key &&
-            task.title === "השלמת תיעוד מפגש" &&
-            (task.due_date === session.session_date ||
-              Boolean(existing && task.due_date === existing.session_date))))
-    );
-  }
+  await reconcileDocumentationTaskForSession(session, new Date(), existing?.session_date || "");
   return session;
 }
 
