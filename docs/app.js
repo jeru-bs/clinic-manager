@@ -20,7 +20,9 @@ const SHEETS = {
     "created_at",
     "updated_at",
     "fixed_start_date",
-    "fixed_end_date"
+    "fixed_end_date",
+    "no_show_policy",
+    "no_show_fee"
   ],
   sessions: [
     "id",
@@ -226,6 +228,98 @@ const SHEETS = {
 const WorkflowCore = window.CLINIC_WORKFLOW_CORE;
 const BusinessCore = window.CLINIC_BUSINESS_CORE;
 const PaymentsCore = window.CLINIC_PAYMENTS_CORE;
+const {
+  REPORT_TYPES,
+  formatDateTime,
+  formatDate,
+  hebrewDateParts,
+  isoDate,
+  monthLabel,
+  shiftMonth,
+  calendarDays,
+  dateFromInput,
+  timeParts,
+  formatAmount,
+  hebrewWeekday,
+  primaryContact,
+  PAYMENT_STATUS_TONES,
+  CHARGE_STATUS_TONES,
+  RECEIPT_STATUS_TONES,
+  goalStatusLabel,
+  questionnaireStatusLabel,
+  reportTypeLabel,
+  sharingWarningText,
+  HEBREW_WEEKDAY_NAMES,
+  weekdayIndex,
+  sessionToneClass,
+  contactTypeLabel,
+  taskStatusLabel,
+  fileTypeLabel,
+  formatAgorotAmount,
+  formatBusinessAmount,
+  chargeStatusLabel,
+  NO_SHOW_POLICY_LABELS,
+  addDaysToDate,
+  maxDateValue,
+  businessTypeLabel,
+  exceptionTypeLabel,
+  formatExceptionDateRange,
+  dateRange,
+  patientDisplayName,
+  sessionLabel,
+  paymentStatusLabel,
+  paymentMethodLabel,
+  receiptStatusLabel,
+  auditMutations,
+  calendarDateTime,
+  addMinutes,
+  sessionDocumentTitle,
+  driveFileTypeLabel,
+  fileNameWithFallback,
+  archiveImpactMessage,
+  archiveDoneMessage,
+  csvValue,
+  backupFileName,
+  listText,
+  savedListText,
+  optionValues,
+  rowToRecord,
+  recordToRow,
+  columnLetter,
+  appendedRowNumber,
+  stateCollectionName,
+  safeJson,
+  escapeDriveQueryValue,
+  sortBusinessRecords,
+  backupRows,
+  formQuestionRequest,
+  clockButtonPosition
+} = window.CLINIC_FORMAT_CORE;
+const {
+  normalizeIsraelHoliday,
+  israelHolidayConflictKindForDate,
+  sessionIsProjected,
+  dashboardDebtRows,
+  dashboardTaskRows,
+  sessionChronologyKey,
+  taskDueMatches,
+  RECURRING_PLACEHOLDER_SUMMARY,
+  SESSION_STATUS_LABELS,
+  isCancelledStatus,
+  SESSION_STATUS_TONES,
+  sessionHasDocumentation,
+  sessionEffectiveStatus,
+  sessionStatusLabel,
+  sessionIsCancelled,
+  sessionOccupiesSlot,
+  fixedDayIndex,
+  exceptionApplies,
+  MAX_RECURRING_OCCURRENCES,
+  normalizeRecurringBounds,
+  recurringSeriesDates,
+  recurringSeriesSlot,
+  sessionEndTimeValue
+} = window.CLINIC_SCHEDULE_CORE;
 
 const configDefaults = window.CLINIC_MANAGER_CONFIG || {};
 const GOOGLE_TOKEN_KEY = "clinic-manager-google-token";
@@ -272,11 +366,6 @@ const DEFAULT_QUESTIONNAIRE_TEMPLATES = [
     ]
   }
 ];
-const REPORT_TYPES = {
-  assessment: "דוח אבחון",
-  progress: "דוח התקדמות",
-  summary: "דוח סיכום טיפול"
-};
 let googleTokenExpiresAt = 0;
 let googleRefreshTimer = null;
 const state = {
@@ -321,6 +410,8 @@ const state = {
   lastUndoActionId: "",
   templates: [],
   dataHealth: null,
+  sheetCompaction: null,
+  auditWarning: "",
   sharingSecurity: null,
   storageReadySpreadsheetId: "",
   syncQueue: loadSyncQueue(),
@@ -362,6 +453,8 @@ const state = {
     range: null
   },
   calendarMonth: isoDate(new Date()).slice(0, 7),
+  calendarView: readStoredCalendarView(),
+  pendingSessionSlot: null,
   selectedCalendarDate: isoDate(new Date()),
   reportMonth: isoDate(new Date()).slice(0, 7),
   route: getRoute()
@@ -390,10 +483,11 @@ let activeUploadRequest = null;
 let uploadCancelled = false;
 
 function loadConfig() {
-  const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
+  // Only whitelisted keys may override config.js; googleClientId is never overridable.
+  const saved = WorkflowCore.pickOverridableConfig(readStoredConfig());
   return {
     appName: saved.appName || configDefaults.appName || "ניהול קליניקה",
-    googleClientId: saved.googleClientId || configDefaults.googleClientId || "",
+    googleClientId: configDefaults.googleClientId || "",
     googleDriveRootFolderId:
       saved.googleDriveRootFolderId ||
       configDefaults.googleDriveRootFolderId ||
@@ -415,43 +509,41 @@ function loadConfig() {
       saved.sessionLocations,
       configDefaults.sessionLocations,
       DEFAULT_SESSION_LOCATIONS
-    )
+    ),
+    noShowPolicyDefault: PaymentsCore.normalizeNoShowPolicy(saved.noShowPolicyDefault) || "none",
+    noShowFeeDefault: String(saved.noShowFeeDefault || "").trim()
   };
+}
+
+function readStoredConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("clinic-manager-config") || "{}");
+    return saved && typeof saved === "object" ? saved : {};
+  } catch {
+    return {};
+  }
 }
 
 function saveConfig(nextConfig) {
   const previousSpreadsheetId = state.config.googleSpreadsheetId || "";
-  state.config = { ...state.config, ...nextConfig };
+  state.config = {
+    ...state.config,
+    ...WorkflowCore.pickOverridableConfig(nextConfig),
+    googleClientId: configDefaults.googleClientId || ""
+  };
   if ((state.config.googleSpreadsheetId || "") !== previousSpreadsheetId) {
     state.storageReadySpreadsheetId = "";
   }
-  localStorage.setItem("clinic-manager-config", JSON.stringify(state.config));
+  localStorage.setItem(
+    "clinic-manager-config",
+    JSON.stringify(WorkflowCore.pickOverridableConfig(state.config))
+  );
 }
 
 function resetConfigToDefaults() {
   localStorage.removeItem("clinic-manager-config");
   state.config = loadConfig();
   state.storageReadySpreadsheetId = "";
-}
-
-function listText(savedValue, defaultValue, fallbackItems) {
-  if (Array.isArray(savedValue)) return savedValue.join("\n");
-  if (typeof savedValue === "string" && savedValue.trim()) return savedValue;
-  if (Array.isArray(defaultValue)) return defaultValue.join("\n");
-  if (typeof defaultValue === "string" && defaultValue.trim()) return defaultValue;
-  return fallbackItems.join("\n");
-}
-
-function mergeListText(...values) {
-  return [...new Set(values.flatMap((value) => optionValues(value, [])))].join("\n");
-}
-
-// A saved allowlist is authoritative: defaults apply only when no value was ever
-// saved, so an email removed from the allowlist cannot return after reload.
-function savedListText(savedValue, defaultValue) {
-  if (Array.isArray(savedValue)) return savedValue.join("\n");
-  if (typeof savedValue === "string") return savedValue;
-  return mergeListText(defaultValue);
 }
 
 function loadSyncQueue() {
@@ -494,7 +586,7 @@ function persistSyncQueue() {
   updateSyncIndicator();
 }
 
-function queueSyncWork(kind, entityId, payload = {}) {
+function enqueueSyncWork(kind, entityId, payload = {}) {
   const existing = state.syncQueue.find((item) => item.kind === kind && item.entityId === entityId);
   const now = new Date().toISOString();
   if (existing) {
@@ -516,6 +608,16 @@ function queueSyncWork(kind, entityId, payload = {}) {
       updatedAt: now
     });
   }
+}
+
+function queueSyncWork(kind, entityId, payload = {}) {
+  queueSyncWorkBatch([{ kind, entityId, payload }]);
+}
+
+// Persists once for a whole batch (a recurring series queues hundreds of calendar events).
+function queueSyncWorkBatch(items) {
+  if (!items.length) return;
+  for (const item of items) enqueueSyncWork(item.kind, item.entityId, item.payload || {});
   state.saveState = "pending";
   persistSyncQueue();
   saveSyncState();
@@ -541,13 +643,6 @@ function syncStatusLabel() {
   if (state.saveState === "error") return "לא נשמר";
   if (state.lastSavedAt) return "נשמר";
   return "מוכן";
-}
-
-function formatDateTime(value) {
-  if (!value) return "טרם בוצע";
-  return new Intl.DateTimeFormat("he-IL", { dateStyle: "short", timeStyle: "short" }).format(
-    new Date(value)
-  );
 }
 
 function syncIndicatorBusy() {
@@ -609,18 +704,18 @@ function updateUploadProgress(loaded, total, label = "מעלה קובץ…") {
   if (bar) bar.style.width = `${percent}%`;
 }
 
+// The bar width is applied after each render instead of through an inline style attribute (CSP).
+function syncUploadProgressBar() {
+  const bar = document.querySelector("#uploadStatus [data-upload-bar]");
+  if (!bar) return;
+  const percent = Math.max(0, Math.min(100, Number(state.uploadProgress?.percent || 0)));
+  bar.style.width = `${percent}%`;
+}
+
 function clearUploadProgress() {
   state.uploadProgress = null;
   const box = document.getElementById("uploadStatus");
   if (box) box.hidden = true;
-}
-
-function optionValues(value, fallbackItems) {
-  const items = String(value || "")
-    .split(/\r?\n|,/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return [...new Set(items.length ? items : fallbackItems)];
 }
 
 function configuredEmails() {
@@ -751,155 +846,8 @@ function id() {
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function rowToRecord(columns, row) {
-  return Object.fromEntries(columns.map((column, index) => [column, row[index] || ""]));
-}
-
-function recordToRow(columns, record) {
-  return columns.map((column) => String(record[column] || ""));
-}
-
-function formatDate(value) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("he-IL", { dateStyle: "short" }).format(
-    new Date(`${value}T00:00:00`)
-  );
-}
-
-const HEBREW_GEMATRIA_HUNDREDS = ["", "ק", "ר", "ש", "ת", "תק", "תר", "תש", "תת", "תתק"];
-const HEBREW_GEMATRIA_TENS = ["", "י", "כ", "ל", "מ", "נ", "ס", "ע", "פ", "צ"];
-const HEBREW_GEMATRIA_UNITS = ["", "א", "ב", "ג", "ד", "ה", "ו", "ז", "ח", "ט"];
-// Built from code points so the source file stays free of the Hebrew punctuation
-// character that the project static check treats as a mojibake sentinel.
-const HEBREW_GERESH = String.fromCharCode(0x05f3);
-const HEBREW_GERSHAYIM = String.fromCharCode(0x05f4);
-const hebrewDateCache = new Map();
-let hebrewDateFormatter = null;
-
-function hebrewGematria(value) {
-  const number = Math.max(0, Math.floor(Number(value) || 0));
-  if (!number || number > 999) return "";
-  const letters = (
-    HEBREW_GEMATRIA_HUNDREDS[Math.floor(number / 100) % 10] +
-    HEBREW_GEMATRIA_TENS[Math.floor(number / 10) % 10] +
-    HEBREW_GEMATRIA_UNITS[number % 10]
-  )
-    // 15 and 16 are written טו and טז so the divine name is never spelled out.
-    .replace(/יה$/, "טו")
-    .replace(/יו$/, "טז");
-  if (letters.length === 1) return `${letters}${HEBREW_GERESH}`;
-  return `${letters.slice(0, -1)}${HEBREW_GERSHAYIM}${letters.slice(-1)}`;
-}
-
-function hebrewDateParts(dateValue) {
-  const value = String(dateValue || "");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  if (hebrewDateCache.has(value)) return hebrewDateCache.get(value);
-
-  let parts = null;
-  try {
-    if (!hebrewDateFormatter) {
-      // Latin digits are requested explicitly because engines disagree about "nu-hebr";
-      // the numerals are converted to gematria below so every engine renders the same text.
-      hebrewDateFormatter = new Intl.DateTimeFormat("he-u-ca-hebrew-nu-latn", {
-        day: "numeric",
-        month: "long",
-        year: "numeric"
-      });
-    }
-    // Anchoring on local noon keeps the civil day stable across timezone and DST shifts.
-    const formatted = hebrewDateFormatter.formatToParts(new Date(`${value}T12:00:00`));
-    const dayNumber = formatted.find((part) => part.type === "day")?.value || "";
-    const month = formatted.find((part) => part.type === "month")?.value || "";
-    const yearNumber = formatted.find((part) => part.type === "year")?.value || "";
-    const day = hebrewGematria(String(dayNumber).replace(/\D/g, ""));
-    const year = hebrewGematria(Number(String(yearNumber).replace(/\D/g, "")) % 1000);
-    if (day && month) {
-      parts = {
-        day,
-        month,
-        year,
-        short: `${day} ב${month}`,
-        full: `${day} ב${month} ${year}`.trim()
-      };
-    }
-  } catch {
-    parts = null;
-  }
-
-  hebrewDateCache.set(value, parts);
-  return parts;
-}
-
-function isoDate(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate()
-  ).padStart(2, "0")}`;
-}
-
-function monthLabel(monthValue) {
-  return new Intl.DateTimeFormat("he-IL", { month: "long", year: "numeric" }).format(
-    new Date(`${monthValue}-01T00:00:00`)
-  );
-}
-
-function shiftMonth(monthValue, offset) {
-  const [year, month] = monthValue.split("-").map(Number);
-  const date = new Date(year, month - 1 + offset, 1);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-}
-
-function calendarDays(monthValue) {
-  const [year, month] = monthValue.split("-").map(Number);
-  const firstDay = new Date(year, month - 1, 1);
-  const visibleStart = new Date(firstDay);
-  visibleStart.setDate(firstDay.getDate() - firstDay.getDay());
-
-  return Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(visibleStart);
-    date.setDate(visibleStart.getDate() + index);
-    return {
-      date: isoDate(date),
-      inMonth: date.getMonth() === month - 1
-    };
-  });
-}
-
 function hebcalCacheKey(year) {
   return `${HEBCAL_CACHE_PREFIX}-${year}`;
-}
-
-const HOLIDAY_KEEP_ALLOWED_PATTERN = /chanukah|hanukkah|חנוכה/i;
-// Tisha B'Av is a fast in the Hebcal data but is treated like a festival here.
-const HOLIDAY_MAJOR_FAST_PATTERN = /tish'?a b'?av|תשעה באב/i;
-
-// A treatment may stay in place only on Hanukkah and on the minor fasts, which are ordinary
-// working days. Every festival, Yom Kippur and Tisha B'Av must be cancelled or moved.
-function israelHolidayConflictKind(item) {
-  if (item?.conflictKind === "optional" || item?.conflictKind === "required") return item.conflictKind;
-  const text = `${item?.title || ""} ${item?.hebrew || ""}`;
-  if (HOLIDAY_KEEP_ALLOWED_PATTERN.test(text)) return "optional";
-  if (HOLIDAY_MAJOR_FAST_PATTERN.test(text)) return "required";
-  if (String(item?.subcat || "") === "fast") return "optional";
-  return "required";
-}
-
-function normalizeIsraelHoliday(item) {
-  const sourceLink = String(item?.link || "");
-  const safeLink = /^https:\/\/(?:www\.)?hebcal\.com\//.test(sourceLink)
-    ? sourceLink
-    : "https://www.hebcal.com/";
-  return {
-    date: item?.date || "",
-    title: item?.hebrew || item?.title || "מועד ישראל",
-    memo: item?.memo || "",
-    link: safeLink,
-    subcat: item?.subcat || "",
-    yomtov: item?.yomtov === true,
-    // Stored with the holiday so a cached round-trip, which loses the English title, still
-    // classifies the conflict the same way.
-    conflictKind: israelHolidayConflictKind(item)
-  };
 }
 
 function cachedIsraelHolidays(year, allowExpired = false) {
@@ -1006,18 +954,6 @@ function israelHolidayBlocksRecurring(dateValue) {
   return israelHolidaysForDate(dateValue).find((holiday) => holiday.yomtov);
 }
 
-// The strictest holiday of the day decides which choices the therapist is offered.
-function israelHolidayConflictKindForDate(holidays) {
-  return holidays.some((holiday) => israelHolidayConflictKind(holiday) === "required")
-    ? "required"
-    : "optional";
-}
-
-function dateFromInput(value) {
-  const parsed = value ? new Date(`${value}T00:00:00`) : new Date();
-  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-}
-
 function closePicker() {
   activePickerElement?.remove();
   activePickerElement = null;
@@ -1086,23 +1022,18 @@ function showDatePicker(input, monthValue = "") {
   placePicker(popover, input);
 }
 
-function timeParts(value) {
-  const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) {
-    const now = new Date();
-    return { hour: now.getHours(), minute: "00" };
-  }
-  return {
-    hour: Math.min(23, Math.max(0, Number(match[1]))),
-    minute: ["00", "15", "30", "45"].includes(match[2]) ? match[2] : "00"
-  };
-}
-
-function clockButtonStyle(value, total, radius) {
-  const angle = (value / total) * Math.PI * 2 - Math.PI / 2;
-  const x = 50 + radius * Math.cos(angle);
-  const y = 50 + radius * Math.sin(angle);
-  return `--x:${x.toFixed(3)}%;--y:${y.toFixed(3)}%;`;
+// Positions are applied through CSSOM so the markup needs no inline style attribute (CSP).
+function positionClockButtons(popover) {
+  popover.querySelectorAll("[data-picker-hour]").forEach((button) => {
+    const { x, y } = clockButtonPosition(Number(button.dataset.pickerHour), 24, 43);
+    button.style.setProperty("--x", x);
+    button.style.setProperty("--y", y);
+  });
+  popover.querySelectorAll("[data-picker-minute]").forEach((button, index) => {
+    const { x, y } = clockButtonPosition(index, 4, 22);
+    button.style.setProperty("--x", x);
+    button.style.setProperty("--y", y);
+  });
 }
 
 function showTimePicker(input, selectedHour = null) {
@@ -1123,24 +1054,17 @@ function showTimePicker(input, selectedHour = null) {
       ${Array.from({ length: 24 }, (_, clockHour) => {
         const label = String(clockHour).padStart(2, "0");
         return `
-          <button class="clock-hour ${clockHour === hour ? "selected" : ""}" style="${clockButtonStyle(
-            clockHour,
-            24,
-            43
-          )}" data-picker-hour="${clockHour}" type="button">${label}</button>`;
+          <button class="clock-hour ${clockHour === hour ? "selected" : ""}" data-picker-hour="${clockHour}" type="button">${label}</button>`;
       }).join("")}
       ${["00", "15", "30", "45"]
         .map(
-          (clockMinute, index) => `
-            <button class="clock-minute ${clockMinute === minute ? "selected" : ""}" style="${clockButtonStyle(
-              index,
-              4,
-              22
-            )}" data-picker-minute="${clockMinute}" type="button">${clockMinute}</button>`
+          (clockMinute) => `
+            <button class="clock-minute ${clockMinute === minute ? "selected" : ""}" data-picker-minute="${clockMinute}" type="button">${clockMinute}</button>`
         )
         .join("")}
       <div class="clock-center">${String(hour).padStart(2, "0")}:${minute}</div>
     </div>`;
+  positionClockButtons(popover);
 
   popover.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -1161,16 +1085,6 @@ function showTimePicker(input, selectedHour = null) {
   placePicker(popover, input);
 }
 
-function formatAmount(value) {
-  const amount = Number(value);
-  if (Number.isNaN(amount)) return value || "-";
-  return new Intl.NumberFormat("he-IL", {
-    currency: "ILS",
-    maximumFractionDigits: 0,
-    style: "currency"
-  }).format(amount);
-}
-
 function icon(name) {
   const common =
     'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
@@ -1178,6 +1092,7 @@ function icon(name) {
     dashboard: `<svg ${common}><rect height="7" rx="1.5" width="7" x="3" y="3"/><rect height="7" rx="1.5" width="7" x="14" y="3"/><rect height="7" rx="1.5" width="7" x="3" y="14"/><rect height="7" rx="1.5" width="7" x="14" y="14"/></svg>`,
     patients: `<svg ${common}><path d="M16 19v-1a4 4 0 0 0-8 0v1"/><circle cx="12" cy="8" r="3"/><path d="M19 19v-1.2a3 3 0 0 0-2-2.8"/><path d="M17 5.4a2.5 2.5 0 0 1 0 5.2"/></svg>`,
     calendar: `<svg ${common}><rect height="16" rx="2" width="18" x="3" y="5"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M3 10h18"/></svg>`,
+    search: `<svg ${common}><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>`,
     tasks: `<svg ${common}><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6l1 1 2-2"/><path d="M4 12l1 1 2-2"/><path d="M4 18l1 1 2-2"/></svg>`,
     payments: `<svg ${common}><rect height="14" rx="2" width="18" x="3" y="5"/><path d="M3 10h18"/><path d="M7 15h4"/></svg>`,
     business: `<svg ${common}><rect height="13" rx="2" width="18" x="3" y="7"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M3 12h18"/></svg>`,
@@ -1220,15 +1135,9 @@ function uploadProgressBar() {
         <strong data-upload-label>${html(progress?.label || "מעלה קובץ…")}</strong>
         <span data-upload-percent>${percent}%</span>
       </div>
-      <div class="upload-track"><span data-upload-bar style="width:${percent}%"></span></div>
+      <div class="upload-track"><span data-upload-bar></span></div>
       <button class="button danger table-button" data-action="cancel-upload" type="button">ביטול העלאה</button>
     </div>`;
-}
-
-const HEB_WEEKDAYS = ["יום ראשון", "יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת"];
-
-function hebrewWeekday(date) {
-  return HEB_WEEKDAYS[date.getDay()] || "";
 }
 
 /* Shared context spine: one narrow local column next to the main content. */
@@ -1284,6 +1193,7 @@ function shell(content, spineHtml = "") {
           <span>מלכה זיידמן</span>
           <small>ניהול קליניקה</small>
         </div>
+        ${globalSearchMarkup()}
         <nav class="side-menu" aria-label="ניווט ראשי">${nav}</nav>
         ${
           state.accessToken
@@ -1296,6 +1206,7 @@ function shell(content, spineHtml = "") {
         ${syncIndicator()}
         ${uploadProgressBar()}
         ${state.error ? `<div class="message error" role="alert" aria-live="assertive">${html(state.error)}</div>` : ""}
+        ${state.auditWarning ? `<div class="message notice warning" data-audit-warning role="alert" aria-live="assertive">${html(state.auditWarning)}</div>` : ""}
         ${state.message ? `<div class="message" data-app-message role="status" aria-live="polite">${html(state.message)}${state.lastUndoActionId ? ` <button class="button secondary message-action" data-action="undo-last-action" data-id="${html(state.lastUndoActionId)}" type="button">ביטול הפעולה</button>` : ""}</div>` : ""}
         ${content}
       </main>
@@ -1361,9 +1272,35 @@ function statusPill(label, tone = "") {
   return `<span class="status-pill${tone ? ` tone-${tone}` : ""}">${html(label)}</span>`;
 }
 
-const PAYMENT_STATUS_TONES = { paid: "success", partial: "warning", unpaid: "danger" };
-const CHARGE_STATUS_TONES = { paid: "success", partial: "warning", open: "danger", cancelled: "" };
-const RECEIPT_STATUS_TONES = { issued: "success", needed: "warning", not_needed: "" };
+// One overflow menu per row. Every table and list shares this markup so the toggle, the
+// outside-click close and the Escape handling behave the same everywhere.
+function rowMenu({ id, label, items }) {
+  const entries = items.filter(Boolean);
+  if (!entries.length) return "";
+  const open = state.openRowMenu === id;
+  const dataAttributes = (attrs = {}) =>
+    Object.entries(attrs)
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .map(([key, value]) => `data-${key}="${html(value)}"`)
+      .join(" ");
+  return `
+    <div class="row-menu">
+      <button class="icon-button" data-action="toggle-row-menu" data-id="${html(id)}" type="button" aria-haspopup="menu" aria-expanded="${open ? "true" : "false"}" aria-label="${html(label)}" title="פעולות">${icon("more")}</button>
+      <div class="row-menu-list" role="menu" aria-label="${html(label)}" ${open ? "" : "hidden"}>
+        ${entries
+          .map((item) =>
+            item.href
+              ? `<a class="row-menu-item" role="menuitem" href="${html(item.href)}" target="_blank" rel="noopener">${html(item.label)}</a>`
+              : `<button class="row-menu-item${item.danger ? " danger" : ""}" role="menuitem" data-action="${html(item.action)}" ${dataAttributes(item.attrs)} type="button">${html(item.label)}</button>`
+          )
+          .join("")}
+      </div>
+    </div>`;
+}
+
+function stackedCell(primary, secondary, { ltr = false } = {}) {
+  return `<span class="cell-stack"><span${ltr && primary ? ' dir="ltr"' : ""}>${html(primary || "—")}</span><small>${html(secondary || "—")}</small></span>`;
+}
 
 function uploadField({ id, name = "", label, required = false, hint = "", extra = "", wide = true, accept = "", camera = false }) {
   const fileControl = `
@@ -1416,70 +1353,121 @@ function disclosureSection(key, { title, description = "", openLabel, editing = 
     ${open ? form : ""}`;
 }
 
-function todayAgendaPanel(todayRows) {
-  const sorted = todayRows
-    .slice()
-    .sort((first, second) => String(first.start_time || "").localeCompare(String(second.start_time || "")));
-  const nowTime = new Date().toTimeString().slice(0, 5);
-  const nextRow = sorted.find((session) => String(session.start_time || "") >= nowTime) || null;
+function todaySessionRow(session, { isNext = false } = {}) {
+  const status = sessionEffectiveStatus(session);
+  const projected = sessionIsProjected(session);
+  const name = patientName(session.patient_id);
   return `
-    <article class="panel">
-      <div class="panel-head"><h2>היום ביומן</h2><span>${sorted.length} מפגשים</span></div>
+    <div class="today-row${isNext ? " is-next" : ""}${isCancelledStatus(status) ? " is-cancelled" : ""}" data-session-row="${html(session.id)}">
+      <span class="today-time">${html(session.start_time || "—")}</span>
+      <div class="today-main">
+        <button class="row-open" data-action="open-profile" data-id="${html(session.patient_id)}" type="button">${html(name)}</button>
+        <div class="today-badges">
+          ${statusPill(session.session_type || "מפגש")}
+          ${session.location ? statusPill(session.location) : ""}
+          ${statusPill(sessionStatusLabel(session), SESSION_STATUS_TONES[status] || "")}
+        </div>
+      </div>
+      ${rowMenu({
+        id: `session:${session.id}`,
+        label: `פעולות למפגש של ${name}`,
+        items: [
+          { action: "open-profile", label: "פתיחת כרטיס", attrs: { id: session.patient_id } },
+          projected
+            ? { action: "open-profile", label: "תיעוד מפגש", attrs: { id: session.patient_id, tab: "documentation" } }
+            : { action: "edit-session", label: "עריכת מפגש", attrs: { id: session.id } },
+          !projected && status !== "completed" && { action: "set-session-status", label: "סימון כהתקיים", attrs: { id: session.id, status: "completed" } },
+          !projected && status !== "no_show" && !isCancelledStatus(status) && { action: "set-session-status", label: "לא הגיע", attrs: { id: session.id, status: "no_show" } },
+          !projected && !isCancelledStatus(status) && { action: "set-session-status", label: "ביטול מפגש", danger: true, attrs: { id: session.id, status: "cancelled" } }
+        ]
+      })}
+    </div>`;
+}
+
+function todaySessionsPanel(todayRows, tomorrowRows, nextRow) {
+  return `
+    <article class="panel today-panel" data-today-sessions>
+      <div class="panel-head"><h2>המפגשים של היום</h2><span>${todayRows.length} מפגשים</span></div>
       ${
-        sorted.length
-          ? `<div class="attention-list">${sorted
-              .slice(0, 6)
-              .map(
-                (session) => `
-                  <div class="attention-row ${nextRow && session.id === nextRow.id ? "is-next" : ""}">
-                    <div>
-                      <strong>${html(patientName(session.patient_id))}</strong>
-                      <span>${html(session.session_type || "מפגש")}${nextRow && session.id === nextRow.id ? " · המפגש הבא" : ""}</span>
-                    </div>
-                    <span class="attention-time">${html(session.start_time || "ללא שעה")}</span>
-                  </div>`
-              )
-              .join("")}</div>`
-          : `<div class="empty"><strong>אין מפגשים מתוכננים להיום.</strong>אפשר לבדוק את היומן לימים הקרובים.<a class="button secondary" href="#/calendar">מעבר ליומן</a></div>`
+        todayRows.length
+          ? `<div class="today-list">${todayRows.map((session) => todaySessionRow(session, { isNext: Boolean(nextRow && session.id === nextRow.id) })).join("")}</div>`
+          : `<div class="empty"><strong>אין מפגשים מתוכננים להיום.</strong>מפגש נקבע מתוך כרטיס המטופל, בלשונית תיעוד מפגש.<a class="button" href="#/patients">קביעת מפגש</a></div>`
+      }
+      ${
+        tomorrowRows.length
+          ? `<details class="today-tomorrow" data-today-tomorrow>
+              <summary>מחר · ${tomorrowRows.length} מפגשים</summary>
+              <div class="today-list">${tomorrowRows.map((session) => todaySessionRow(session)).join("")}</div>
+            </details>`
+          : ""
       }
     </article>`;
 }
 
-function openPaymentsPanel() {
-  const openRows = allChargeBalances().filter((balance) => balance.remainingAgorot > 0);
+function openDebtsPanel(debts) {
+  const shown = debts.slice(0, 8);
   return `
-    <article class="panel">
-      <div class="panel-head"><h2>תשלומים פתוחים</h2><span>${openRows.length} רשומות</span></div>
+    <article class="panel today-panel" data-today-debts>
+      <div class="panel-head"><h2>חובות פתוחים</h2><span>${debts.length} מטופלים</span></div>
       ${
-        openRows.length
-          ? `<div class="attention-list">${openRows
-              .slice(0, 6)
-              .map(
-                (balance) => `
-                  <div class="attention-row is-warning">
-                    <div>
-                      <strong>${html(patientName(balance.patientId))}</strong>
-                      <span>${html(formatDate(balance.sessionDate))}</span>
+        debts.length
+          ? `<div class="today-list">${shown
+              .map((debt) => {
+                const name = patientName(debt.patientId);
+                return `
+                  <div class="today-row is-debt">
+                    <div class="today-main">
+                      <button class="row-open" data-action="open-profile" data-id="${html(debt.patientId)}" type="button">${html(name)}</button>
+                      <span class="today-meta">מאז ${html(formatDate(debt.oldestDate))} · ${debt.count} חיובים</span>
                     </div>
-                    <div class="actions">
-                      <span class="attention-time">${html(formatAgorotAmount(balance.remainingAgorot))}</span>
-                      ${statusPill(chargeStatusLabel(balance.status), balance.status === "partial" ? "warning" : "danger")}
-                    </div>
-                  </div>`
-              )
-              .join("")}</div>`
-          : `<div class="empty"><strong>אין תשלומים פתוחים.</strong>כל התשלומים הרשומים סומנו כשולמו.<a class="button secondary" href="#/payments">מעבר לתשלומים</a></div>`
+                    <strong class="today-amount">${html(formatAgorotAmount(debt.remainingAgorot))}</strong>
+                    ${rowMenu({
+                      id: `debt:${debt.patientId}`,
+                      label: `פעולות לחוב של ${name}`,
+                      items: [
+                        { action: "open-profile", label: "פתיחת כרטיס", attrs: { id: debt.patientId } },
+                        { action: "open-profile", label: "רישום תשלום", attrs: { id: debt.patientId, tab: "payments", "open-form": "payment" } }
+                      ]
+                    })}
+                  </div>`;
+              })
+              .join("")}</div>
+            ${debts.length > shown.length ? `<p class="today-more">ועוד ${debts.length - shown.length} מטופלים עם חוב פתוח.</p>` : ""}`
+          : `<div class="empty"><strong>אין חובות פתוחים.</strong>כל חיובי הטיפול שולמו.</div>`
       }
+      <div class="panel-foot"><a class="button secondary" href="#/payments">לכל התשלומים</a></div>
     </article>`;
 }
 
-function dashboardSpine({ todayRows, todaySessions, reminderCount, openPayments, activePatients }) {
+function upcomingTasksPanel(openTasks, today) {
+  const shown = openTasks.slice(0, 3);
+  return `
+    <article class="panel today-panel" data-today-tasks>
+      <div class="panel-head"><h2>המשימות הקרובות</h2><span>${openTasks.length} פתוחות</span></div>
+      ${
+        shown.length
+          ? `<div class="reminder-list">${shown
+              .map((task) => {
+                const due = String(task.due_date || task.reminder_at || "");
+                const overdue = Boolean(due) && due < today;
+                return `
+                  <div class="reminder-row${overdue ? " overdue" : ""}" data-task-row="${html(task.id)}">
+                    <div>
+                      <strong>${html(task.title || "-")}</strong>
+                      <span>${html(patientName(task.patient_id))} · ${html(due ? `${overdue ? "באיחור מאז" : "יעד"} ${formatDate(due)}` : "ללא תאריך יעד")}</span>
+                    </div>
+                    <button class="button table-button" data-action="complete-task" data-id="${html(task.id)}" type="button">בוצע</button>
+                  </div>`;
+              })
+              .join("")}</div>`
+          : `<div class="empty"><strong>אין משימות פתוחות.</strong>משימות חדשות נוספות מכרטיס המטופל או ממסך המשימות.</div>`
+      }
+      <div class="panel-foot"><a class="button secondary" href="#/tasks">לכל המשימות</a></div>
+    </article>`;
+}
+
+function dashboardSpine({ todayRows, nextSession, openTasks, debtors, activePatients }) {
   const now = new Date();
-  const nowTime = now.toTimeString().slice(0, 5);
-  const nextSession = todayRows
-    .slice()
-    .sort((first, second) => String(first.start_time || "").localeCompare(String(second.start_time || "")))
-    .find((session) => String(session.start_time || "") >= nowTime);
   return spine(`
     ${spineBlock(
       "היום",
@@ -1494,9 +1482,9 @@ function dashboardSpine({ todayRows, todaySessions, reminderCount, openPayments,
     ${spineBlock(
       "מבט מהיר",
       spineCounts([
-        [todaySessions, "מפגשים היום", "info", "calendar"],
-        [reminderCount, "תזכורות פעילות", "success", "bell"],
-        [openPayments, "תשלומים פתוחים", "warning", "payments"],
+        [todayRows.length, "מפגשים היום", "info", "calendar"],
+        [openTasks, "משימות פתוחות", "success", "tasks"],
+        [debtors, "חייבים", "warning", "payments"],
         [activePatients, "מטופלים פעילים", "danger", "patients"]
       ])
     )}
@@ -1504,35 +1492,38 @@ function dashboardSpine({ todayRows, todaySessions, reminderCount, openPayments,
 }
 
 function dashboardPage() {
-  const openPayments = allChargeBalances().filter((balance) => balance.remainingAgorot > 0).length;
+  const now = new Date();
+  const today = isoDate(now);
+  const tomorrow = dateRange(today, 2)[1];
+  const byTime = (first, second) => String(first.start_time || "").localeCompare(String(second.start_time || ""));
+  const todayRows = sessionsForDates([today]).sort(byTime);
+  const tomorrowRows = sessionsForDates([tomorrow]).sort(byTime);
+  const nowTime = now.toTimeString().slice(0, 5);
+  const nextRow = todayRows.find((session) => String(session.start_time || "") >= nowTime && sessionEffectiveStatus(session) === "scheduled") || null;
+  const debts = dashboardDebtRows(allChargeBalances());
+  const openTasks = dashboardTaskRows(state.tasks, today);
   const activePatients = state.patients.filter((patient) => patient.status !== "archived").length;
-  const today = isoDate(new Date());
-  const todayRows = sessionsForDates([today]);
-  const weekRows = sessionsForDates(dateRange(today, 7));
-  const todaySessions = todayRows.length;
-  const reminderCount = activeReminders().length;
+  const hebrew = hebrewDateParts(today);
+  const summary = `${todayRows.length} מפגשים היום · ${debts.length} חייבים · ${openTasks.length} משימות פתוחות`;
 
   return shell(
     `
     ${header(
-      "מה דורש תשומת לב היום",
-      "המפגשים, המשימות והתשלומים שמחכים לטיפול.",
+      `${hebrewWeekday(now)}, ${formatDate(today)}`,
+      `${hebrew ? `${hebrew.full} · ` : ""}${summary}`,
       `<button class="button" data-action="open-patient-drawer" type="button">מטופל חדש +</button>`
     )}
     ${connectionBanner()}
-    <section class="attention-grid">
-      ${todayAgendaPanel(todayRows)}
-      ${remindersPanel()}
-      ${openPaymentsPanel()}
-    </section>
-    <section class="dashboard-grid">
-      ${sessionsPanel(weekRows)}
-      ${paymentsPanel()}
-      <div class="dashboard-full">${tasksPanel()}</div>
+    <section class="today-layout">
+      ${todaySessionsPanel(todayRows, tomorrowRows, nextRow)}
+      <section class="dashboard-grid">
+        ${openDebtsPanel(debts)}
+        ${upcomingTasksPanel(openTasks, today)}
+      </section>
     </section>
     ${patientDrawer()}
   `,
-    dashboardSpine({ todayRows, todaySessions, reminderCount, openPayments, activePatients })
+    dashboardSpine({ todayRows, nextSession: nextRow, openTasks: openTasks.length, debtors: debts.length, activePatients })
   );
 }
 
@@ -1592,19 +1583,17 @@ function patientsPage() {
     )}
   `);
 
-  const rowMenu = (patient) => {
-    const open = state.openRowMenu === patient.id;
+  const patientMenu = (patient) => {
     const archived = patient.status === "archived";
-    const archiveLabel = archived ? "החזרה מארכיון" : "ארכוב";
-    return `
-      <div class="row-menu">
-        <button class="icon-button" data-action="toggle-row-menu" data-id="${html(patient.id)}" type="button" aria-haspopup="menu" aria-expanded="${open ? "true" : "false"}" aria-label="פעולות עבור ${html(patient.child_name)}" title="פעולות">${icon("more")}</button>
-        <div class="row-menu-list" role="menu" aria-label="פעולות עבור ${html(patient.child_name)}" ${open ? "" : "hidden"}>
-          <button class="row-menu-item" role="menuitem" data-action="open-profile" data-id="${html(patient.id)}" type="button">פתיחת כרטיס מטופל</button>
-          <button class="row-menu-item" role="menuitem" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button">עריכת מטופל</button>
-          <button class="row-menu-item danger" role="menuitem" data-action="toggle-patient-archive" data-id="${html(patient.id)}" data-archive="${archived ? "restore" : "archive"}" type="button">${archiveLabel}</button>
-        </div>
-      </div>`;
+    return rowMenu({
+      id: patient.id,
+      label: `פעולות עבור ${patient.child_name}`,
+      items: [
+        { action: "open-profile", label: "פתיחת כרטיס מטופל", attrs: { id: patient.id } },
+        { action: "open-patient-drawer", label: "עריכת מטופל", attrs: { id: patient.id } },
+        { action: "toggle-patient-archive", label: archived ? "החזרה מארכיון" : "ארכוב", danger: true, attrs: { id: patient.id, archive: archived ? "restore" : "archive" } }
+      ]
+    });
   };
 
   return shell(
@@ -1639,10 +1628,10 @@ function patientsPage() {
                     <button class="row-open" data-action="open-profile" data-id="${html(patient.id)}" type="button">${html(patient.child_name)}</button>
                     ${patient.status === "archived" ? `<span class="status-pill muted">ארכיון</span>` : ""}
                   </td>
-                  <td data-label="מוסד">${html(patient.school_name || "-")}</td>
-                  <td data-label="סוג טיפול">${html(patient.treatment_type || "-")}</td>
+                  <td data-label="אימייל / מוסד">${stackedCell(primaryContact(state.contacts, patient.id)?.email, patient.school_name, { ltr: true })}</td>
+                  <td data-label="טלפון / טיפול">${stackedCell(primaryContact(state.contacts, patient.id)?.phone, patient.treatment_type, { ltr: true })}</td>
                   <td data-label="תשלום">${statusPill(paymentStatusLabel(derivedStatusByPatient.get(patient.id)), PAYMENT_STATUS_TONES[derivedStatusByPatient.get(patient.id)] || "")}</td>
-                  <td data-label="פעולות">${rowMenu(patient)}</td>
+                  <td data-label="פעולות">${patientMenu(patient)}</td>
                 </tr>`
               )
               .join("") || `<tr><td colspan="5"><div class="empty">אין מטופלים להצגה.</div></td></tr>`}
@@ -1738,7 +1727,7 @@ function patientSummary(patient, { sessions, tasks }) {
         <button class="button" data-action="open-patient-drawer" data-id="${html(patient.id)}" type="button">עריכת פרטי מטופל</button>
         ${
           patient.drive_folder_id
-            ? `<a class="button secondary" href="https://drive.google.com/drive/folders/${html(patient.drive_folder_id)}" target="_blank" rel="noopener">תיקיית המטופל</a>`
+            ? `<a class="button secondary" href="${html(driveFolderUrl(patient.drive_folder_id))}" target="_blank" rel="noopener">תיקיית המטופל</a>`
             : `<button class="button secondary" data-action="create-drive-folder" data-id="${html(patient.id)}" type="button">יצירת תיקיית מטופל</button>`
         }
       </div>
@@ -1779,31 +1768,87 @@ function profileTabs(activeTab) {
 }
 
 function profileOverviewPanel(patient) {
-  return `
-    <article class="panel compact-panel">
-      <div class="panel-head"><h2>פרטים כלליים</h2></div>
-      <div class="detail-list detail-grid">
-        ${detail("שם", patient.child_name)}
-        ${detail("מוסד לימודים", patient.school_name)}
-        ${detail("סוג טיפול", patient.treatment_type)}
-        ${detail("יום קבוע", patient.fixed_day)}
-        ${detail("שעה קבועה", patient.fixed_time)}
-        ${detail("מחיר קבוע", patient.fixed_price)}
-      </div>
+  const contacts = state.contacts.filter((contact) => contact.patient_id === patient.id);
+  const family = contacts.filter((contact) => contact.contact_type !== "professional");
+  const professionals = contacts.filter((contact) => contact.contact_type === "professional");
+  const outstandingAgorot = PaymentsCore.outstandingTotal(patientChargeBalances(patient.id));
+  const value = (raw) => (String(raw ?? "").trim() ? String(raw).trim() : "—");
+  const details = (pairs) => `<div class="detail-list detail-grid">${pairs.map(([label, raw]) => detail(label, value(raw))).join("")}</div>`;
+  const note = (label, raw) => `<div class="detail overview-note"><span>${html(label)}</span><strong>${html(value(raw))}</strong></div>`;
+  const tabButton = (tab, label) =>
+    `<button class="button secondary table-button" data-action="profile-tab" data-tab="${tab}" type="button">${html(label)}</button>`;
+  const contactList = (rows, emptyText) =>
+    rows.length
+      ? `<ul class="overview-contacts">${rows
+          .map(
+            (contact) => `
+            <li class="overview-contact">
+              <div class="overview-contact-head">
+                <strong>${html(contact.name || "—")}</strong>
+                <span>${html([contact.relationship, contact.organization].filter(Boolean).join(" · ") || contactTypeLabel(contact.contact_type))}</span>
+              </div>
+              <div class="contact-links">
+                ${contact.phone ? `<a href="tel:${html(contact.phone)}">${html(contact.phone)}</a>` : "<span>טלפון: —</span>"}
+                ${contact.email ? `<a href="mailto:${html(contact.email)}">${html(contact.email)}</a>` : "<span>אימייל: —</span>"}
+              </div>
+            </li>`
+          )
+          .join("")}</ul>`
+      : `<p class="overview-empty">${html(emptyText)}</p>`;
+  const card = (key, title, body, action = "", wide = false) => `
+    <article class="panel compact-panel overview-card${wide ? " overview-card-wide" : ""}" data-overview-card="${key}">
+      <div class="panel-head"><h2>${html(title)}</h2>${action}</div>
+      ${body}
     </article>`;
-}
 
-function safeJson(value, fallback = []) {
-  try {
-    const parsed = JSON.parse(value || "");
-    return parsed ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function goalStatusLabel(value) {
-  return { planned: "מתוכננת", active: "פעילה", achieved: "הושגה", paused: "הושהתה" }[value] || "פעילה";
+  return `
+    <section class="overview-grid">
+      ${card(
+        "child",
+        "פרטי הילד",
+        details([
+          ["שם", patient.child_name],
+          ["כתובת", patient.address],
+          ["סטטוס", patient.status === "archived" ? "ארכיון" : "פעיל"],
+          ["נוסף בתאריך", patient.created_at ? formatDate(String(patient.created_at).slice(0, 10)) : ""]
+        ])
+      )}
+      ${card(
+        "contacts",
+        "הורים / אנשי קשר",
+        contactList(family, "עדיין לא נוספו הורים או אנשי קשר."),
+        tabButton("contacts", family.length ? "ניהול אנשי קשר" : "הוספת איש קשר")
+      )}
+      ${card(
+        "school",
+        "מסגרת חינוכית",
+        `${details([["מוסד לימודים", patient.school_name]])}${contactList(professionals, "לא נוספו אנשי מקצוע מהמסגרת.")}`,
+        tabButton("contacts", "אנשי מקצוע")
+      )}
+      ${card(
+        "treatment",
+        "טיפול ותשלום",
+        details([
+          ["סוג טיפול", patient.treatment_type],
+          ["יום קבוע", patient.fixed_day],
+          ["שעה קבועה", patient.fixed_time],
+          ["מחיר קבוע", patient.fixed_price ? formatAmount(patient.fixed_price) : ""],
+          ["מדיניות ביטולים", noShowPolicySummary(patient)],
+          ["תחילת סדרה", patient.fixed_start_date ? formatDate(patient.fixed_start_date) : ""],
+          ["סיום סדרה", patient.fixed_end_date ? formatDate(patient.fixed_end_date) : ""],
+          ["אמצעי תשלום", patient.default_payment_method ? paymentMethodLabel(patient.default_payment_method) : ""],
+          ["יתרת חוב", formatAgorotAmount(outstandingAgorot)]
+        ]),
+        tabButton("payments", "לתשלומים")
+      )}
+      ${card(
+        "notes",
+        "הערות",
+        `<div class="detail-list">${note("הערות כלליות", patient.general_notes)}${note("הערות רגישות", patient.sensitive_notes)}</div>`,
+        "",
+        true
+      )}
+    </section>`;
 }
 
 function goalsPanel(goals, patientId) {
@@ -1841,10 +1886,6 @@ function goalsPanel(goals, patientId) {
         </div>
       </article>
     </section>`;
-}
-
-function questionnaireStatusLabel(value) {
-  return { draft: "טיוטה", sent: "נשלח", completed: "הושלם", closed: "נסגר" }[value] || "טיוטה";
 }
 
 function questionnaireAnswersView(assignment) {
@@ -1888,13 +1929,9 @@ function questionnairesPanel(assignments, patientId) {
         const contact = state.contacts.find((item) => item.id === assignment.contact_id);
         const template = state.questionnaireTemplates.find((item) => item.id === assignment.template_id);
         return `<article class="report-item"><strong>${html(template?.name || "שאלון")}</strong><span>${html(contact?.name || "נמען לא ידוע")} · ${html(questionnaireStatusLabel(assignment.status))}</span>
-          <div class="toolbar"><button class="button green table-button" data-action="send-questionnaire-whatsapp" data-id="${html(assignment.id)}" type="button" ${contact?.phone && assignment.responder_url ? "" : "disabled"}>WhatsApp</button><button class="button secondary table-button" data-action="send-questionnaire-email" data-id="${html(assignment.id)}" type="button" ${contact?.email && assignment.responder_url ? "" : "disabled"}>מייל</button>${assignment.responder_url ? `<a class="button secondary table-button" href="${html(assignment.responder_url)}" target="_blank" rel="noopener">פתיחת טופס</a>` : ""}</div>${questionnaireAnswersView(assignment)}</article>`;
+          <div class="toolbar"><button class="button green table-button" data-action="send-questionnaire-whatsapp" data-id="${html(assignment.id)}" type="button" ${contact?.phone && assignment.responder_url ? "" : "disabled"}>WhatsApp</button><button class="button secondary table-button" data-action="send-questionnaire-email" data-id="${html(assignment.id)}" type="button" ${contact?.email && assignment.responder_url ? "" : "disabled"}>מייל</button>${assignment.responder_url ? `<a class="button secondary table-button" href="${html(safeHref(assignment.responder_url))}" target="_blank" rel="noopener">פתיחת טופס</a>` : ""}</div>${questionnaireAnswersView(assignment)}</article>`;
       }).join("") || `<div class="empty">עדיין לא נשלחו שאלונים.</div>`}</div>
     </section>`;
-}
-
-function reportTypeLabel(value) {
-  return REPORT_TYPES[value] || REPORT_TYPES.progress;
 }
 
 function clinicalReportDraft(patientId, reportType = "progress", start = "", end = "") {
@@ -1993,7 +2030,7 @@ function settingsPage() {
         <p>רשימות הבחירה שמופיעות בטפסי המפגש.</p>
       </div>
       <article class="panel settings-panel">
-        <div class="form-grid settings-form">
+        <div class="form-grid settings-form" data-no-show-policy-scope>
           <div class="field">
             <label for="sessionTypes">סוגי מפגש</label>
             <textarea id="sessionTypes" name="sessionTypes" form="settingsForm" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionTypes)}</textarea>
@@ -2001,6 +2038,17 @@ function settingsPage() {
           <div class="field">
             <label for="sessionLocations">מיקומים למפגש</label>
             <textarea id="sessionLocations" name="sessionLocations" form="settingsForm" placeholder="כל שורה היא אפשרות ברשימה">${html(state.config.sessionLocations)}</textarea>
+          </div>
+          <div class="field">
+            <label for="noShowPolicyDefault">ברירת מחדל למדיניות ביטול</label>
+            <select id="noShowPolicyDefault" name="noShowPolicyDefault" form="settingsForm" data-no-show-policy>
+              ${noShowPolicyOptions(PaymentsCore.normalizeNoShowPolicy(state.config.noShowPolicyDefault) || "none")}
+            </select>
+            <small>חל על אי-הגעה וביטול מאוחר אצל מטופלים שלא הוגדרה להם מדיניות בכרטיס.</small>
+          </div>
+          <div class="field" data-no-show-fee-field ${PaymentsCore.normalizeNoShowPolicy(state.config.noShowPolicyDefault) === "fixed" ? "" : "hidden"}>
+            <label for="noShowFeeDefault">סכום קבוע לביטול</label>
+            <input id="noShowFeeDefault" name="noShowFeeDefault" form="settingsForm" inputmode="decimal" value="${html(state.config.noShowFeeDefault || "")}" />
           </div>
           <div class="toolbar settings-full">
             <button class="button" type="submit" form="settingsForm">שמירת העדפות</button>
@@ -2019,7 +2067,8 @@ function settingsPage() {
         <form class="form-grid settings-form" id="settingsForm" data-form="settings">
           <div class="field settings-full">
             <label for="googleClientId">מזהה התחברות</label>
-            <input id="googleClientId" name="googleClientId" value="${html(state.config.googleClientId)}" title="${html(state.config.googleClientId)}" placeholder="xxxx.apps.googleusercontent.com" />
+            <input id="googleClientId" name="googleClientId" value="${html(state.config.googleClientId)}" title="${html(state.config.googleClientId)}" placeholder="xxxx.apps.googleusercontent.com" readonly />
+            <small>מזהה ההתחברות נקבע בקובץ config.js של האתר ואינו ניתן לשינוי מכאן.</small>
           </div>
           <div class="field">
             <label for="googleSpreadsheetId">מזהה מאגר נתונים</label>
@@ -2093,6 +2142,7 @@ function settingsPage() {
           <button class="button secondary" data-action="export-table" data-table="payments" type="button">ייצוא תשלומים</button>
           <button class="button secondary" data-action="export-table" data-table="tasks" type="button">ייצוא משימות</button>
         </div>
+        <p class="notice">הגיבוי כולל את כל רשומות הנתונים ומזהי הקבצים. יומן הפעילות אינו נכלל בגיבוי ואינו מוחלף בשחזור.</p>
         <div class="detail-list detail-grid">
           ${detail("מטופלים", state.patients.length)}
           ${detail("מפגשים", state.sessions.length)}
@@ -2108,8 +2158,10 @@ function settingsPage() {
         <div class="toolbar">
           <button class="button blue" data-action="check-data-health" type="button">בדיקת תקינות</button>
           <button class="button yellow" data-action="repair-data-health" type="button">תיקון מבנה</button>
+          <button class="button secondary" data-action="compact-sheets" type="button">דחיסת גיליונות</button>
         </div>
         ${dataHealthView()}
+        ${sheetCompactionView()}
       </section>
       <section class="panel danger-zone page-gap">
         <div class="panel-head"><h2>פעולות מסוכנות</h2></div>
@@ -2258,6 +2310,15 @@ function dataHealthView() {
   `;
 }
 
+function sheetCompactionView() {
+  const report = state.sheetCompaction;
+  if (!report) return "";
+  const details = Object.entries(report.removed || {})
+    .map(([sheet, count]) => `${sheet}: ${count}`)
+    .join(", ");
+  return `<p class="notice" data-sheet-compaction>דחיסה אחרונה (${html(formatDateTime(report.at))}): הוסרו ${html(report.total)} שורות ריקות${details ? ` (${html(details)})` : ""}.</p>`;
+}
+
 function sharingSecurityTargets() {
   return [
     ["תיקיית הקליניקה", state.config.googleDriveRootFolderId],
@@ -2273,38 +2334,117 @@ async function drivePermissions(fileId) {
   return result?.permissions || [];
 }
 
+// One bounded files.list query finds every file the account shares with "anyone";
+// only files that live under the clinic folders are then repaired.
+const PUBLIC_DRIVE_FILES_QUERY =
+  "(visibility = 'anyoneWithLink' or visibility = 'anyoneCanFind') and trashed = false";
+const PUBLIC_DRIVE_FILES_PAGE_SIZE = 100;
+const DRIVE_ANCESTRY_MAX_DEPTH = 12;
+
+async function listPublicDriveFiles() {
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set("q", PUBLIC_DRIVE_FILES_QUERY);
+  url.searchParams.set("fields", "files(id,name,parents)");
+  url.searchParams.set("pageSize", String(PUBLIC_DRIVE_FILES_PAGE_SIZE));
+  const result = await googleFetch(url.toString(), { headers: {} });
+  return Array.isArray(result?.files) ? result.files : [];
+}
+
+function clinicFolderIds() {
+  return [state.config.googleDriveRootFolderId, state.config.googleTemplatesFolderId].filter(Boolean);
+}
+
+async function driveFileParents(fileId, cache) {
+  if (cache.has(fileId)) return cache.get(fileId);
+  const result = await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=parents`,
+    { headers: {}, acceptStatuses: [404] }
+  );
+  const parents = Array.isArray(result?.parents) ? result.parents : [];
+  cache.set(fileId, parents);
+  return parents;
+}
+
+async function isUnderClinicFolders(file, cache) {
+  const roots = new Set(clinicFolderIds());
+  if (!roots.size) return false;
+  const seen = new Set();
+  let frontier = Array.isArray(file.parents) ? [...file.parents] : [];
+  for (let depth = 0; depth < DRIVE_ANCESTRY_MAX_DEPTH && frontier.length; depth += 1) {
+    if (frontier.some((parentId) => roots.has(parentId))) return true;
+    const next = [];
+    for (const parentId of frontier) {
+      if (seen.has(parentId)) continue;
+      seen.add(parentId);
+      next.push(...(await driveFileParents(parentId, cache)));
+    }
+    frontier = next;
+  }
+  return false;
+}
+
 async function runSharingSecurityAudit() {
   if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני בדיקת אבטחת השיתוף.");
+  const allowedEmails = configuredEmails();
   const results = [];
   for (const [label, fileId] of sharingSecurityTargets()) {
     const permissions = await drivePermissions(fileId);
-    const publicPermissions = permissions.filter((permission) => permission.type === "anyone");
-    results.push({ label, fileId, publicPermissions });
+    const { publicPermissions, foreignPermissions } = WorkflowCore.classifySharingPermissions(permissions, allowedEmails);
+    results.push({ label, fileId, publicPermissions, foreignPermissions });
   }
+  const targetIds = new Set(results.map((item) => item.fileId));
+  const publicFiles = [];
+  const ancestryCache = new Map();
+  for (const file of await listPublicDriveFiles()) {
+    if (!file?.id || targetIds.has(file.id)) continue;
+    if (!(await isUnderClinicFolders(file, ancestryCache))) continue;
+    const { publicPermissions } = WorkflowCore.classifySharingPermissions(await drivePermissions(file.id), allowedEmails);
+    publicFiles.push({ fileId: file.id, name: file.name || "", publicPermissions });
+  }
+  const warnings = results.flatMap((item) =>
+    item.foreignPermissions.map((permission) => ({
+      label: item.label,
+      fileId: item.fileId,
+      type: permission.type,
+      subject: permission.subject || "",
+      role: permission.role || ""
+    }))
+  );
   state.sharingSecurity = {
     checkedAt: new Date().toISOString(),
-    ok: results.every((item) => item.publicPermissions.length === 0),
-    results
+    ok:
+      results.every((item) => item.publicPermissions.length === 0) &&
+      publicFiles.every((item) => item.publicPermissions.length === 0),
+    results,
+    publicFiles,
+    warnings
   };
   return state.sharingSecurity;
 }
 
+async function deleteDrivePermission(fileId, permissionId) {
+  await googleFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}`,
+    { method: "DELETE" }
+  );
+}
+
 async function repairSharingSecurity() {
   if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני תיקון אבטחת השיתוף.");
+  let report = await runSharingSecurityAudit();
   let removed = 0;
-  for (const [, fileId] of sharingSecurityTargets()) {
-    const permissions = await drivePermissions(fileId);
-    for (const permission of permissions.filter((item) => item.type === "anyone")) {
+  const publicEntries = [...report.results, ...report.publicFiles];
+  for (const entry of publicEntries) {
+    for (const permission of entry.publicPermissions) {
       if (!permission.id) continue;
-      await googleFetch(
-        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permission.id)}`,
-        { method: "DELETE" }
-      );
+      await deleteDrivePermission(entry.fileId, permission.id);
       removed += 1;
     }
   }
-  const report = await runSharingSecurityAudit();
-  if (!report.ok) throw new Error("נשארה הרשאת שיתוף ציבורית שלא ניתן היה להסיר אוטומטית.");
+  if (removed) {
+    report = await runSharingSecurityAudit();
+    if (!report.ok) throw new Error("נשארה הרשאת שיתוף ציבורית שלא ניתן היה להסיר אוטומטית.");
+  }
   return removed;
 }
 
@@ -2323,11 +2463,35 @@ function sharingSecurityView() {
       </div>`
     )
     .join("");
+  const publicFiles = (report.publicFiles || [])
+    .map(
+      (item) => `<div class="security-row">
+        <strong>קובץ ציבורי בתיקיות הקליניקה: ${html(item.name || item.fileId)}</strong>
+        <span class="status-pill ${item.publicPermissions.length ? "open" : "done"}">${
+          item.publicPermissions.length ? "ציבורי" : "תוקן"
+        }</span>
+      </div>`
+    )
+    .join("");
+  const warnings = (report.warnings || [])
+    .map(
+      (warning) => `<div class="security-row security-warning" data-sharing-warning>
+        <strong>${html(warning.label)}</strong>
+        <span>${html(sharingWarningText(warning))}</span>
+        <span class="status-pill tone-warning">אזהרה</span>
+      </div>`
+    )
+    .join("");
+  const summary = !report.ok
+    ? "נמצאה גישה ציבורית למשאבי הקליניקה."
+    : warnings
+      ? "אין גישה ציבורית, אך קיימות הרשאות שיתוף שדורשות בדיקה ידנית."
+      : "אין הרשאות ציבוריות למשאבי הקליניקה.";
   return `<div class="security-report">
-    <div class="health-summary ${report.ok ? "ok" : "warn"}">${
-      report.ok ? "אין הרשאות ציבוריות למשאבי הקליניקה." : "נמצאה גישה ציבורית למשאבי הקליניקה."
-    }</div>
+    <div class="health-summary ${report.ok && !warnings ? "ok" : "warn"}">${summary}</div>
     ${rows}
+    ${publicFiles}
+    ${warnings}
   </div>`;
 }
 
@@ -2387,11 +2551,6 @@ function isGoalOutcome(value) {
   return GOAL_OUTCOMES.some((outcome) => outcome.value === value);
 }
 
-// Chronological order of a session: date first, then start time, then creation time.
-function sessionChronologyKey(session) {
-  return `${session?.session_date || ""} ${session?.start_time || ""} ${session?.created_at || ""}`;
-}
-
 function sessionGoalUpdate(sessionId, goalId) {
   if (!sessionId) return null;
   return (
@@ -2418,7 +2577,7 @@ function goalOutcomeButtons(goal, selected) {
     <div class="field wide goal-outcome-group" data-goal-outcome-group="${html(goal.id)}" role="group" aria-label="סימון מהיר למטרה ${html(goal.title)}">
       ${GOAL_OUTCOMES.map(
         (outcome) => `
-        <button class="button secondary goal-outcome-button" data-action="set-goal-outcome" data-goal-id="${html(goal.id)}" data-outcome="${outcome.value}" type="button" aria-pressed="${selected === outcome.value ? "true" : "false"}">${outcome.label}</button>`
+        <button class="button secondary goal-outcome-button" data-action="set-goal-outcome" data-goal-id="${html(goal.id)}" data-outcome="${outcome.value}" type="button" aria-pressed="${selected === outcome.value ? "true" : "false"}">${html(outcome.label)}</button>`
       ).join("")}
       <input name="goal_outcome_${html(goal.id)}" type="hidden" value="${html(selected || "")}" />
     </div>`;
@@ -2444,20 +2603,25 @@ function sessionForm(patientId) {
       (session) => session.id === state.currentSessionId && session.patient_id === patientId
     );
   const today = isoDate(new Date());
+  // A slot picked in the calendar week/day view pre-fills a new session; editing ignores it.
+  const slot = !editedSession && state.pendingSessionSlot?.date ? state.pendingSessionSlot : null;
+  const slotStart = slot?.time && WorkflowCore.timeToMinutes(slot.time) !== null ? slot.time : "";
+  const slotEnd = slotStart ? WorkflowCore.minutesToTime(Math.min(WorkflowCore.timeToMinutes(slotStart) + 50, 23 * 60 + 59)) : "";
   return `
     <form class="form-grid inline-form" data-form="session" data-patient-id="${html(patientId)}" data-id="${html(editedSession?.id || "")}">
       ${previousPlanCallout(patientId, editedSession?.id || "")}
+      ${slot ? `<p class="form-note wide" data-pending-slot>המועד נבחר מהיומן: ${html(formatDate(slot.date))}${slotStart ? ` בשעה ${html(slotStart)}` : ""}.</p>` : ""}
       <div class="field">
         <label for="session_date">תאריך מפגש</label>
-        <input class="picker-input" data-date-input id="session_date" name="session_date" readonly required type="text" value="${html(editedSession?.session_date || today)}" />
+        <input class="picker-input" data-date-input id="session_date" name="session_date" readonly required type="text" value="${html(editedSession?.session_date || slot?.date || today)}" />
       </div>
       <div class="field">
         <label for="start_time">שעת התחלה</label>
-        <input class="picker-input" data-time-input id="start_time" name="start_time" readonly type="text" value="${html(editedSession?.start_time || "")}" />
+        <input class="picker-input" data-time-input id="start_time" name="start_time" readonly type="text" value="${html(editedSession?.start_time || slotStart)}" />
       </div>
       <div class="field">
         <label for="end_time">שעת סיום</label>
-        <input class="picker-input" data-time-input id="end_time" name="end_time" readonly type="text" value="${html(editedSession?.end_time || "")}" />
+        <input class="picker-input" data-time-input id="end_time" name="end_time" readonly type="text" value="${html(editedSession?.end_time || slotEnd)}" />
       </div>
       <div class="field">
         <label for="session_type">סוג מפגש</label>
@@ -2607,7 +2771,7 @@ function paymentForm(patientId) {
           ? "בחירת קובץ חדש תחליף את הקבלה הקיימת."
           : "אפשר לצרף קובץ קבלה. השדה אינו חובה.",
         extra: receiptFile
-          ? `<small><a href="${html(receiptFile.url || driveFileUrl(receiptFile.drive_file_id))}" target="_blank" rel="noopener">קבלה קיימת: ${html(receiptFile.name || "פתיחה")}</a></small>`
+          ? `<small><a href="${html(safeHref(receiptFile.url || driveFileUrl(receiptFile.drive_file_id)))}" target="_blank" rel="noopener">קבלה קיימת: ${html(receiptFile.name || "פתיחה")}</a></small>`
           : ""
       })}
       <div class="toolbar wide">
@@ -2631,8 +2795,8 @@ function sessionsPanel(items = state.sessions, patientId = "") {
               .map(
                 (session) => `
                   <article class="list-item">
-                    <div><strong>${html(formatDate(session.session_date))}</strong><span>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "ללא שעה")}</span></div>
-                    <div><strong>${html(session.session_type || "מפגש")}</strong><span>${html(patientName(session.patient_id))}</span></div>
+                    <div class="list-cell"><strong>${html(formatDate(session.session_date))}</strong><span>${html([session.start_time, session.end_time].filter(Boolean).join("-") || "ללא שעה")}</span></div>
+                    <div class="list-cell"><strong>${html(session.session_type || "מפגש")}</strong><span>${html(patientName(session.patient_id))}</span></div>
                     ${statusPill(sessionStatusLabel(session), SESSION_STATUS_TONES[sessionEffectiveStatus(session)] || "")}
                     <p>${html(session.summary || "לא נכתב סיכום.")}</p>
                     ${
@@ -2680,7 +2844,7 @@ function patientChargesSection(patientId) {
                   .map(
                     (balance) => `
                     <tr>
-                      <td data-label="תאריך מפגש">${html(formatDate(balance.sessionDate))}</td>
+                      <td data-label="תאריך מפגש">${html(formatDate(balance.sessionDate))}${chargeKindTag(balance.sessionId)}</td>
                       <td data-label="סכום חיוב">${
                         state.currentChargeId === balance.chargeId
                           ? `<input type="text" inputmode="decimal" class="charge-amount-input" data-charge-amount-input value="${html(PaymentsCore.agorotToAmountText(balance.amountAgorot))}" aria-label="סכום חיוב חדש">`
@@ -2710,6 +2874,34 @@ function patientChargesSection(patientId) {
     }`;
 }
 
+// The next useful step stays inline (mark paid, then confirm the receipt, then edit); the rest
+// of the row actions live in the overflow menu. Deleting is never an inline red button.
+function paymentRowActions(payment, { includeCard = false } = {}) {
+  const paid = payment.payment_status === "paid";
+  const receiptPending = paid && payment.receipt_status !== "issued";
+  const primary = !paid
+    ? `<button class="button table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="paid" type="button">שולם</button>`
+    : receiptPending
+      ? `<button class="button blue table-button" data-action="set-receipt-status" data-id="${html(payment.id)}" data-status="issued" type="button">קבלה הופקה</button>`
+      : `<button class="button secondary table-button" data-action="edit-payment" data-id="${html(payment.id)}" type="button">עריכה</button>`;
+  const editInMenu = !paid || receiptPending;
+  return `
+    <div class="row-actions">
+      ${primary}
+      ${rowMenu({
+        id: `payment:${payment.id}`,
+        label: `פעולות לתשלום של ${patientName(payment.patient_id)}`,
+        items: [
+          includeCard && { action: "open-profile", label: "כרטיס מטופל", attrs: { id: payment.patient_id } },
+          editInMenu && { action: "edit-payment", label: "עריכה", attrs: { id: payment.id } },
+          paid && { action: "set-payment-status", label: "פתח", attrs: { id: payment.id, status: "unpaid" } },
+          payment.receipt_file_id && { action: "delete-payment-receipt", label: "מחיקת קבלה", attrs: { id: payment.id } },
+          { action: "delete-payment", label: "מחיקה", danger: true, attrs: { id: payment.id } }
+        ]
+      })}
+    </div>`;
+}
+
 function paymentsPanel(items = state.payments, patientId = "") {
   const rows = items.slice(0, 5);
   return `
@@ -2732,29 +2924,12 @@ function paymentsPanel(items = state.payments, patientId = "") {
               .map(
                 (payment) => `
                   <article class="list-item">
-                    <div><strong>${html(formatAmount(payment.amount))}</strong><span>${html(formatDate(payment.paid_at))}</span></div>
-                    <div><strong>${html(paymentMethodLabel(payment.payment_method))}</strong><span>${html(patientName(payment.patient_id))}</span></div>
+                    <div class="list-cell"><strong>${html(formatAmount(payment.amount))}</strong><span>${html(formatDate(payment.paid_at))}</span></div>
+                    <div class="list-cell"><strong>${html(patientName(payment.patient_id))}</strong><span>${html(paymentMethodLabel(payment.payment_method))}</span></div>
+                    ${statusPill(paymentStatusLabel(payment.payment_status), PAYMENT_STATUS_TONES[payment.payment_status] || "")}
                     ${payment.session_id ? `<p>${html(sessionLabelById(payment.session_id))}</p>` : ""}
-                    <p>${html(payment.notes || paymentStatusLabel(payment.payment_status))}</p>
-                    <div class="actions">
-                      <button class="button secondary table-button" data-action="edit-payment" data-id="${html(payment.id)}" type="button">עריכה</button>
-                      ${
-                        payment.payment_status === "paid"
-                          ? `<button class="button secondary table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="unpaid" type="button">פתח</button>`
-                          : `<button class="button table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="paid" type="button">שולם</button>`
-                      }
-                      ${
-                        payment.receipt_file_id
-                          ? `<button class="button secondary table-button" data-action="delete-payment-receipt" data-id="${html(payment.id)}" type="button">מחיקת קבלה</button>`
-                          : ""
-                      }
-                      ${
-                        payment.payment_status === "paid" && payment.receipt_status !== "issued"
-                          ? `<button class="button blue table-button" data-action="set-receipt-status" data-id="${html(payment.id)}" data-status="issued" type="button">קבלה הופקה</button>`
-                          : ""
-                      }
-                      <button class="button danger table-button" data-action="delete-payment" data-id="${html(payment.id)}" type="button">מחיקה</button>
-                    </div>
+                    ${payment.notes ? `<p>${html(payment.notes)}</p>` : ""}
+                    ${paymentRowActions(payment, { includeCard: !patientId })}
                   </article>`
               )
               .join("")}</div>`
@@ -2763,11 +2938,160 @@ function paymentsPanel(items = state.payments, patientId = "") {
     </article>`;
 }
 
+const CALENDAR_VIEW_KEY = "clinic-manager-calendar-view";
+const CALENDAR_VIEW_LABELS = { month: "חודש", week: "שבוע", day: "יום" };
+
+// The view is a device preference, not data: month on desktop, day on phones, remembered locally.
+function readStoredCalendarView() {
+  const views = window.CLINIC_WORKFLOW_CORE.CALENDAR_VIEWS;
+  try {
+    const stored = localStorage.getItem("clinic-manager-calendar-view") || "";
+    if (views.includes(stored)) return stored;
+  } catch {
+    // Storage unavailable: fall through to the device default.
+  }
+  return window.matchMedia?.("(max-width: 760px)")?.matches ? "day" : "month";
+}
+
+function setCalendarView(view) {
+  if (!WorkflowCore.CALENDAR_VIEWS.includes(view)) return;
+  state.calendarView = view;
+  try {
+    localStorage.setItem(CALENDAR_VIEW_KEY, view);
+  } catch {
+    // Storage unavailable: the choice still applies for this page.
+  }
+}
+
+function calendarRangeDates(view) {
+  if (view === "week") return WorkflowCore.weekRangeForDate(state.selectedCalendarDate)?.dates || [state.selectedCalendarDate];
+  if (view === "day") return [state.selectedCalendarDate];
+  return calendarDays(state.calendarMonth).map((day) => day.date);
+}
+
+function calendarRangeTitle(view, dates) {
+  if (view === "week") return `${formatDate(dates[0])} – ${formatDate(dates[dates.length - 1])}`;
+  if (view === "day") return `יום ${HEBREW_WEEKDAY_NAMES[weekdayIndex(dates[0])]}, ${formatDate(dates[0])}`;
+  return monthLabel(state.calendarMonth);
+}
+
+function calendarBlock(slot) {
+  const session = slot.session;
+  const rowPatient = state.patients.find((item) => item.id === session.patient_id);
+  const status = sessionEffectiveStatus(session);
+  const name = rowPatient?.child_name || patientName(session.patient_id);
+  const range = `${WorkflowCore.minutesToTime(slot.startMinutes)}–${WorkflowCore.minutesToTime(slot.endMinutes)}`;
+  const classes = [
+    "calendar-block",
+    sessionToneClass(session),
+    session.is_recurring ? "is-recurring" : "",
+    isCancelledStatus(status) ? "is-cancelled" : "",
+    status === "no_show" ? "is-no-show" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `
+    <button class="${classes}"${rowPatient ? ` data-action="open-profile" data-id="${html(rowPatient.id)}"` : ""} data-session-block="${html(session.id)}" data-slot-top="${slot.top}" data-slot-length="${slot.length}" data-slot-column="${slot.column}" data-slot-columns="${slot.columns}" type="button" aria-label="${html(`${name}, ${range}${session.session_type ? `, ${session.session_type}` : ""}${status !== "scheduled" ? `, ${sessionStatusLabel(session)}` : ""}`)}" title="${html(`${name} ${range}${session.session_type ? ` · ${session.session_type}` : ""}`)}">
+      <span class="calendar-block-time">${html(session.start_time || "")}</span>
+      <span class="calendar-block-name">${html(name)}</span>
+    </button>`;
+}
+
+function calendarTimeGrid(view, dates, sessionsByDate, today) {
+  const allSessions = dates.flatMap((date) => sessionsByDate[date] || []);
+  const bounds = WorkflowCore.calendarTimeBounds(allSessions, {
+    dayStart: state.config.clinicDayStart,
+    dayEnd: state.config.clinicDayEnd
+  });
+  const hours = WorkflowCore.hourLabels(bounds.startMinutes, bounds.endMinutes);
+  const columns = dates.map((date) => {
+    const daySessions = sessionsByDate[date] || [];
+    const exceptions = scheduleExceptionsForDate(date);
+    const holidays = israelHolidaysForDate(date);
+    return {
+      date,
+      layout: WorkflowCore.layoutDaySlots(daySessions, bounds),
+      holidays,
+      exceptions,
+      blocked: exceptions.some((exception) => !exception.patient_id),
+      count: daySessions.length
+    };
+  });
+  const columnClass = (column) =>
+    [
+      column.date === today ? "today" : "",
+      column.date === state.selectedCalendarDate ? "selected" : "",
+      column.holidays.length ? "has-holiday" : "",
+      column.blocked ? "is-blocked" : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+  return `
+    <div class="calendar-time-grid is-${view}" data-calendar-time-grid data-calendar-view="${view}">
+      <div class="calendar-time-head">
+        <span class="calendar-time-corner" aria-hidden="true"></span>
+        ${columns
+          .map((column) => {
+            const hebrewDay = hebrewDateParts(column.date);
+            const holidayLabel = column.holidays.map((holiday) => holiday.title).join(", ");
+            const exceptionLabel = column.exceptions
+              .map((exception) => `${exceptionTypeLabel(exception.exception_type)}${exception.patient_id ? ` – ${patientName(exception.patient_id)}` : ""}`)
+              .join(", ");
+            return `
+              <button class="calendar-time-day ${columnClass(column)}" data-action="select-calendar-date" data-date="${html(column.date)}" type="button" aria-label="${html(`${HEBREW_WEEKDAY_NAMES[weekdayIndex(column.date)]} ${formatDate(column.date)}${hebrewDay ? ` (${hebrewDay.full})` : ""}: ${column.count} מפגשים${holidayLabel ? `; ${holidayLabel}` : ""}${exceptionLabel ? `; ${exceptionLabel}` : ""}`)}">
+                <span class="calendar-time-weekday">${HEBREW_WEEKDAY_NAMES[weekdayIndex(column.date)]}</span>
+                <span class="calendar-time-date">${Number(column.date.slice(8, 10))}.${Number(column.date.slice(5, 7))}</span>
+                ${holidayLabel ? `<span class="calendar-time-banner">${html(holidayLabel)}</span>` : ""}
+                ${exceptionLabel ? `<span class="calendar-time-banner is-exception">${html(exceptionLabel)}</span>` : ""}
+                ${column.layout.untimed
+                  .map((session) => `<span class="calendar-time-untimed">ללא שעה: ${html(patientName(session.patient_id))}</span>`)
+                  .join("")}
+              </button>`;
+          })
+          .join("")}
+      </div>
+      <div class="calendar-time-body">
+        <div class="calendar-time-hours" aria-hidden="true">
+          ${hours.map((hour) => `<span class="calendar-time-hour">${hour}</span>`).join("")}
+        </div>
+        ${columns
+          .map(
+            (column) => `
+              <div class="calendar-time-column ${columnClass(column)}" data-calendar-column="${html(column.date)}">
+                ${hours
+                  .map(
+                    (hour) =>
+                      `<button class="calendar-time-slot" data-action="calendar-slot" data-date="${html(column.date)}" data-time="${hour}" type="button" aria-label="${html(`קביעת מפגש ב-${formatDate(column.date)} בשעה ${hour}`)}"></button>`
+                  )
+                  .join("")}
+                ${column.layout.slots.map((slot) => calendarBlock(slot)).join("")}
+              </div>`
+          )
+          .join("")}
+      </div>
+    </div>`;
+}
+
+// Block geometry travels as data attributes and becomes CSS custom properties after render,
+// which keeps the markup free of inline style attributes (CSP: style-src 'self').
+function applyCalendarSlotStyles() {
+  for (const block of document.querySelectorAll("[data-slot-top]")) {
+    block.style.setProperty("--slot-top", block.dataset.slotTop);
+    block.style.setProperty("--slot-length", block.dataset.slotLength);
+    block.style.setProperty("--slot-column", block.dataset.slotColumn);
+    block.style.setProperty("--slot-columns", block.dataset.slotColumns);
+  }
+}
+
 function calendarPage() {
+  const view = WorkflowCore.CALENDAR_VIEWS.includes(state.calendarView) ? state.calendarView : "month";
   const today = isoDate(new Date());
   const days = calendarDays(state.calendarMonth);
-  const rows = sessionsForDates(days.map((day) => day.date));
-  const selectedSessions = rows.filter((session) => session.session_date === state.selectedCalendarDate);
+  const rangeDates = calendarRangeDates(view);
+  const rows = sessionsForDates(rangeDates);
+  const selectedSessions = (view === "month" ? rows : sessionsForDates([state.selectedCalendarDate])).filter(
+    (session) => session.session_date === state.selectedCalendarDate
+  );
   const selectedExceptions = scheduleExceptionsForDate(state.selectedCalendarDate);
   const selectedHolidays = israelHolidaysForDate(state.selectedCalendarDate);
   const selectedHebrewDate = hebrewDateParts(state.selectedCalendarDate);
@@ -2777,24 +3101,34 @@ function calendarPage() {
     return acc;
   }, {});
   const weekDays = ["א", "ב", "ג", "ד", "ה", "ו", "ש"];
+  const switcher = `
+    <div class="calendar-view-switch" role="group" aria-label="תצוגת יומן">
+      ${Object.entries(CALENDAR_VIEW_LABELS)
+        .map(
+          ([key, label]) =>
+            `<button class="calendar-view-button${view === key ? " active" : ""}" data-action="calendar-view" data-view="${key}" type="button" aria-pressed="${view === key ? "true" : "false"}">${label}</button>`
+        )
+        .join("")}
+    </div>`;
 
   return shell(`
     ${header(
       "יומן",
       "",
-      `<button class="button secondary" data-action="calendar-prev" type="button">חודש קודם</button>
+      `${switcher}
+       <button class="button secondary" data-action="calendar-prev" type="button">הקודם</button>
        <button class="button blue" data-action="calendar-today" type="button">היום</button>
-       <button class="button secondary" data-action="calendar-next" type="button">חודש הבא</button>
+       <button class="button secondary" data-action="calendar-next" type="button">הבא</button>
        <button class="button secondary" data-action="refresh" type="button">רענון</button>`
     )}
     ${connectionBanner()}
     <section class="calendar-layout">
       <article class="panel calendar-panel">
         <div class="panel-head">
-          <h2>${html(monthLabel(state.calendarMonth))}</h2>
+          <h2>${html(calendarRangeTitle(view, rangeDates))}</h2>
           <span>${rows.length} מפגשים במערכת</span>
         </div>
-        <div class="calendar-weekdays">
+        ${view === "month" ? `<div class="calendar-weekdays">
           ${weekDays.map((day) => `<span>${day}</span>`).join("")}
         </div>
         <div class="calendar-grid">
@@ -2832,7 +3166,7 @@ function calendarPage() {
                 </button>`;
             })
             .join("")}
-        </div>
+        </div>` : calendarTimeGrid(view, rangeDates, sessionsByDate, today)}
       </article>
       <aside class="panel day-panel">
         <div class="panel-head">
@@ -2844,7 +3178,7 @@ function calendarPage() {
             ? `<div class="holiday-list">${selectedHolidays
                 .map(
                   (holiday) => `
-                    <a class="holiday-note" href="${html(holiday.link)}" target="_blank" rel="noopener">
+                    <a class="holiday-note" href="${html(safeHref(holiday.link))}" target="_blank" rel="noopener">
                       <strong>${html(holiday.title)}</strong>
                       ${holiday.memo ? `<span>${html(holiday.memo)}</span>` : ""}
                     </a>`
@@ -2859,7 +3193,7 @@ function calendarPage() {
                   (exception) => `
                     <div class="exception-note">
                       <strong>${html(exceptionTypeLabel(exception.exception_type))}</strong>
-                      <span>${html(exception.patient_id ? patientName(exception.patient_id) : "כל המטופלים")} ${exception.reason ? `- ${exception.reason}` : ""}</span>
+                      <span>${html(exception.patient_id ? patientName(exception.patient_id) : "כל המטופלים")} ${exception.reason ? `- ${html(exception.reason)}` : ""}</span>
                       ${
                         exception.exception_type === "holiday_pending" && exception.patient_id
                           ? `<button class="button blue" data-action="resolve-holiday-decision" data-patient-id="${html(exception.patient_id)}" data-date="${html(exception.start_date)}" type="button">קבלת החלטה</button>`
@@ -2968,7 +3302,7 @@ function paymentsPage() {
                 (balance) => `
                 <tr>
                   <td data-label="מטופל"><strong>${html(patientName(balance.patientId))}</strong></td>
-                  <td data-label="תאריך">${html(formatDate(balance.sessionDate))}</td>
+                  <td data-label="תאריך">${html(formatDate(balance.sessionDate))}${chargeKindTag(balance.sessionId)}</td>
                   <td data-label="חיוב">${html(formatAgorotAmount(balance.amountAgorot))}</td>
                   <td data-label="שולם">${html(formatAgorotAmount(balance.paidAgorot))}</td>
                   <td data-label="יתרה"><span class="amount-due${balance.remainingAgorot > 0 ? " is-due" : ""}">${html(formatAgorotAmount(balance.remainingAgorot))}</span></td>
@@ -3015,28 +3349,7 @@ function paymentsPage() {
                       : statusPill(receiptStatusLabel(payment.receipt_status), RECEIPT_STATUS_TONES[payment.receipt_status] || "")
                   }</td>
                   <td data-label="הערות">${html(payment.notes || "-")}</td>
-                  <td data-label="פעולות">
-                    <div class="actions">
-                      <button class="button secondary table-button" data-action="open-profile" data-id="${html(payment.patient_id)}" type="button">כרטיס</button>
-                      <button class="button secondary table-button" data-action="edit-payment" data-id="${html(payment.id)}" type="button">עריכה</button>
-                      ${
-                        payment.payment_status === "paid"
-                          ? `<button class="button secondary table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="unpaid" type="button">פתח</button>`
-                          : `<button class="button table-button" data-action="set-payment-status" data-id="${html(payment.id)}" data-status="paid" type="button">שולם</button>`
-                      }
-                      ${
-                        payment.receipt_file_id
-                          ? `<button class="button secondary table-button" data-action="delete-payment-receipt" data-id="${html(payment.id)}" type="button">מחיקת קבלה</button>`
-                          : ""
-                      }
-                      ${
-                        payment.payment_status === "paid" && payment.receipt_status !== "issued"
-                          ? `<button class="button blue table-button" data-action="set-receipt-status" data-id="${html(payment.id)}" data-status="issued" type="button">קבלה הופקה</button>`
-                          : ""
-                      }
-                      <button class="button danger table-button" data-action="delete-payment" data-id="${html(payment.id)}" type="button">מחיקה</button>
-                    </div>
-                  </td>
+                  <td data-label="פעולות">${paymentRowActions(payment, { includeCard: true })}</td>
                 </tr>`
               )
               .join("") || `<tr><td colspan="9"><div class="empty">${pendingReceiptsView ? "אין תשלומים שממתינים לקבלה." : "אין תשלומים להצגה. אפשר להוסיף תשלום מתוך כרטיס מטופל."}</div></td></tr>`}
@@ -3211,10 +3524,6 @@ function patientOptions(selectedId = "") {
     .join("");
 }
 
-function contactTypeLabel(value) {
-  return value === "professional" ? "איש/אשת מקצוע" : "הורה או בן משפחה";
-}
-
 function contactForm(patientId) {
   const edited = state.currentContactId
     ? state.contacts.find(
@@ -3305,14 +3614,6 @@ function contactsPanel(rows, patientId) {
     </article>`;
 }
 
-function taskStatusLabel(value) {
-  return {
-    open: "פתוחה",
-    waiting: "בהמתנה",
-    done: "בוצעה"
-  }[value] || "פתוחה";
-}
-
 function taskForm(patientId = "") {
   const editedTask =
     state.currentTaskId &&
@@ -3386,15 +3687,21 @@ function tasksTable(rows) {
                 <td data-label="סטטוס">${statusPill(taskStatusLabel(task.status), task.status === "done" ? "success" : "warning")}</td>
                 <td data-label="פירוט">${html(task.description || "-")}</td>
                 <td data-label="פעולות">
-                  <div class="actions">
-                    <button class="button secondary table-button" data-action="open-profile" data-id="${html(task.patient_id)}" type="button">כרטיס</button>
-                    <button class="button secondary table-button" data-action="edit-task" data-id="${html(task.id)}" type="button">עריכה</button>
+                  <div class="row-actions">
                     ${
                       task.status === "done"
-                        ? ""
+                        ? `<button class="button secondary table-button" data-action="edit-task" data-id="${html(task.id)}" type="button">עריכה</button>`
                         : `<button class="button table-button" data-action="complete-task" data-id="${html(task.id)}" type="button">בוצע</button>`
                     }
-                    <button class="button danger table-button" data-action="delete-task" data-id="${html(task.id)}" type="button">מחיקה</button>
+                    ${rowMenu({
+                      id: `task:${task.id}`,
+                      label: `פעולות למשימה ${task.title || ""}`,
+                      items: [
+                        { action: "open-profile", label: "כרטיס מטופל", attrs: { id: task.patient_id } },
+                        task.status !== "done" && { action: "edit-task", label: "עריכה", attrs: { id: task.id } },
+                        { action: "delete-task", label: "מחיקה", danger: true, attrs: { id: task.id } }
+                      ]
+                    })}
                   </div>
                 </td>
               </tr>`
@@ -3424,48 +3731,6 @@ function tasksPanel(items = state.tasks, patientId = "") {
     </article>`;
 }
 
-function activeReminders() {
-  const today = isoDate(new Date());
-  return state.tasks
-    .filter((task) => ["today", "overdue"].includes(WorkflowCore.reminderState(task, today)))
-    .sort((a, b) => `${a.reminder_at || a.due_date || ""}`.localeCompare(`${b.reminder_at || b.due_date || ""}`));
-}
-
-function remindersPanel() {
-  const reminders = activeReminders();
-  if (!reminders.length) {
-    return `
-    <article class="panel reminder-panel">
-      <div class="panel-head"><h2>תזכורות פעילות</h2><span>0 דורשות תשומת לב</span></div>
-      <div class="empty"><strong>אין תזכורות שדורשות טיפול היום.</strong>משימות עם תאריך יעד יופיעו כאן ביום היעד.<a class="button secondary" href="#/tasks">מעבר למשימות</a></div>
-    </article>`;
-  }
-  return `
-    <article class="panel reminder-panel">
-      <div class="panel-head"><h2>תזכורות פעילות</h2><span>${reminders.length} דורשות תשומת לב</span></div>
-      <div class="reminder-list">
-        ${reminders.slice(0, 8).map((task) => `
-          <div class="reminder-row ${WorkflowCore.reminderState(task, isoDate(new Date()))}">
-            <div><strong>${html(task.title)}</strong><span>${html(patientName(task.patient_id))} · ${html(formatDate(task.reminder_at || task.due_date))}</span></div>
-            <button class="button table-button" data-action="complete-task" data-id="${html(task.id)}" type="button">בוצע</button>
-          </div>`).join("")}
-      </div>
-    </article>`;
-}
-
-function taskDueMatches(task, dueFilter) {
-  if (!dueFilter) return true;
-  const today = isoDate(new Date());
-  if (dueFilter === "overdue") return task.status !== "done" && task.due_date && task.due_date < today;
-  if (dueFilter === "today") return task.due_date === today;
-  if (dueFilter === "week") {
-    const weekDates = dateRange(today, 7);
-    const weekEnd = weekDates[weekDates.length - 1];
-    return Boolean(task.due_date && task.due_date >= today && task.due_date <= weekEnd);
-  }
-  if (dueFilter === "no_date") return !task.due_date;
-  return true;
-}
 
 function filteredTasks(rows) {
   return rows.filter((task) => {
@@ -3551,17 +3816,6 @@ function tasksPage() {
   `);
 }
 
-function fileTypeLabel(value) {
-  return {
-    document: "מסמך",
-    summary: "סיכום",
-    receipt: "קבלה",
-    form: "טופס",
-    recording: "הקלטה",
-    other: "אחר"
-  }[value] || "מסמך";
-}
-
 function fileForm(patientId = "") {
   const editedFile =
     state.currentFileId &&
@@ -3603,7 +3857,7 @@ function fileForm(patientId = "") {
         hint: editedFile ? "בחירת קובץ חדש תחליף את הקובץ הקיים." : "יש לבחור קובץ אחד להעלאה לתיקיית המטופל.",
         extra:
           editedFile?.url
-            ? `<small><a href="${html(editedFile.url)}" target="_blank" rel="noopener">קובץ קיים: ${html(editedFile.name || "פתיחה")}</a></small>`
+            ? `<small><a href="${html(safeHref(editedFile.url))}" target="_blank" rel="noopener">קובץ קיים: ${html(editedFile.name || "פתיחה")}</a></small>`
             : ""
       })}
       <div class="toolbar wide">
@@ -3660,20 +3914,22 @@ function filesTable(rows) {
                 <td data-label="סוג">${html(fileTypeLabel(file.file_type))}</td>
                 <td data-label="נוצר">${html(formatDate((file.created_at || "").slice(0, 10)))}</td>
                 <td data-label="פעולות">
-                  <div class="actions">
-                    <button class="button secondary table-button" data-action="open-profile" data-id="${html(file.patient_id)}" type="button">כרטיס</button>
-                    <button class="button secondary table-button" data-action="edit-file" data-id="${html(file.id)}" type="button">עריכה</button>
+                  <div class="row-actions">
                     ${
                       file.url
-                        ? `<a class="button table-button" href="${html(file.url)}" target="_blank" rel="noopener">פתיחה</a>`
-                        : ""
+                        ? `<a class="button table-button" href="${html(safeHref(file.url))}" target="_blank" rel="noopener">פתיחה</a>`
+                        : `<button class="button secondary table-button" data-action="edit-file" data-id="${html(file.id)}" type="button">עריכה</button>`
                     }
-                    ${
-                      file.file_type === "recording"
-                        ? `<button class="button blue table-button" data-action="create-transcript-draft" data-id="${html(file.id)}" type="button">טיוטת תמלול</button>`
-                        : ""
-                    }
-                    <button class="button danger table-button" data-action="delete-file" data-id="${html(file.id)}" type="button">מחיקה</button>
+                    ${rowMenu({
+                      id: `file:${file.id}`,
+                      label: `פעולות לקובץ ${file.name || ""}`,
+                      items: [
+                        { action: "open-profile", label: "כרטיס מטופל", attrs: { id: file.patient_id } },
+                        Boolean(file.url) && { action: "edit-file", label: "עריכה", attrs: { id: file.id } },
+                        file.file_type === "recording" && { action: "create-transcript-draft", label: "טיוטת תמלול", attrs: { id: file.id } },
+                        { action: "delete-file", label: "מחיקה", danger: true, attrs: { id: file.id } }
+                      ]
+                    })}
                   </div>
                 </td>
               </tr>`
@@ -3716,7 +3972,7 @@ function filesPanel(items = state.files, patient = null) {
       ${
         patient?.drive_folder_id
           ? `<div class="folder-link">
-              <a class="button secondary" href="https://drive.google.com/drive/folders/${html(patient.drive_folder_id)}" target="_blank" rel="noopener">פתיחת תיקיית מטופל</a>
+              <a class="button secondary" href="${html(driveFolderUrl(patient.drive_folder_id))}" target="_blank" rel="noopener">פתיחת תיקיית מטופל</a>
               <button class="button blue" data-action="sync-drive-files" data-id="${html(patient.id)}" type="button">ייבוא קבצים מהתיקייה</button>
             </div>`
           : `<div class="folder-link">
@@ -3783,7 +4039,7 @@ function filesPage() {
       `<button class="button secondary" data-action="refresh" type="button">רענון</button>
        ${
          state.config.googleDriveRootFolderId
-           ? `<a class="button yellow" href="https://drive.google.com/drive/folders/${html(state.config.googleDriveRootFolderId)}" target="_blank" rel="noopener">פתיחת תיקיית אחסון ראשית</a>`
+           ? `<a class="button yellow" href="${html(driveFolderUrl(state.config.googleDriveRootFolderId))}" target="_blank" rel="noopener">פתיחת תיקיית אחסון ראשית</a>`
            : `<a class="button yellow" href="#/settings">הגדרת אחסון</a>`
        }`
     )}
@@ -3810,27 +4066,6 @@ function filesPage() {
   `);
 }
 
-function formatAgorotAmount(agorot) {
-  return new Intl.NumberFormat("he-IL", {
-    currency: "ILS",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-    style: "currency"
-  }).format(Number(BusinessCore.agorotToAmountText(agorot)));
-}
-
-function formatBusinessAmount(amountText) {
-  const agorot = BusinessCore.parseAmountToAgorot(amountText);
-  if (agorot === null) return amountText || "-";
-  return formatAgorotAmount(agorot);
-}
-
-function chargeStatusLabel(status) {
-  if (status === "paid") return "שולם";
-  if (status === "partial") return "שולם חלקית";
-  return "פתוח";
-}
-
 function allChargeBalances() {
   return PaymentsCore.chargeBalances(state.sessionCharges, state.paymentAllocations);
 }
@@ -3846,56 +4081,34 @@ function sessionChargeForSession(sessionId) {
   return state.sessionCharges.find((charge) => charge.session_id === sessionId) || null;
 }
 
-const RECURRING_PLACEHOLDER_SUMMARY = "מפגש קבוע לפי הגדרת המטופל.";
-
-const SESSION_STATUS_LABELS = {
-  scheduled: "מתוכנן",
-  completed: "התקיים",
-  cancelled: "בוטל",
-  no_show: "לא הגיע"
-};
-
-const SESSION_STATUS_TONES = {
-  scheduled: "",
-  completed: "success",
-  cancelled: "danger",
-  no_show: "warning"
-};
-
-function sessionHasDocumentation(session) {
-  const summary = String(session?.summary || "").trim();
-  return Boolean(summary) && summary !== RECURRING_PLACEHOLDER_SUMMARY;
+function noShowPolicyOptions(selected = "", includeInherit = false) {
+  const inheritedLabel = NO_SHOW_POLICY_LABELS[PaymentsCore.normalizeNoShowPolicy(state.config.noShowPolicyDefault) || "none"];
+  const options = includeInherit ? [["", `ברירת המחדל של הקליניקה (${inheritedLabel})`]] : [];
+  return [...options, ...Object.entries(NO_SHOW_POLICY_LABELS)]
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${html(label)}</option>`)
+    .join("");
 }
 
-// Legacy rows have no stored status; documented sessions read as completed and the rest as
-// scheduled, so history keeps its meaning without backfilling invented facts.
-function sessionEffectiveStatus(session) {
-  const stored = String(session?.status || "").trim();
-  if (SESSION_STATUS_LABELS[stored]) return stored;
-  return sessionHasDocumentation(session) ? "completed" : "scheduled";
+function noShowPolicySummary(patient) {
+  const resolved = PaymentsCore.resolveNoShowPolicy(patient, state.config);
+  const fee = resolved.policy === "fixed" && resolved.fee ? ` (${formatAmount(resolved.fee)})` : "";
+  const source = resolved.source === "patient" ? "" : " · ברירת מחדל";
+  return `${NO_SHOW_POLICY_LABELS[resolved.policy]}${fee}${source}`;
 }
 
-function sessionStatusLabel(session) {
-  return SESSION_STATUS_LABELS[sessionEffectiveStatus(session)] || SESSION_STATUS_LABELS.scheduled;
+// A charge on a no-show or late-cancelled session is the fee itself; the label is derived
+// from the session so the sheet keeps a single amount column.
+function chargeKindLabel(sessionId) {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  const status = session ? sessionEffectiveStatus(session) : "";
+  if (status === "no_show") return "אי-הגעה";
+  if (status === "cancelled_late") return "ביטול מאוחר";
+  return "";
 }
 
-function sessionIsCancelled(session) {
-  return sessionEffectiveStatus(session) === "cancelled";
-}
-
-// Cancelled sessions free their calendar slot; no-shows keep it because the time was reserved.
-function sessionOccupiesSlot(session) {
-  return !sessionIsCancelled(session);
-}
-
-function addDaysToDate(dateValue, days) {
-  const date = dateFromInput(dateValue);
-  date.setDate(date.getDate() + days);
-  return isoDate(date);
-}
-
-function maxDateValue(a, b) {
-  return a >= b ? a : b;
+function chargeKindTag(sessionId) {
+  const label = chargeKindLabel(sessionId);
+  return label ? ` ${statusPill(label, "warning")}` : "";
 }
 
 // Collects everything that occupies the day: stored sessions that still hold their slot plus
@@ -3954,12 +4167,6 @@ async function askScheduleConflictChoice(dateValue, found) {
   });
 }
 
-function businessTypeLabel(recordType) {
-  if (recordType === "income") return "הכנסה";
-  if (recordType === "expense") return "הוצאה";
-  return recordType || "-";
-}
-
 function businessRecordYears() {
   const years = new Set([isoDate(new Date()).slice(0, 4), state.businessView.year]);
   for (const record of state.businessRecords) {
@@ -3996,7 +4203,7 @@ function businessRecordForm() {
         edited
           ? `<div class="field wide">
                <label for="business_document_link">קובץ המסמך</label>
-               <small id="business_document_link"><a href="${html(edited.file_url || driveFileUrl(edited.drive_file_id))}" target="_blank" rel="noopener">${html(edited.file_name || "פתיחת המסמך")}</a> — בעריכה משנים תאריך, סוג וסכום בלבד; הקובץ עובר אוטומטית לתיקיית התקופה המתאימה.</small>
+               <small id="business_document_link"><a href="${html(safeHref(edited.file_url || driveFileUrl(edited.drive_file_id)))}" target="_blank" rel="noopener">${html(edited.file_name || "פתיחת המסמך")}</a> — בעריכה משנים תאריך, סוג וסכום בלבד; הקובץ עובר אוטומטית לתיקיית התקופה המתאימה.</small>
              </div>`
           : uploadField({
               id: "business_document",
@@ -4034,7 +4241,7 @@ function businessRecordsTable(records) {
                         <div class="actions">
                           ${
                             record.drive_file_id
-                              ? `<a class="button secondary table-button" href="${html(record.file_url || driveFileUrl(record.drive_file_id))}" target="_blank" rel="noopener">פתיחת מסמך</a>`
+                              ? `<a class="button secondary table-button" href="${html(safeHref(record.file_url || driveFileUrl(record.drive_file_id)))}" target="_blank" rel="noopener">פתיחת מסמך</a>`
                               : ""
                           }
                           <button class="button secondary table-button" data-action="edit-business-record" data-id="${html(record.id)}" type="button">עריכה</button>
@@ -4355,6 +4562,18 @@ async function confirmSeriesSave(plan) {
   return answer === "save";
 }
 
+async function confirmDuplicatePatient(duplicate) {
+  return showAppModal({
+    title: "מטופל בשם זהה כבר קיים",
+    message: `כבר קיים במערכת מטופל בשם "${duplicate.child_name}". אפשר לפתוח את הכרטיס הקיים או לשמור בכל זאת כמטופל חדש.`,
+    actions: [
+      { value: "open", label: "פתיחת הכרטיס הקיים", variant: "blue" },
+      { value: "save", label: "שמור בכל זאת", variant: "yellow" },
+      { value: "cancel", label: "ביטול", variant: "secondary" }
+    ]
+  });
+}
+
 function patientDrawer() {
   const patient = state.currentPatientId
     ? state.patients.find((item) => item.id === state.currentPatientId)
@@ -4409,6 +4628,21 @@ function patientDrawer() {
               ? `<p class="form-note wide">לטיפול הקבוע הקיים אין טווח תאריכים. כדי לשמור את הכרטיס צריך להגדיר תאריך התחלה ותאריך סיום.</p>`
               : ""
           }
+          <div class="form-section wide" data-no-show-policy-scope>
+            <h3>מדיניות ביטולים</h3>
+            <div class="form-grid">
+              <div class="field">
+                <label for="no_show_policy">חיוב על אי-הגעה או ביטול מאוחר</label>
+                <select id="no_show_policy" name="no_show_policy" data-no-show-policy>
+                  ${noShowPolicyOptions(PaymentsCore.normalizeNoShowPolicy(patient?.no_show_policy), true)}
+                </select>
+              </div>
+              <div class="field" data-no-show-fee-field ${PaymentsCore.normalizeNoShowPolicy(patient?.no_show_policy) === "fixed" ? "" : "hidden"}>
+                <label for="no_show_fee">סכום קבוע</label>
+                <input id="no_show_fee" name="no_show_fee" inputmode="decimal" value="${html(patient?.no_show_fee || "")}" />
+              </div>
+            </div>
+          </div>
           <div class="field wide">
             <label for="general_notes">הערות</label>
             <textarea id="general_notes" name="general_notes">${html(patient?.general_notes || "")}</textarea>
@@ -4432,48 +4666,10 @@ function fixedDayOptions(selectedValue = "") {
   ].join("");
 }
 
-function fixedDayIndex(value = "") {
-  const day = String(value || "");
-  if (day.includes("ראש")) return 0;
-  if (day.includes("שני")) return 1;
-  if (day.includes("שלישי")) return 2;
-  if (day.includes("רביעי")) return 3;
-  if (day.includes("חמישי")) return 4;
-  if (day.includes("שישי")) return 5;
-  if (day.includes("שבת")) return 6;
-  return -1;
-}
-
 function actualSessionExists(patientId, dateValue) {
   return state.sessions.some(
     (session) => session.patient_id === patientId && session.session_date === dateValue
   );
-}
-
-function exceptionTypeLabel(type) {
-  return {
-    cancel: "ביטול חד-פעמי",
-    vacation: "חופשה",
-    holiday: "חג",
-    blocked: "יום חסום",
-    reschedule: "שינוי מועד חד-פעמי",
-    holiday_pending: "ממתין להחלטה (חג)"
-  }[type] || "חריג יומן";
-}
-
-function formatExceptionDateRange(exception) {
-  if (!exception?.start_date) return "-";
-  if (!exception.end_date || exception.end_date === exception.start_date) {
-    return formatDate(exception.start_date);
-  }
-  return `${formatDate(exception.start_date)} - ${formatDate(exception.end_date)}`;
-}
-
-function exceptionApplies(exception, patientId, dateValue) {
-  if (!exception?.start_date) return false;
-  const endDate = exception.end_date || exception.start_date;
-  const appliesToPatient = !exception.patient_id || exception.patient_id === patientId;
-  return appliesToPatient && dateValue >= exception.start_date && dateValue <= endDate;
 }
 
 function scheduleExceptionsForDate(dateValue, patientId = "") {
@@ -4544,48 +4740,6 @@ async function cancelRecurringSession(patientId, dateValue) {
   exception._rowNumber = appendedRowNumber(appendResult);
   state.scheduleExceptions = [exception, ...state.scheduleExceptions];
   return exception;
-}
-
-const MAX_RECURRING_OCCURRENCES = 400;
-
-// A fixed treatment is only valid as a bounded series: day, time, start and end together.
-function normalizeRecurringBounds(data) {
-  const fixedDay = String(data?.fixed_day || "").trim();
-  const fixedTime = String(data?.fixed_time || "").trim();
-  const startDate = String(data?.fixed_start_date || "").trim();
-  const endDate = String(data?.fixed_end_date || "").trim();
-
-  if (!fixedDay && !fixedTime) {
-    if (startDate || endDate) {
-      throw new Error("אי אפשר להגדיר טווח תאריכים בלי יום קבוע ושעה קבועה.");
-    }
-    return { fixedDay: "", fixedTime: "", startDate: "", endDate: "" };
-  }
-  if (!fixedDay || !fixedTime) {
-    throw new Error("לטיפול קבוע צריך להגדיר גם יום קבוע וגם שעה קבועה.");
-  }
-  if (!startDate || !endDate) {
-    throw new Error("לטיפול קבוע צריך להגדיר תאריך התחלה ותאריך סיום.");
-  }
-  if (endDate < startDate) {
-    throw new Error("תאריך הסיום של הטיפול הקבוע לא יכול להיות לפני תאריך ההתחלה.");
-  }
-  return { fixedDay, fixedTime, startDate, endDate };
-}
-
-function recurringSeriesDates(fixedDay, startDate, endDate) {
-  const dayIndex = fixedDayIndex(fixedDay);
-  if (dayIndex < 0 || !startDate || !endDate || endDate < startDate) return [];
-
-  const cursor = dateFromInput(startDate);
-  while (cursor.getDay() !== dayIndex) cursor.setDate(cursor.getDate() + 1);
-
-  const dates = [];
-  while (isoDate(cursor) <= endDate && dates.length <= MAX_RECURRING_OCCURRENCES) {
-    dates.push(isoDate(cursor));
-    cursor.setDate(cursor.getDate() + 7);
-  }
-  return dates;
 }
 
 function storedScheduleExceptionFor(patientId, dateValue) {
@@ -4762,11 +4916,8 @@ async function prepareRecurringSchedulePlan(data, patientId) {
   return plan;
 }
 
-async function createRecurringOccurrence(patient, dateValue, timeValue) {
-  if (actualSessionExists(patient.id, dateValue)) return null;
-
-  const now = new Date().toISOString();
-  const session = {
+function recurringOccurrenceRecord(patient, dateValue, timeValue, now) {
+  return {
     id: id(),
     patient_id: patient.id,
     session_date: dateValue,
@@ -4782,18 +4933,50 @@ async function createRecurringOccurrence(patient, dateValue, timeValue) {
     updated_at: now,
     document_file_id: ""
   };
+}
+
+// The sheet row is written first so a calendar failure can never leave an event without a
+// record; the event id is persisted afterwards or left to the sync queue.
+async function createRecurringOccurrence(patient, dateValue, timeValue) {
+  if (actualSessionExists(patient.id, dateValue)) return null;
+
+  const session = recurringOccurrenceRecord(patient, dateValue, timeValue, new Date().toISOString());
+  const appendResult = await appendSheet("sessions", session);
+  session._rowNumber = appendedRowNumber(appendResult);
+  state.sessions = [session, ...state.sessions];
 
   try {
-    session.calendar_event_id = await createCalendarEvent(session);
+    const eventId = await createCalendarEvent(session);
+    if (eventId) {
+      const linked = { ...session, calendar_event_id: eventId };
+      await updateSheetRow("sessions", session._rowNumber, linked, session);
+      Object.assign(session, linked);
+      state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
+    }
   } catch {
     queueSyncWork("calendar_upsert", session.id, {});
     lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
   }
-
-  const appendResult = await appendSheet("sessions", session);
-  session._rowNumber = appendedRowNumber(appendResult);
-  state.sessions = [session, ...state.sessions];
   return session;
+}
+
+// A whole series goes to the sheet in one append. Calendar events are created by the sync
+// queue in the background, so saving 400 occurrences never blocks on 400 calendar calls.
+async function createRecurringOccurrences(patient, occurrences) {
+  const seen = new Set();
+  const pending = occurrences.filter((occurrence) => {
+    if (seen.has(occurrence.date) || actualSessionExists(patient.id, occurrence.date)) return false;
+    seen.add(occurrence.date);
+    return true;
+  });
+  if (!pending.length) return [];
+
+  const now = new Date().toISOString();
+  const sessions = pending.map((occurrence) => recurringOccurrenceRecord(patient, occurrence.date, occurrence.time, now));
+  await appendSheetRows("sessions", sessions);
+  state.sessions = [...sessions, ...state.sessions];
+  queueSyncWorkBatch(sessions.map((session) => ({ kind: "calendar_upsert", entityId: session.id, payload: {} })));
+  return sessions;
 }
 
 // Writes only the resolved set: cancellations first, then the occurrences that survived.
@@ -4851,27 +5034,16 @@ async function applyRecurringSchedulePlan(patient, plan) {
     );
   }
 
-  for (const occurrence of plan.occurrences) {
-    await createRecurringOccurrence(patient, occurrence.date, occurrence.time);
-  }
+  const created = await createRecurringOccurrences(patient, plan.occurrences);
+  plan.createdSessions = created.length;
 
   state.sessions = state.sessions.sort((a, b) =>
     `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
   );
 }
 
-// A stored session sits on a recurring series when it matches the patient's fixed day inside the
-// stored bounds. Deleting such a session has to leave a cancellation behind, otherwise the virtual
-// projection immediately shows the deleted date again.
 function recurringSeriesSlotFor(session) {
-  const dateValue = String(session?.session_date || "");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return null;
-  const patient = state.patients.find((item) => item.id === session?.patient_id);
-  if (!patient?.fixed_day || !patient?.fixed_time) return null;
-  if (patient.fixed_start_date && dateValue < patient.fixed_start_date) return null;
-  if (patient.fixed_end_date && dateValue > patient.fixed_end_date) return null;
-  if (fixedDayIndex(patient.fixed_day) !== dateFromInput(dateValue).getDay()) return null;
-  return { patientId: patient.id, dateValue };
+  return recurringSeriesSlot(session, state.patients.find((item) => item.id === session?.patient_id));
 }
 
 // Moves an existing stored session to a new slot, keeping its documentation, charge and files.
@@ -5167,42 +5339,37 @@ async function materializeRecurringSession(patientId, dateValue) {
 
   lastCalendarSyncError = "";
   lastDocumentSyncError = "";
+  // Row first, external side effects afterwards: a failed calendar or document call is queued
+  // and can never leave an event or document without a session row.
+  const appendResult = await appendSheet("sessions", session);
+  session._rowNumber = appendedRowNumber(appendResult);
+  state.sessions = [session, ...state.sessions];
+
+  const linked = { ...session };
   try {
-    session.calendar_event_id = await createCalendarEvent(session);
+    linked.calendar_event_id = await createCalendarEvent(session);
   } catch {
     queueSyncWork("calendar_upsert", session.id, {});
     lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
   }
 
-  const appendResult = await appendSheet("sessions", session);
-  session._rowNumber = appendedRowNumber(appendResult);
-  state.sessions = [session, ...state.sessions];
-
   try {
-    const documentFileId = await updateSessionDocument(patientId, session);
-    if (documentFileId) {
-      session.document_file_id = documentFileId;
-      if (session._rowNumber) await updateSheetRow("sessions", session._rowNumber, session);
-      state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
-    }
+    linked.document_file_id = (await updateSessionDocument(patientId, session)) || "";
   } catch {
     queueSyncWork("document_upsert", session.id, {});
     lastDocumentSyncError = "מסמך התיעוד עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+  }
+
+  if (linked.calendar_event_id !== session.calendar_event_id || linked.document_file_id !== session.document_file_id) {
+    await updateSheetRow("sessions", session._rowNumber, linked, session);
+    Object.assign(session, linked);
+    state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
   }
 
   state.sessions = state.sessions.sort((a, b) =>
     `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`)
   );
   return session;
-}
-
-function dateRange(startDateValue, numberOfDays) {
-  const start = dateFromInput(startDateValue);
-  return Array.from({ length: numberOfDays }, (_, index) => {
-    const date = new Date(start);
-    date.setDate(start.getDate() + index);
-    return isoDate(date);
-  });
 }
 
 function sessionsForDates(dateValues) {
@@ -5222,48 +5389,12 @@ function sessionsForDates(dateValues) {
 }
 
 function patientName(patientId) {
-  return state.patients.find((patient) => patient.id === patientId)?.child_name || "ללא מטופל";
-}
-
-function sessionLabel(session) {
-  if (!session) return "מפגש";
-  const date = formatDate(session.session_date);
-  const time = [session.start_time, session.end_time].filter(Boolean).join("-");
-  const type = session.session_type || "מפגש";
-  return [date, time, type].filter(Boolean).join(" | ");
+  return patientDisplayName(state.patients, patientId);
 }
 
 function sessionLabelById(sessionId) {
   const session = state.sessions.find((item) => item.id === sessionId);
   return session ? sessionLabel(session) : "מפגש משויך";
-}
-
-function paymentStatusLabel(value) {
-  return {
-    paid: "שולם",
-    partial: "חלקי",
-    pending: "ממתין",
-    unpaid: "פתוח",
-    none: "ללא חיובים"
-  }[value] || "פתוח";
-}
-
-function paymentMethodLabel(value) {
-  return {
-    bank_transfer: "העברה",
-    cash: "מזומן",
-    check: "צ'ק",
-    bit: "ביט",
-    credit: "אשראי"
-  }[value] || "העברה";
-}
-
-function receiptStatusLabel(value) {
-  return {
-    issued: "הופקה קבלה",
-    needed: "דרושה קבלה",
-    not_needed: "לא נדרש"
-  }[value] || "דרושה קבלה";
 }
 
 async function connectGoogle(forceConsent = false, automatic = false) {
@@ -5499,25 +5630,48 @@ function friendlyGoogleError(text, status) {
   return message || "הקריאה לאחסון נכשלה.";
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+// Rate limits (429), server errors (5xx) and network failures are retried with backoff and
+// jitter (WorkflowCore owns the policy, Retry-After is honored). Callers that already have a
+// retry path, such as calendar work backed by the sync queue, pass `retry: false` so a failure
+// is queued at once instead of blocking the user.
 async function googleFetch(url, options = {}) {
   if (!state.accessToken) throw new Error("לא מחוברים לאחסון.");
-  const { acceptStatuses = [], ...fetchOptions } = options;
-  const response = await fetch(url, {
-    ...fetchOptions,
-    headers: {
-      Authorization: `Bearer ${state.accessToken}`,
-      "Content-Type": "application/json",
-      ...(fetchOptions.headers || {})
+  const { acceptStatuses = [], retry = true, ...fetchOptions } = options;
+  for (let attempt = 1; ; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(url, {
+        ...fetchOptions,
+        headers: {
+          Authorization: `Bearer ${state.accessToken}`,
+          "Content-Type": "application/json",
+          ...(fetchOptions.headers || {})
+        }
+      });
+    } catch (networkError) {
+      if (retry && WorkflowCore.shouldRetryGoogle(0, attempt)) {
+        await sleep(WorkflowCore.retryDelayMs(attempt));
+        continue;
+      }
+      throw networkError;
     }
-  });
 
-  if (acceptStatuses.includes(response.status)) return null;
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(friendlyGoogleError(text, response.status));
+    if (acceptStatuses.includes(response.status)) return null;
+    if (!response.ok) {
+      const text = await response.text();
+      if (retry && WorkflowCore.shouldRetryGoogle(response.status, attempt)) {
+        await sleep(WorkflowCore.retryDelayMs(attempt, { retryAfter: response.headers.get("Retry-After") || "" }));
+        continue;
+      }
+      throw new Error(friendlyGoogleError(text, response.status));
+    }
+
+    return response.status === 204 ? null : response.json();
   }
-
-  return response.status === 204 ? null : response.json();
 }
 
 async function googleFetchBlob(url, options = {}) {
@@ -5568,28 +5722,45 @@ async function loadGoogleUser() {
   return state.googleUser;
 }
 
-// A1-notation letter for a 1-based column index; String.fromCharCode(64 + n)
-// breaks beyond column 26 (Z).
-function columnLetter(count) {
-  let letter = "";
-  let remaining = count;
-  while (remaining > 0) {
-    letter = String.fromCharCode(65 + ((remaining - 1) % 26)) + letter;
-    remaining = Math.floor((remaining - 1) / 26);
-  }
-  return letter;
+function sheetDataRange(sheetName) {
+  return `${sheetName}!A2:${columnLetter(SHEETS[sheetName].length)}`;
+}
+
+// Blank rows keep their row number (they are skipped here, not removed) so _rowNumber stays
+// the physical row for later updates.
+function sheetRecordsFromValues(sheetName, values) {
+  const columns = SHEETS[sheetName];
+  return (values || [])
+    .map((row, index) => loadedSheetRecord(columns, row, String(index + 2)))
+    .filter((record) => columns.some((column) => record[column]));
+}
+
+async function readSheetValues(sheetName) {
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  if (!spreadsheetId) return [];
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetDataRange(sheetName))}`;
+  const result = await googleFetch(url);
+  return result.values || [];
 }
 
 async function readSheet(sheetName) {
+  return sheetRecordsFromValues(sheetName, await readSheetValues(sheetName));
+}
+
+// One values:batchGet instead of a request per range; valueRanges come back in request order.
+async function batchGetValues(ranges) {
   const spreadsheetId = state.config.googleSpreadsheetId;
-  if (!spreadsheetId) return [];
-  const columns = SHEETS[sheetName];
-  const range = `${sheetName}!A2:${columnLetter(columns.length)}`;
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
-  const result = await googleFetch(url);
-  return (result.values || [])
-    .map((row, index) => loadedSheetRecord(columns, row, String(index + 2)))
-    .filter((record) => columns.some((column) => record[column]));
+  if (!spreadsheetId || !ranges.length) return ranges.map(() => []);
+  const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet`);
+  for (const range of ranges) url.searchParams.append("ranges", range);
+  const result = await googleFetch(url.toString());
+  const valueRanges = result?.valueRanges || [];
+  return ranges.map((range, index) => valueRanges[index]?.values || []);
+}
+
+async function readSheetsValues(sheetNames) {
+  const values = await batchGetValues(sheetNames.map(sheetDataRange));
+  return Object.fromEntries(sheetNames.map((sheetName, index) => [sheetName, values[index]]));
 }
 
 function loadedSheetRecord(columns, row, rowNumber) {
@@ -5598,13 +5769,33 @@ function loadedSheetRecord(columns, row, rowNumber) {
   return record;
 }
 
-async function getSpreadsheetSheetNames() {
+// Sheet titles, ids and widths are fetched once per spreadsheet; sheet ids are needed for
+// row deletion and column growth, so a single spreadsheets.get serves all of them.
+let sheetPropertiesCache = null;
+
+async function spreadsheetProperties({ refresh = false } = {}) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   if (!spreadsheetId) throw new Error("לא הוגדר מזהה מאגר נתונים.");
+  if (!refresh && sheetPropertiesCache?.spreadsheetId === spreadsheetId) return sheetPropertiesCache.properties;
   const result = await googleFetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId,gridProperties.columnCount)`
   );
-  return (result.sheets || []).map((sheet) => sheet.properties?.title).filter(Boolean);
+  const properties = (result.sheets || []).map((sheet) => sheet.properties).filter((item) => item?.title);
+  sheetPropertiesCache = { spreadsheetId, properties };
+  return properties;
+}
+
+async function getSpreadsheetSheetNames(options = {}) {
+  return (await spreadsheetProperties(options)).map((sheet) => sheet.title);
+}
+
+async function sheetIdFor(sheetName) {
+  let properties = (await spreadsheetProperties()).find((item) => item.title === sheetName);
+  if (!properties) properties = (await spreadsheetProperties({ refresh: true })).find((item) => item.title === sheetName);
+  if (properties?.sheetId === undefined || properties?.sheetId === null) {
+    throw new Error(`הגיליון ${sheetName} לא נמצא במאגר הנתונים.`);
+  }
+  return properties.sheetId;
 }
 
 async function readSheetHeader(sheetName) {
@@ -5635,12 +5826,7 @@ async function writeSheetHeader(sheetName) {
 async function ensureSheetColumnCapacity(sheetName, columnCount) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   if (!spreadsheetId) return;
-  const result = await googleFetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId,gridProperties.columnCount)`
-  );
-  const properties = (result.sheets || [])
-    .map((sheet) => sheet.properties)
-    .find((item) => item?.title === sheetName);
+  const properties = (await spreadsheetProperties()).find((item) => item?.title === sheetName);
   const current = Number(properties?.gridProperties?.columnCount || 0);
   if (!properties || !current || current >= columnCount) return;
 
@@ -5658,6 +5844,7 @@ async function ensureSheetColumnCapacity(sheetName, columnCount) {
       ]
     })
   });
+  properties.gridProperties.columnCount = columnCount;
 }
 
 async function addMissingSheets(sheetNames) {
@@ -5702,13 +5889,18 @@ function healthRow(sheet, existingSheets, header) {
 async function runDataHealthCheck({ repair = false } = {}) {
   if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני בדיקת תקינות.");
   const sheetNames = Object.keys(SHEETS);
-  let existingSheets = await getSpreadsheetSheetNames();
+  let existingSheets = await getSpreadsheetSheetNames({ refresh: true });
   const missingSheets = sheetNames.filter((sheet) => !existingSheets.includes(sheet));
 
   if (repair && missingSheets.length) {
     await addMissingSheets(missingSheets);
-    existingSheets = await getSpreadsheetSheetNames();
+    existingSheets = await getSpreadsheetSheetNames({ refresh: true });
   }
+
+  // Every header row arrives in one batchGet instead of a request per sheet.
+  const presentSheets = sheetNames.filter((sheet) => existingSheets.includes(sheet));
+  const headerValues = await batchGetValues(presentSheets.map((sheet) => `${sheet}!1:1`)).catch(() => presentSheets.map(() => []));
+  const headers = Object.fromEntries(presentSheets.map((sheet, index) => [sheet, headerValues[index]?.[0] || []]));
 
   const results = [];
   for (const sheet of sheetNames) {
@@ -5716,7 +5908,7 @@ async function runDataHealthCheck({ repair = false } = {}) {
       results.push(healthRow(sheet, existingSheets, []));
       continue;
     }
-    let header = await readSheetHeader(sheet).catch(() => []);
+    let header = headers[sheet];
     let row = healthRow(sheet, existingSheets, header);
     if (repair && !row.ok) {
       // Repair may only write a header into an empty header row (a new sheet).
@@ -5810,6 +6002,11 @@ async function migrateLegacyGoals() {
 }
 
 async function appendSheet(sheetName, record) {
+  return appendSheetRows(sheetName, [record]);
+}
+
+// All records go to the sheet in one append; row numbers follow the first appended row.
+async function appendSheetRows(sheetName, records) {
   const spreadsheetId = state.config.googleSpreadsheetId;
   const columns = SHEETS[sheetName];
   const range = `${sheetName}!A:${columnLetter(columns.length)}`;
@@ -5820,15 +6017,87 @@ async function appendSheet(sheetName, record) {
   url.searchParams.set("insertDataOption", "INSERT_ROWS");
   const result = await googleFetch(url.toString(), {
     method: "POST",
-    body: JSON.stringify({ values: [recordToRow(columns, record)] })
+    body: JSON.stringify({ values: records.map((record) => recordToRow(columns, record)) })
   });
-  record._loadedVersion = WorkflowCore.recordVersion(record);
+  const firstRow = Number(appendedRowNumber(result));
+  records.forEach((record, index) => {
+    record._loadedVersion = WorkflowCore.recordVersion(record);
+    if (records.length > 1 && firstRow) record._rowNumber = String(firstRow + index);
+  });
   return result;
 }
 
-function appendedRowNumber(result) {
-  const range = result?.updates?.updatedRange || "";
-  return range.match(/![A-Z]+(\d+):/)?.[1] || "";
+// Rows are deleted bottom-up in one batchUpdate so earlier indexes never shift under later ranges.
+async function deleteSheetRows(sheetName, rowNumbers) {
+  if (!rowNumbers.length) return 0;
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  const requests = WorkflowCore.deleteRowRequests(await sheetIdFor(sheetName), rowNumbers);
+  await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+    method: "POST",
+    body: JSON.stringify({ requests })
+  });
+  return rowNumbers.length;
+}
+
+// Blank rows accumulate from cleared records and undo. Once a sheet carries at least
+// `threshold` of them they are removed in one batchUpdate and the sheet is re-read.
+async function compactSheetBlankRows(sheetName, values, threshold = WorkflowCore.BLANK_ROW_COMPACTION_THRESHOLD, { reread = true } = {}) {
+  const blankRows = WorkflowCore.blankRowNumbers(values);
+  if (!blankRows.length || blankRows.length < threshold) return { values, removed: 0 };
+  await deleteSheetRows(sheetName, blankRows);
+  return { values: reread ? await readSheetValues(sheetName) : [], removed: blankRows.length };
+}
+
+async function pruneAuditLog(values) {
+  const entries = sheetRecordsFromValues("audit_log", values);
+  const rows = WorkflowCore.auditRowsToPrune(entries, WorkflowCore.AUDIT_LOG_MAX_ROWS);
+  if (!rows.length) return { values, removed: 0 };
+  await deleteSheetRows("audit_log", rows);
+  return { values: await readSheetValues("audit_log"), removed: rows.length };
+}
+
+// Manual compaction from Settings: every sheet, any number of blank rows.
+async function compactAllSheets() {
+  const sheetNames = Object.keys(SHEETS);
+  const valuesBySheet = await readSheetsValues(sheetNames);
+  const removed = {};
+  for (const sheetName of sheetNames) {
+    const result = await compactSheetBlankRows(sheetName, valuesBySheet[sheetName], 1, { reread: false });
+    if (result.removed) removed[sheetName] = result.removed;
+  }
+  const total = Object.values(removed).reduce((sum, count) => sum + count, 0);
+  state.sheetCompaction = { at: new Date().toISOString(), total, removed };
+  if (total) {
+    await loadData();
+    await markAuditEntriesNotUndoable();
+  }
+  return state.sheetCompaction;
+}
+
+// After rows move (restore, compaction, pruning) the row numbers stored in older audit entries
+// no longer point at the same records, so those entries stop being undoable. The in-memory
+// flag is the guard; the sheet is updated with one column write when possible.
+async function markAuditEntriesNotUndoable() {
+  const changed = state.auditLog.filter((entry) => entry.undoable === "yes");
+  for (const entry of changed) {
+    entry.undoable = "no";
+    entry._loadedVersion = WorkflowCore.recordVersion(entry);
+  }
+  state.lastUndoActionId = "";
+  const spreadsheetId = state.config.googleSpreadsheetId;
+  const located = state.auditLog.filter((entry) => Number(entry._rowNumber) > 1);
+  if (!changed.length || !spreadsheetId || !located.length) return changed.length;
+  const byRow = new Map(located.map((entry) => [Number(entry._rowNumber), entry]));
+  const first = Math.min(...byRow.keys());
+  const last = Math.max(...byRow.keys());
+  const column = columnLetter(SHEETS.audit_log.indexOf("undoable") + 1);
+  const values = [];
+  for (let row = first; row <= last; row += 1) values.push([byRow.get(row)?.undoable || ""]);
+  const range = `audit_log!${column}${first}:${column}${last}`;
+  const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`);
+  url.searchParams.set("valueInputOption", "RAW");
+  await googleFetch(url.toString(), { method: "PUT", body: JSON.stringify({ values }) }).catch(() => {});
+  return changed.length;
 }
 
 async function readSheetRow(sheetName, rowNumber) {
@@ -5840,20 +6109,6 @@ async function readSheetRow(sheetName, rowNumber) {
   const row = result.values?.[0];
   if (!row || !columns.some((_, index) => row[index])) return null;
   return loadedSheetRecord(columns, row, rowNumber);
-}
-
-function stateCollectionName(sheetName) {
-  if (sheetName === "schedule_exceptions") return "scheduleExceptions";
-  if (sheetName === "audit_log") return "auditLog";
-  if (sheetName === "goal_updates") return "goalUpdates";
-  if (sheetName === "questionnaire_templates") return "questionnaireTemplates";
-  if (sheetName === "questionnaire_assignments") return "questionnaireAssignments";
-  if (sheetName === "questionnaire_responses") return "questionnaireResponses";
-  if (sheetName === "clinical_reports") return "clinicalReports";
-  if (sheetName === "business_records") return "businessRecords";
-  if (sheetName === "session_charges") return "sessionCharges";
-  if (sheetName === "payment_allocations") return "paymentAllocations";
-  return sheetName;
 }
 
 async function refreshSheetState(sheetName) {
@@ -5920,35 +6175,29 @@ function workflowCollections() {
   };
 }
 
-function auditMutations(entry) {
-  try {
-    const rows = JSON.parse(entry?.mutations_json || "[]");
-    return Array.isArray(rows) ? rows : [];
-  } catch {
-    return [];
-  }
-}
-
 let activeAuditAction = false;
 
 async function appendAuditEntry(meta, mutations) {
   const now = new Date().toISOString();
+  // Very large mutation sets (a long recurring series) are stored in a truncated form that
+  // keeps the touched rows but cannot be undone, so one cell never exceeds the Sheets limit.
+  const capped = WorkflowCore.capAuditMutations(mutations || []);
   const entry = {
     id: id(),
     action_type: meta.actionType || "update",
     entity_type: meta.entityType || "system",
     entity_id: meta.entityId || mutations?.find((mutation) => mutation.after?.id)?.after?.id || mutations?.find((mutation) => mutation.before?.id)?.before?.id || "",
-    summary: meta.summary || "פעולה במערכת",
+    summary: `${meta.summary || "פעולה במערכת"}${capped.truncated ? ` — ${WorkflowCore.AUDIT_TOO_LARGE_NOTE}` : ""}`,
     actor_email: state.googleUser?.email || "",
-    mutations_json: JSON.stringify(mutations || []),
-    undoable: meta.undoable === false ? "no" : "yes",
+    mutations_json: capped.json,
+    undoable: meta.undoable === false || capped.truncated ? "no" : "yes",
     undone_at: "",
     created_at: now
   };
   const result = await appendSheet("audit_log", entry);
   entry._rowNumber = appendedRowNumber(result);
   state.auditLog = [entry, ...state.auditLog].slice(0, 200);
-  state.lastUndoActionId = entry.undoable === "yes" && mutations.length ? entry.id : "";
+  state.lastUndoActionId = entry.undoable === "yes" && (mutations || []).length ? entry.id : "";
   return entry;
 }
 
@@ -5966,12 +6215,19 @@ async function runAuditedAction(meta, work) {
   if (activeAuditAction) return work();
   activeAuditAction = true;
   setSaveState("saving");
+  state.auditWarning = "";
   const before = WorkflowCore.snapshot(workflowCollections());
   try {
     const result = await work();
     const after = WorkflowCore.snapshot(workflowCollections());
     const mutations = WorkflowCore.diff(before, after);
-    await appendAuditEntry(meta, mutations);
+    try {
+      await appendAuditEntry(meta, mutations);
+    } catch {
+      // The action is already committed; a failed audit write must never roll it back.
+      state.lastUndoActionId = "";
+      state.auditWarning = "הפעולה בוצעה אך לא נרשמה ביומן הפעילות, ולכן לא ניתן לבטל אותה.";
+    }
     setSaveState(state.syncQueue.length ? "pending" : "saved");
     return result;
   } catch (error) {
@@ -6011,6 +6267,7 @@ async function undoAuditAction(actionId) {
   const mutations = auditMutations(entry);
   if (!Array.isArray(mutations) || !mutations.length) throw new Error("אין שינויי נתונים לביטול.");
 
+  await assertAuditRowsUnchanged(entry, mutations);
   await applyAuditMutations(WorkflowCore.inverse(mutations));
 
   const updated = { ...entry, undone_at: new Date().toISOString() };
@@ -6027,6 +6284,21 @@ async function undoAuditAction(actionId) {
     []
   );
   state.lastUndoActionId = "";
+}
+
+// Row numbers recorded in an audit entry are only trustworthy while no row moved. Each one is
+// re-read and its id compared before the inverse mutations touch anything.
+async function assertAuditRowsUnchanged(entry, mutations) {
+  const mismatch = () => new Error("לא ניתן לבטל: הנתונים השתנו מאז.");
+  if (!entry._rowNumber) throw mismatch();
+  const auditRow = await readSheetRow("audit_log", entry._rowNumber);
+  if (auditRow?.id !== entry.id) throw mismatch();
+  for (const mutation of mutations) {
+    if (!mutation.rowNumber || !SHEETS[mutation.table]) continue;
+    const current = await readSheetRow(mutation.table, mutation.rowNumber);
+    const expectedId = mutation.after?.id || "";
+    if (expectedId ? current?.id !== expectedId : current !== null) throw mismatch();
+  }
 }
 
 async function checkStorageConnection() {
@@ -6048,17 +6320,6 @@ async function checkStorageConnection() {
   }
 
   return rootFolder.name || "תיקיית האחסון";
-}
-
-function calendarDateTime(dateValue, timeValue) {
-  if (!dateValue || !timeValue) return null;
-  return `${dateValue}T${timeValue}:00`;
-}
-
-function addMinutes(timeValue, minutes) {
-  const [hours = "0", mins = "0"] = String(timeValue || "00:00").split(":");
-  const date = new Date(2000, 0, 1, Number(hours), Number(mins) + minutes);
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function privateCalendarEventBody(session) {
@@ -6086,6 +6347,7 @@ async function createCalendarEvent(session) {
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
     {
       method: "POST",
+      retry: false,
       body: JSON.stringify(body)
     }
   );
@@ -6103,6 +6365,7 @@ async function updateCalendarEvent(session) {
     )}/events/${encodeURIComponent(session.calendar_event_id)}`,
     {
       method: "PATCH",
+      retry: false,
       body: JSON.stringify(body)
     }
   );
@@ -6118,6 +6381,7 @@ async function deleteCalendarEvent(eventId) {
     )}/events/${encodeURIComponent(eventId)}`,
     {
       method: "DELETE",
+      retry: false,
       // 404/410 mean the event is already gone, which is the desired final state.
       acceptStatuses: [404, 410]
     }
@@ -6142,12 +6406,6 @@ function sessionDocumentText(patient, session) {
     "תכנון למפגש הבא:",
     session.next_plan || ""
   ].join("\n");
-}
-
-function sessionDocumentTitle(patient, session) {
-  return `תיעוד מפגש - ${patient.child_name || "מטופל"} - ${session.session_date} - ${String(
-    session.id
-  ).slice(0, 8)}`;
 }
 
 function sessionDocumentRecord(session) {
@@ -6433,20 +6691,16 @@ async function createPatientFolder(patientNameValue) {
 }
 
 function driveFileUrl(fileId) {
-  return `https://drive.google.com/file/d/${fileId}/view`;
+  return `https://drive.google.com/file/d/${encodeURIComponent(String(fileId || ""))}/view`;
 }
 
-function driveFileTypeLabel(mimeType = "") {
-  if (mimeType.includes("audio")) return "recording";
-  if (mimeType.includes("spreadsheet")) return "document";
-  if (mimeType.includes("document")) return "document";
-  if (mimeType.includes("pdf")) return "document";
-  if (mimeType.includes("image")) return "form";
-  return "other";
+function driveFolderUrl(folderId) {
+  return `https://drive.google.com/drive/folders/${encodeURIComponent(String(folderId || ""))}`;
 }
 
-function fileNameWithFallback(customName, selectedFile) {
-  return String(customName || selectedFile?.name || "").trim();
+// URLs that come from the sheet or from Google APIs only reach an href through this guard.
+function safeHref(url) {
+  return WorkflowCore.safeHref(url);
 }
 
 async function uploadDriveFile(folderId, selectedFile, fileName) {
@@ -6653,10 +6907,6 @@ async function untrashDriveFile(fileId) {
   );
 }
 
-function escapeDriveQueryValue(value) {
-  return String(value || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
 async function findDriveChildFolder(parentId, name) {
   const url = new URL("https://www.googleapis.com/drive/v3/files");
   url.searchParams.set(
@@ -6700,12 +6950,6 @@ async function ensureBusinessPeriodFolder(dateValue) {
     id: periodFolder.id,
     path: `${BusinessCore.BUSINESS_ROOT_FOLDER_NAME}/${period.year}/${period.label}`
   };
-}
-
-function sortBusinessRecords(records) {
-  return [...records].sort((a, b) =>
-    `${b.document_date || ""} ${b.created_at || ""}`.localeCompare(`${a.document_date || ""} ${a.created_at || ""}`)
-  );
 }
 
 async function saveBusinessRecord(form) {
@@ -7118,16 +7362,17 @@ async function loadRemoteSettings() {
     { headers: {} }
   );
   if (!remoteConfig || typeof remoteConfig !== "object") return;
+  // The shared settings file may only override whitelisted keys (never googleClientId).
+  const allowedRemote = WorkflowCore.pickOverridableConfig(remoteConfig);
   saveConfig({
-    ...state.config,
-    ...remoteConfig,
+    ...allowedRemote,
     allowedUserEmails: savedListText(
-      remoteConfig.allowedUserEmails,
+      allowedRemote.allowedUserEmails,
       state.config.allowedUserEmails
     ),
-    sessionTypes: listText(remoteConfig.sessionTypes, state.config.sessionTypes, DEFAULT_SESSION_TYPES),
+    sessionTypes: listText(allowedRemote.sessionTypes, state.config.sessionTypes, DEFAULT_SESSION_TYPES),
     sessionLocations: listText(
-      remoteConfig.sessionLocations,
+      allowedRemote.sessionLocations,
       state.config.sessionLocations,
       DEFAULT_SESSION_LOCATIONS
     )
@@ -7138,7 +7383,6 @@ async function saveRemoteSettings() {
   if (!state.accessToken || !state.config.googleDriveRootFolderId) return;
   const payload = JSON.stringify(
     {
-      googleClientId: state.config.googleClientId || "",
       googleDriveRootFolderId: state.config.googleDriveRootFolderId || "",
       googleTemplatesFolderId: state.config.googleTemplatesFolderId || "",
       googleCalendarId: state.config.googleCalendarId || "primary",
@@ -7237,26 +7481,40 @@ async function loadData() {
   }
   if (!state.config.googleSpreadsheetId) return;
   await ensureSpreadsheetSchema();
-  const [patients, sessions, payments, tasks, files, contacts, goals, goalUpdates, questionnaireTemplates, questionnaireAssignments, questionnaireResponses, clinicalReports, businessRecords, sessionCharges, paymentAllocations, scheduleExceptions, auditLog, templates] = await Promise.all([
-    readSheet("patients"),
-    readSheet("sessions"),
-    readSheet("payments"),
-    readSheet("tasks"),
-    readSheet("files"),
-    readSheet("contacts"),
-    readSheet("goals"),
-    readSheet("goal_updates"),
-    readSheet("questionnaire_templates"),
-    readSheet("questionnaire_assignments"),
-    readSheet("questionnaire_responses"),
-    readSheet("clinical_reports"),
-    readSheet("business_records"),
-    readSheet("session_charges"),
-    readSheet("payment_allocations"),
-    readSheet("schedule_exceptions"),
-    readSheet("audit_log"),
+  // All sheets arrive in one batchGet. Housekeeping (blank-row compaction, audit pruning)
+  // runs on the raw values and re-reads only the sheets it changed.
+  const sheetNames = Object.keys(SHEETS);
+  const [valuesBySheet, templates] = await Promise.all([
+    readSheetsValues(sheetNames),
     loadDriveTemplates().catch(() => [])
   ]);
+  let rowsShifted = false;
+  for (const sheetName of sheetNames) {
+    const compacted = await compactSheetBlankRows(sheetName, valuesBySheet[sheetName]).catch(() => ({ removed: 0 }));
+    if (compacted.removed) {
+      valuesBySheet[sheetName] = compacted.values;
+      rowsShifted = true;
+    }
+  }
+  const pruned = await pruneAuditLog(valuesBySheet.audit_log).catch(() => ({ removed: 0 }));
+  if (pruned.removed) {
+    valuesBySheet.audit_log = pruned.values;
+    rowsShifted = true;
+  }
+  const records = Object.fromEntries(sheetNames.map((sheetName) => [sheetName, sheetRecordsFromValues(sheetName, valuesBySheet[sheetName])]));
+  const {
+    patients, sessions, payments, tasks, files, contacts, goals,
+    goal_updates: goalUpdates,
+    questionnaire_templates: questionnaireTemplates,
+    questionnaire_assignments: questionnaireAssignments,
+    questionnaire_responses: questionnaireResponses,
+    clinical_reports: clinicalReports,
+    business_records: businessRecords,
+    session_charges: sessionCharges,
+    payment_allocations: paymentAllocations,
+    schedule_exceptions: scheduleExceptions,
+    audit_log: auditLog
+  } = records;
   state.patients = patients.sort((a, b) => (a.child_name || "").localeCompare(b.child_name || "", "he"));
   state.sessions = sessions.sort((a, b) => `${b.session_date} ${b.start_time}`.localeCompare(`${a.session_date} ${a.start_time}`));
   state.payments = payments.sort((a, b) => `${b.paid_at} ${b.created_at}`.localeCompare(`${a.paid_at} ${a.created_at}`));
@@ -7285,6 +7543,7 @@ async function loadData() {
   state.lastUndoActionId = state.auditLog.find(
     (entry) => entry.undoable === "yes" && !entry.undone_at && auditMutations(entry).length
   )?.id || "";
+  if (rowsShifted) await markAuditEntriesNotUndoable();
   state.templates = templates.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
   await seedQuestionnaireTemplates();
   await migrateLegacyGoals();
@@ -7295,12 +7554,28 @@ async function loadData() {
   processSyncQueue().catch(() => {});
 }
 
-async function savePatient(form, schedulePlan = null) {
+async function savePatient(form, schedulePlan = null, options = {}) {
   const data = Object.fromEntries(new FormData(form).entries());
   const existingId = form.dataset.id || "";
   const existing = existingId ? state.patients.find((patient) => patient.id === existingId) : null;
   if (!data.child_name) throw new Error("שם המטופל הוא שדה חובה.");
+  if (!existing && !options.allowDuplicate) {
+    const duplicate = WorkflowCore.findDuplicatePatient(data.child_name, state.patients, existingId);
+    if (duplicate) {
+      throw new Error(`קיים כבר מטופל בשם "${duplicate.child_name}". אפשר לפתוח את הכרטיס הקיים או לאשר שמירה בכל זאת.`);
+    }
+  }
   const bounds = normalizeRecurringBounds(data);
+  const noShowPolicy =
+    "no_show_policy" in data
+      ? PaymentsCore.normalizeNoShowPolicy(data.no_show_policy)
+      : PaymentsCore.normalizeNoShowPolicy(existing?.no_show_policy);
+  const noShowFee = noShowPolicy === "fixed"
+    ? String(("no_show_policy" in data ? data.no_show_fee : existing?.no_show_fee) || "").trim()
+    : "";
+  if (noShowPolicy === "fixed" && PaymentsCore.parseAmountToAgorot(noShowFee) === null) {
+    throw new Error("יש להזין סכום קבוע תקין למדיניות הביטולים.");
+  }
   if (existing?._rowNumber) await assertSheetRowCurrent("patients", existing._rowNumber, existing);
 
   const now = new Date().toISOString();
@@ -7331,7 +7606,9 @@ async function savePatient(form, schedulePlan = null) {
     created_at: existing?.created_at || now,
     updated_at: now,
     fixed_start_date: bounds.startDate,
-    fixed_end_date: bounds.endDate
+    fixed_end_date: bounds.endDate,
+    no_show_policy: noShowPolicy,
+    no_show_fee: noShowFee
   };
 
   if (existing) {
@@ -7428,11 +7705,6 @@ async function reconcileSeriesSideEffects(patient, plan) {
   }
 }
 
-function sessionEndTimeValue(session) {
-  if (session?.end_time) return session.end_time;
-  return session?.start_time ? addMinutes(session.start_time, 50) : "";
-}
-
 function sessionNeedsDocumentationTask(session, now = new Date()) {
   if (!session?.session_date) return false;
   const patient = state.patients.find((item) => item.id === session.patient_id);
@@ -7496,7 +7768,7 @@ async function reconcileOverdueDocumentationTasks() {
     const session = sessionById.get(key.slice(4));
     if (!session) return true;
     const effective = sessionEffectiveStatus(session);
-    return effective === "cancelled" || effective === "no_show" || sessionHasDocumentation(session);
+    return isCancelledStatus(effective) || effective === "no_show" || sessionHasDocumentation(session);
   });
 }
 
@@ -7523,34 +7795,6 @@ function archiveImpactSummary(patientId) {
   );
   const outstandingAgorot = PaymentsCore.outstandingTotal(patientChargeBalances(patientId));
   return { patient, futureAuto, futureManual, pendingDecisions, outstandingAgorot };
-}
-
-function archiveImpactMessage(impact) {
-  const lines = ["סיום הטיפול יעצור את הלוח הקבוע של המטופל."];
-  if (impact.futureAuto.length) {
-    lines.push(`${impact.futureAuto.length} מפגשים קבועים עתידיים שטרם תועדו יוסרו מהיומן.`);
-  }
-  if (impact.futureManual.length) {
-    lines.push(
-      `${impact.futureManual.length} מפגשים עתידיים נוספים יבוטלו ויוסרו מהיומן; התיעוד והחיובים שלהם נשמרים.`
-    );
-  }
-  if (impact.pendingDecisions.length) {
-    lines.push(`${impact.pendingDecisions.length} החלטות ממתינות על התנגשות עם חג ייסגרו.`);
-  }
-  if (impact.outstandingAgorot > 0) {
-    lines.push(
-      `קיימת יתרת חוב פתוחה של ${formatAgorotAmount(impact.outstandingAgorot)}; החוב יישמר ויוצג בכרטיס המטופל.`
-    );
-  }
-  lines.push("התיעוד, הקבצים וההיסטוריה הכספית נשמרים במלואם ותמיד אפשר להחזיר מהארכיון.");
-  return lines.join(" ");
-}
-
-function archiveDoneMessage(impact) {
-  return impact.outstandingAgorot > 0
-    ? `המטופל הועבר לארכיון. שימי לב: נותרה יתרת חוב פתוחה של ${formatAgorotAmount(impact.outstandingAgorot)}.`
-    : "המטופל הועבר לארכיון.";
 }
 
 // Ending a treatment is an intentional workflow: future auto-created occurrences are removed,
@@ -7749,23 +7993,6 @@ async function moveDriveFileToFolder(fileId, folderId) {
   await googleFetch(url.toString(), { method: "PATCH", body: JSON.stringify({}) });
 }
 
-function formQuestionRequest(question, index) {
-  return {
-    createItem: {
-      item: {
-        title: question.title,
-        questionItem: {
-          question: {
-            required: Boolean(question.required),
-            textQuestion: { paragraph: question.type !== "short" }
-          }
-        }
-      },
-      location: { index }
-    }
-  };
-}
-
 async function createQuestionnaireAssignment(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const patientId = form.dataset.patientId || "";
@@ -7951,7 +8178,7 @@ async function saveSession(form) {
   // Writing a real summary marks the session as held. Scheduling alone never creates a charge,
   // and cancelled or no-show sessions are not billable treatments.
   const sessionStatus = requestedStatus === "scheduled" && documented ? "completed" : requestedStatus;
-  const billable = sessionStatus !== "cancelled" && sessionStatus !== "no_show";
+  const billable = !isCancelledStatus(sessionStatus) && sessionStatus !== "no_show";
   const chargeNeeded = documented && billable && !(existing && sessionChargeForSession(existing.id));
   let chargePriceAgorot = null;
   if (chargeNeeded) {
@@ -7991,33 +8218,16 @@ async function saveSession(form) {
     updated_at: now
   };
 
-  if (sessionStatus === "cancelled") {
-    // A cancelled occurrence frees its calendar slot; the record itself stays for history.
-    if (session.calendar_event_id) {
-      const eventId = session.calendar_event_id;
-      try {
-        await deleteCalendarEvent(eventId);
-      } catch {
-        queueSyncWork("calendar_delete", session.id, { eventId });
-        lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
-      }
-      session.calendar_event_id = "";
-    }
-  } else {
-    try {
-      session.calendar_event_id = existing
-        ? await updateCalendarEvent(session)
-        : await createCalendarEvent(session);
-    } catch {
-      queueSyncWork("calendar_upsert", session.id, {});
-      lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
-    }
-  }
+  // A cancelled occurrence frees its calendar slot; the record itself stays for history.
+  const eventToDelete = isCancelledStatus(sessionStatus) ? session.calendar_event_id : "";
+  if (isCancelledStatus(sessionStatus)) session.calendar_event_id = "";
 
   if (existing && existing.session_date !== session.session_date) {
     await recordRescheduledSeriesSlot(existing, session.session_date, session.start_time);
   }
 
+  // The sheet row is written before any calendar call, so a calendar failure can never leave
+  // an event without a session record; the event id is persisted afterwards or queued.
   if (existing) {
     await updateSheetRow("sessions", existing._rowNumber, session);
     session._rowNumber = existing._rowNumber;
@@ -8026,6 +8236,27 @@ async function saveSession(form) {
     const appendResult = await appendSheet("sessions", session);
     session._rowNumber = appendedRowNumber(appendResult);
     state.sessions = [session, ...state.sessions];
+  }
+
+  const linked = { ...session };
+  if (isCancelledStatus(sessionStatus)) {
+    if (eventToDelete) {
+      try {
+        await deleteCalendarEvent(eventToDelete);
+      } catch {
+        queueSyncWork("calendar_delete", session.id, { eventId: eventToDelete });
+        lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+      }
+    }
+  } else {
+    try {
+      linked.calendar_event_id = existing
+        ? await updateCalendarEvent(session)
+        : await createCalendarEvent(session);
+    } catch {
+      queueSyncWork("calendar_upsert", session.id, {});
+      lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+    }
   }
 
   if (chargeNeeded && !sessionChargeForSession(session.id)) {
@@ -8043,16 +8274,29 @@ async function saveSession(form) {
     state.sessionCharges = [charge, ...state.sessionCharges];
   }
 
+  await syncNoShowCharge(session, existing, {
+    treatmentPriceAgorot:
+      documented && billable
+        ? PaymentsCore.parseAmountToAgorot(state.patients.find((item) => item.id === patientId)?.fixed_price || "")
+        : null
+  });
+  state.pendingSessionSlot = null;
+
   try {
     const documentFileId = await updateSessionDocument(patientId, session);
-    if (documentFileId && documentFileId !== session.document_file_id) {
-      session.document_file_id = documentFileId;
-      if (session._rowNumber) await updateSheetRow("sessions", session._rowNumber, session);
-      state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
-    }
+    if (documentFileId) linked.document_file_id = documentFileId;
   } catch {
     queueSyncWork("document_upsert", session.id, {});
     lastDocumentSyncError = "מסמך התיעוד עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+  }
+
+  if (
+    session._rowNumber &&
+    (linked.calendar_event_id !== session.calendar_event_id || linked.document_file_id !== session.document_file_id)
+  ) {
+    await updateSheetRow("sessions", session._rowNumber, linked, session);
+    Object.assign(session, linked);
+    state.sessions = state.sessions.map((item) => (item.id === session.id ? session : item));
   }
 
   state.sessions = state.sessions.sort((a, b) =>
@@ -8117,6 +8361,115 @@ async function unlinkSessionPayments(sessionId) {
     await updateSheetRow("payments", payment._rowNumber, updated);
     state.payments = state.payments.map((item) => (item.id === payment.id ? updated : item));
   }
+}
+
+// Status-only change from the day view: the stored row is the SSOT, a cancellation frees the
+// calendar slot and closes the documentation reminder, exactly like saving the form would.
+async function setSessionStatus(sessionId, status) {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  if (!session) throw new Error("המפגש לא נמצא.");
+  if (!session._rowNumber) throw new Error("צריך לרענן נתונים לפני עדכון המפגש.");
+  if (!SESSION_STATUS_LABELS[status]) throw new Error("סטטוס מפגש לא מוכר.");
+
+  const updated = { ...session, status, updated_at: new Date().toISOString() };
+  if (isCancelledStatus(status)) updated.calendar_event_id = "";
+  await updateSheetRow("sessions", session._rowNumber, updated, session);
+  updated._rowNumber = session._rowNumber;
+  state.sessions = state.sessions.map((item) => (item.id === sessionId ? updated : item));
+  await syncNoShowCharge(updated, session, {
+    treatmentPriceAgorot:
+      status === "completed" && sessionHasDocumentation(updated)
+        ? PaymentsCore.parseAmountToAgorot(state.patients.find((item) => item.id === session.patient_id)?.fixed_price || "")
+        : null
+  });
+
+  if (status === "no_show") {
+    await closeSystemTasks(
+      (task) => task.patient_id === session.patient_id && task.task_key === `doc:${sessionId}`
+    );
+  }
+
+  if (isCancelledStatus(status)) {
+    if (session.calendar_event_id) {
+      try {
+        await deleteCalendarEvent(session.calendar_event_id);
+      } catch {
+        queueSyncWork("calendar_delete", session.id, { eventId: session.calendar_event_id });
+        lastCalendarSyncError = "היומן עדיין לא הסתנכרן; המערכת תנסה שוב אוטומטית.";
+      }
+    }
+    await closeSystemTasks(
+      (task) => task.patient_id === session.patient_id && task.task_key === `doc:${sessionId}`
+    );
+  }
+  return updated;
+}
+
+// A no-show or late cancellation is billed per the patient's policy (or the clinic default).
+// Moving the session to any other status removes that fee again, unless a payment already
+// covers it; a treatment charge that already exists is re-priced instead of duplicated.
+let lastNoShowChargeOutcome = "";
+async function syncNoShowCharge(session, previous, options = {}) {
+  lastNoShowChargeOutcome = "";
+  const patient = state.patients.find((item) => item.id === session.patient_id);
+  const amountAgorot = PaymentsCore.noShowChargeAmount(session, patient, state.config);
+  const linked = sessionChargeForSession(session.id);
+  const now = new Date().toISOString();
+
+  if (amountAgorot !== null) {
+    const amountText = PaymentsCore.agorotToAmountText(amountAgorot);
+    if (!linked) {
+      const charge = {
+        id: id(),
+        session_id: session.id,
+        patient_id: session.patient_id,
+        session_date: session.session_date,
+        amount: amountText,
+        created_at: now,
+        updated_at: now
+      };
+      const chargeResult = await appendSheet("session_charges", charge);
+      charge._rowNumber = appendedRowNumber(chargeResult);
+      state.sessionCharges = [charge, ...state.sessionCharges];
+      lastNoShowChargeOutcome = "created";
+      return;
+    }
+    if (linked.amount === amountText || !linked._rowNumber || chargePaymentBlockError(linked)) return;
+    const updatedCharge = { ...linked, amount: amountText, updated_at: now };
+    await updateSheetRow("session_charges", linked._rowNumber, updatedCharge);
+    state.sessionCharges = state.sessionCharges.map((item) => (item.id === linked.id ? updatedCharge : item));
+    lastNoShowChargeOutcome = "updated";
+    return;
+  }
+
+  const previousStatus = previous ? sessionEffectiveStatus(previous) : "";
+  if (!PaymentsCore.NO_SHOW_STATUSES.includes(previousStatus) || !linked || !linked._rowNumber) return;
+  if (chargePaymentBlockError(linked)) {
+    lastNoShowChargeOutcome = "blocked";
+    return;
+  }
+  // The session became a documented treatment again: keep the row, price it as a treatment.
+  if (Number.isInteger(options.treatmentPriceAgorot) && options.treatmentPriceAgorot > 0) {
+    const treatmentText = PaymentsCore.agorotToAmountText(options.treatmentPriceAgorot);
+    if (linked.amount === treatmentText) return;
+    const repriced = { ...linked, amount: treatmentText, updated_at: now };
+    await updateSheetRow("session_charges", linked._rowNumber, repriced);
+    state.sessionCharges = state.sessionCharges.map((item) => (item.id === linked.id ? repriced : item));
+    lastNoShowChargeOutcome = "updated";
+    return;
+  }
+  await clearSheetRow("session_charges", linked._rowNumber, linked);
+  state.sessionCharges = state.sessionCharges.filter((item) => item.id !== linked.id);
+  if (state.currentChargeId === linked.id) state.currentChargeId = "";
+  lastNoShowChargeOutcome = "removed";
+}
+
+function noShowChargeNote() {
+  if (lastNoShowChargeOutcome === "created") return " נוסף חיוב לפי מדיניות הביטולים.";
+  if (lastNoShowChargeOutcome === "updated") return " החיוב עודכן לפי מדיניות הביטולים.";
+  if (lastNoShowChargeOutcome === "removed") return " חיוב הביטול הוסר.";
+  if (lastNoShowChargeOutcome === "blocked") return " חיוב הביטול נשאר כי כבר שויך לו תשלום.";
+  return "";
 }
 
 async function deleteSessionRecord(sessionId) {
@@ -8481,11 +8834,6 @@ async function setReceiptStatus(paymentId, status) {
   await reconcilePaymentTasks(updated);
 }
 
-function csvValue(value) {
-  const text = String(value ?? "");
-  return `"${text.replaceAll('"', '""')}"`;
-}
-
 function downloadTextFile(fileName, content, mimeType = "text/plain;charset=utf-8") {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -8496,10 +8844,6 @@ function downloadTextFile(fileName, content, mimeType = "text/plain;charset=utf-
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
-}
-
-function backupFileName() {
-  return `clinic-manager-backup-${isoDate(new Date())}.json`;
 }
 
 function backupPayload() {
@@ -8532,9 +8876,9 @@ function backupPayload() {
       business_records: state.businessRecords.length,
       session_charges: state.sessionCharges.length,
       payment_allocations: state.paymentAllocations.length,
-      schedule_exceptions: state.scheduleExceptions.length,
-      audit_log: state.auditLog.length
+      schedule_exceptions: state.scheduleExceptions.length
     },
+    // The audit log is intentionally excluded: it carries before/after snapshots of every record.
     data: {
       patients: state.patients,
       sessions: state.sessions,
@@ -8551,10 +8895,14 @@ function backupPayload() {
       business_records: state.businessRecords,
       session_charges: state.sessionCharges,
       payment_allocations: state.paymentAllocations,
-      schedule_exceptions: state.scheduleExceptions,
-      audit_log: state.auditLog
+      schedule_exceptions: state.scheduleExceptions
     }
   };
+}
+
+// Tables that a backup contains and that a restore replaces; audit_log is never touched.
+function backupTableNames() {
+  return WorkflowCore.backupTables(Object.keys(SHEETS));
 }
 
 function downloadBackup() {
@@ -8570,16 +8918,6 @@ async function saveBackupToDrive() {
   const content = JSON.stringify(backupPayload(), null, 2);
   const file = new File([content], backupFileName(), { type: "application/json" });
   return uploadDriveFile(state.config.googleDriveRootFolderId, file, file.name);
-}
-
-function backupRows(payload, tableName) {
-  const rows = payload?.data?.[tableName];
-  if (!Array.isArray(rows)) return [];
-  return rows.map((row) => {
-    const record = { ...row };
-    delete record._rowNumber;
-    return record;
-  });
 }
 
 async function clearSheetData(sheetName) {
@@ -8608,17 +8946,18 @@ async function restoreBackupFile(file) {
   for (const tableName of ["goals", "goal_updates", "questionnaire_templates", "questionnaire_assignments", "questionnaire_responses", "clinical_reports", "business_records", "session_charges", "payment_allocations"]) {
     if (payload?.data && !Array.isArray(payload.data[tableName])) payload.data[tableName] = [];
   }
-  if (payload?.data && !Array.isArray(payload.data.audit_log)) payload.data.audit_log = [];
-  WorkflowCore.validateBackup(payload, Object.keys(SHEETS));
+  // Older backups may still carry audit_log; it is validated only if present and never restored.
+  const restoreTables = backupTableNames();
+  WorkflowCore.validateBackup(payload, restoreTables);
   const rollbackPayload = backupPayload();
   await saveBackupToDrive();
   try {
-    for (const tableName of Object.keys(SHEETS)) {
+    for (const tableName of restoreTables) {
       await replaceSheetData(tableName, backupRows(payload, tableName));
     }
   } catch (restoreError) {
     try {
-      for (const tableName of Object.keys(SHEETS)) {
+      for (const tableName of restoreTables) {
         await replaceSheetData(tableName, backupRows(rollbackPayload, tableName));
       }
     } catch (rollbackError) {
@@ -8627,11 +8966,12 @@ async function restoreBackupFile(file) {
     throw new Error(`השחזור נכשל והנתונים הקודמים הוחזרו: ${restoreError.message || restoreError}`);
   }
   await loadData();
+  await markAuditEntriesNotUndoable();
   await appendAuditEntry(
     { actionType: "restore", entityType: "backup", summary: "שחזור מגיבוי מאומת", undoable: false },
     []
   );
-  return Object.fromEntries(Object.keys(SHEETS).map((tableName) => [tableName, backupRows(payload, tableName).length]));
+  return Object.fromEntries(restoreTables.map((tableName) => [tableName, backupRows(payload, tableName).length]));
 }
 
 const EXPORT_TABLES = {
@@ -9003,13 +9343,1189 @@ function stopRecording() {
   activeRecorder.stop();
 }
 
+// ===== delegated click actions: one handler per data-action value, grouped by domain =====
+// Each handler receives { event, target, action } and runs inside the busy-state guard of bindEvents.
+
+// ===== navigation actions =====
+
+const navigationActions = {
+  "toggle-row-menu": async ({ target }) => {
+    const rowId = target.dataset.id || "";
+    state.openRowMenu = state.openRowMenu === rowId ? "" : rowId;
+    render();
+    focusRowMenuToggle(rowId);
+  },
+  "set-payments-view": async ({ target }) => {
+    state.paymentsView = target.dataset.view === "receipts-pending" ? "receipts-pending" : "all";
+    state.error = "";
+    render();
+  },
+  "settings-category": async ({ target }) => {
+    state.settingsCategory = target.dataset.category || "preferences";
+    state.error = "";
+    render();
+    document.querySelector(`[data-action="settings-category"][data-category="${state.settingsCategory}"]`)?.focus();
+  },
+  "toggle-form": async ({ target }) => {
+    const formKey = target.dataset.formKey;
+    if (formKey && formKey in state.openForms) {
+      state.openForms[formKey] = !state.openForms[formKey];
+      state.error = "";
+      render();
+    }
+  },
+  "open-patient-drawer": async ({ target }) => {
+    openPatientDrawer(target);
+  },
+  "close-drawer": async () => {
+    closePatientDrawer();
+  },
+  "open-profile": async ({ target }) => {
+    state.openRowMenu = "";
+    state.profileTab = target.dataset.tab || "overview";
+    state.currentSessionId = "";
+    state.currentPaymentId = "";
+    state.currentTaskId = "";
+    state.currentFileId = "";
+    state.currentContactId = "";
+    state.currentGoalId = "";
+    // A dashboard shortcut can land directly on an open form (e.g. recording a payment).
+    const openForm = target.dataset.openForm || "";
+    if (openForm && openForm in state.openForms) state.openForms[openForm] = true;
+    navigate(`patients/${target.dataset.id}`);
+  },
+  "profile-tab": async ({ target }) => {
+    state.profileTab = target.dataset.tab || "overview";
+    if (state.profileTab !== "documentation") state.currentSessionId = "";
+    if (state.profileTab !== "payments") state.currentPaymentId = "";
+    if (state.profileTab !== "tasks") state.currentTaskId = "";
+    if (state.profileTab !== "files") state.currentFileId = "";
+    if (state.profileTab !== "contacts") state.currentContactId = "";
+    if (state.profileTab !== "goals") state.currentGoalId = "";
+    render();
+  },
+  "open-search-result": async ({ target }) => {
+    closeGlobalSearch();
+    navigate(`patients/${target.dataset.id}`);
+  },
+  "toggle-global-search": async () => {
+    toggleGlobalSearch();
+  },
+  "reports-prev": async () => {
+    state.reportMonth = shiftMonth(state.reportMonth, -1);
+    render();
+  },
+  "reports-next": async () => {
+    state.reportMonth = shiftMonth(state.reportMonth, 1);
+    render();
+  },
+  "reports-current": async () => {
+    state.reportMonth = isoDate(new Date()).slice(0, 7);
+    render();
+  }
+};
+
+// ===== patient actions =====
+
+// "send-questionnaire-whatsapp" and "send-questionnaire-email" share one handler.
+const sendQuestionnaireLink = async ({ target, action }) => {
+  try {
+    const assignment = state.questionnaireAssignments.find((item) => item.id === target.dataset.id);
+    const contact = assignment && state.contacts.find((item) => item.id === assignment.contact_id);
+    if (!assignment || !contact) throw new Error("השאלון או איש הקשר לא נמצאו.");
+    const message = questionnaireMessage(assignment);
+    const destination = action === "send-questionnaire-whatsapp"
+      ? `https://wa.me/${String(contact.phone || "").replace(/\D/g, "")}?text=${encodeURIComponent(message)}`
+      : `mailto:${encodeURIComponent(contact.email || "")}?subject=${encodeURIComponent("שאלון לקראת המשך העבודה")}&body=${encodeURIComponent(message)}`;
+    window.open(destination, "_blank", "noopener");
+    await markQuestionnaireSent(assignment);
+    state.message = "נפתח חלון השליחה עם קישור השאלון.";
+    state.error = "";
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : "פתיחת השליחה נכשלה.";
+    render();
+  }
+};
+
+const patientActions = {
+  "set-goal-outcome": async ({ target }) => {
+    // Selecting an outcome only changes the open form; it is persisted with the session itself.
+    const group = target.closest("[data-goal-outcome-group]");
+    const form = target.closest("form");
+    const outcome = target.dataset.outcome || "";
+    if (group && form && isGoalOutcome(outcome)) {
+      for (const button of group.querySelectorAll('[data-action="set-goal-outcome"]')) {
+        button.setAttribute("aria-pressed", button.dataset.outcome === outcome ? "true" : "false");
+      }
+      const hidden = form.elements[`goal_outcome_${target.dataset.goalId}`];
+      if (hidden) hidden.value = outcome;
+      // Only "המטרה הושגה" derives a numeric value; the other outcomes leave progress alone.
+      if (outcome === "achieved") {
+        const progressField = form.elements[`goal_progress_${target.dataset.goalId}`];
+        if (progressField) progressField.value = "100";
+      }
+    }
+  },
+  "edit-goal": async ({ target }) => {
+    state.currentGoalId = target.dataset.id || "";
+    state.profileTab = "goals";
+    render();
+  },
+  "cancel-goal-edit": async () => {
+    state.currentGoalId = "";
+    render();
+  },
+  "send-questionnaire-whatsapp": sendQuestionnaireLink,
+  "send-questionnaire-email": sendQuestionnaireLink,
+  "sync-questionnaires": async ({ target }) => {
+    try {
+      const imported = await syncQuestionnaires(target.dataset.patientId || "");
+      state.message = imported ? `נקלטו ${imported} תשובות חדשות.` : "לא נמצאו תשובות חדשות.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "רענון השאלונים נכשל.";
+      render();
+    }
+  },
+  "edit-contact": async ({ target }) => {
+    const contact = state.contacts.find((item) => item.id === target.dataset.id);
+    if (!contact) return;
+    state.currentContactId = contact.id;
+    state.profileTab = "contacts";
+    if (!state.route.startsWith(`patients/${contact.patient_id}`)) {
+      navigate(`patients/${contact.patient_id}`);
+    } else {
+      render();
+    }
+  },
+  "cancel-contact-edit": async () => {
+    state.currentContactId = "";
+    render();
+  },
+  "delete-contact": async ({ target }) => {
+    if (!window.confirm("למחוק את איש הקשר?")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+      await runAuditedAction(
+        { actionType: "delete", entityType: "contact", entityId: target.dataset.id, summary: "מחיקת איש קשר" },
+        () => deleteContactRecord(target.dataset.id)
+      );
+      state.message = "איש הקשר נמחק.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "מחיקת איש הקשר נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "toggle-patient-archive": async ({ target }) => {
+    const shouldArchive = target.dataset.archive !== "restore";
+    if (!shouldArchive) {
+      if (!window.confirm("להחזיר את המטופל מרשימת הארכיון?")) return;
+      try {
+        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+        await runAuditedAction(
+          { actionType: "restore", entityType: "patient", entityId: target.dataset.id, summary: "החזרת מטופל לפעילות" },
+          () => togglePatientArchive(target.dataset.id, false)
+        );
+        state.message = "המטופל הוחזר לפעילות.";
+        render();
+      } catch (error) {
+        state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
+        render();
+      }
+      return;
+    }
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+      const answer = await showAppModal({
+        title: "סיום טיפול והעברה לארכיון",
+        message: archiveImpactMessage(archiveImpactSummary(target.dataset.id)),
+        actions: [
+          { value: "archive", label: "סיום טיפול וארכוב", variant: "blue" },
+          { value: "abandon", label: "ביטול", variant: "secondary" }
+        ]
+      });
+      if (answer !== "archive") return;
+      const impact = await runAuditedAction(
+        { actionType: "archive", entityType: "patient", entityId: target.dataset.id, summary: "סיום טיפול והעברת מטופל לארכיון", undoable: false },
+        () => archivePatientWorkflow(target.dataset.id)
+      );
+      state.message = archiveDoneMessage(impact);
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
+      render();
+    } finally {
+      closeAppModal();
+    }
+  }
+};
+
+// ===== session actions =====
+
+const sessionActions = {
+  "edit-session": async ({ target }) => {
+    const session = state.sessions.find((item) => item.id === target.dataset.id);
+    state.currentSessionId = target.dataset.id || "";
+    state.profileTab = "documentation";
+    if (session && !state.route.startsWith(`patients/${session.patient_id}`)) {
+      navigate(`patients/${session.patient_id}`);
+    } else {
+      render();
+    }
+  },
+  "set-session-status": async ({ target }) => {
+    const nextStatus = target.dataset.status || "";
+    if (nextStatus === "cancelled" && !window.confirm("לבטל את המפגש? הרשומה תישאר בהיסטוריה והאירוע יוסר מהיומן.")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+      lastCalendarSyncError = "";
+      await runAuditedAction(
+        {
+          actionType: "update",
+          entityType: "session",
+          entityId: target.dataset.id,
+          summary: nextStatus === "cancelled" ? "ביטול מפגש" : nextStatus === "no_show" ? "סימון אי-הגעה" : "סימון מפגש כבוצע"
+        },
+        () => setSessionStatus(target.dataset.id, nextStatus)
+      );
+      state.message = nextStatus === "cancelled"
+        ? `המפגש בוטל.${lastCalendarSyncError ? ` ${lastCalendarSyncError}` : ""}${noShowChargeNote()}`
+        : nextStatus === "no_show"
+          ? `המפגש סומן כלא הגיע.${noShowChargeNote()}`
+          : "המפגש סומן כהתקיים.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "עדכון המפגש נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "cancel-session-edit": async () => {
+    state.currentSessionId = "";
+    render();
+  },
+  "delete-schedule-exception": async ({ target }) => {
+    if (!window.confirm("למחוק את חריג היומן?")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+      await runAuditedAction(
+        { actionType: "delete", entityType: "schedule_exception", entityId: target.dataset.id, summary: "מחיקת חריג יומן" },
+        () => deleteScheduleException(target.dataset.id)
+      );
+      state.message = "חריג היומן נמחק.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "מחיקת חריג היומן נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "delete-session": async ({ target }) => {
+    if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המפגש?")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+      lastCalendarSyncError = "";
+      await runAuditedAction(
+        { actionType: "delete", entityType: "session", entityId: target.dataset.id, summary: "מחיקת מפגש", undoable: false },
+        () => deleteSessionRecord(target.dataset.id)
+      );
+      state.message = lastCalendarSyncError
+        ? `המפגש נמחק מהמערכת. ${lastCalendarSyncError}`
+        : "המפגש נמחק מהמערכת ומהיומן.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "מחיקת המפגש נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "materialize-recurring": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירת מפגש.");
+      await runAuditedAction(
+        { actionType: "create", entityType: "session", entityId: target.dataset.patientId, summary: "יצירת מפגש קבוע", undoable: false },
+        () => materializeRecurringSession(target.dataset.patientId, target.dataset.date)
+      );
+      const syncMessages = [lastCalendarSyncError, lastDocumentSyncError].filter(Boolean);
+      state.message = syncMessages.length
+        ? `המפגש הקבוע נשמר במערכת. ${syncMessages.join(" ")}`
+        : "המפגש הקבוע נשמר כמפגש רגיל, סונכרן ליומן ונוצר לו מסמך תיעוד.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "שמירת המפגש הקבוע נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "cancel-recurring": async ({ target }) => {
+    if (!window.confirm("לבטל את המפגש הקבוע רק בתאריך הזה?")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני ביטול מפגש.");
+      await runAuditedAction(
+        { actionType: "cancel", entityType: "schedule_exception", entityId: target.dataset.patientId, summary: "ביטול מפגש קבוע בתאריך", undoable: true },
+        () => cancelRecurringSession(target.dataset.patientId, target.dataset.date)
+      );
+      state.message = "המפגש הקבוע בוטל לתאריך הזה בלבד.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "ביטול המפגש הקבוע נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "reschedule-occurrence": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שינוי מועד.");
+      lastCalendarSyncError = "";
+      const sessionId = target.dataset.sessionId || "";
+      const dateValue = target.dataset.date || "";
+      const timeValue = target.dataset.time || "";
+      const replacement = await askReplacementOccurrence(dateValue, timeValue, { allowSameDate: true });
+      if (replacement === "abandon") return;
+      await runAuditedAction(
+        {
+          actionType: "update",
+          entityType: "session",
+          entityId: sessionId || target.dataset.patientId,
+          summary: "שינוי מועד מפגש",
+          undoable: false
+        },
+        () =>
+          sessionId
+            ? rescheduleSessionRecord(sessionId, replacement.date, replacement.time)
+            : rescheduleRecurringOccurrence(target.dataset.patientId, dateValue, replacement.date, replacement.time)
+      );
+      state.selectedCalendarDate = replacement.date;
+      state.calendarMonth = replacement.date.slice(0, 7);
+      state.message = lastCalendarSyncError
+        ? `מועד המפגש עודכן. ${lastCalendarSyncError}`
+        : "מועד המפגש עודכן וסונכרן ליומן.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "שינוי המועד נכשל.";
+      state.message = "";
+      render();
+    } finally {
+      closeAppModal();
+    }
+  },
+  "resolve-holiday-decision": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני קבלת החלטה.");
+      const outcome = await runAuditedAction(
+        {
+          actionType: "update",
+          entityType: "schedule_exception",
+          entityId: target.dataset.patientId,
+          summary: "החלטה על מפגש בתאריך חג",
+          undoable: false
+        },
+        () => resolveHolidayDecisionFlow(target.dataset.patientId, target.dataset.date)
+      );
+      if (outcome === "cancelled") state.message = "המפגש בוטל לתאריך הזה.";
+      else if (outcome === "kept") state.message = "המפגש נשמר במועד המקורי.";
+      else if (outcome === "moved") state.message = "מועד המפגש עודכן ונשמר.";
+      else state.message = "";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "קבלת ההחלטה נכשלה.";
+      state.message = "";
+      render();
+    } finally {
+      closeAppModal();
+    }
+  },
+  "start-recording": async ({ target }) => {
+    try {
+      await startRecording(target.dataset.id);
+      state.message = "ההקלטה התחילה.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "התחלת ההקלטה נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "stop-recording": async () => {
+    try {
+      stopRecording();
+      state.message = "שומר את ההקלטה...";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "עצירת ההקלטה נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "create-transcript-draft": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת מסמך.");
+      const draft = await runAuditedAction(
+        { actionType: "create", entityType: "file", entityId: target.dataset.id, summary: "יצירת טיוטת תמלול", undoable: false },
+        () => createRecordingTranscriptDraft(target.dataset.id)
+      );
+      state.message = `טיוטת התמלול נוצרה ונשמרה בקבצים: ${draft.name || "מסמך תמלול"}.`;
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "יצירת טיוטת התמלול נכשלה.";
+      state.message = "";
+      render();
+    }
+  }
+};
+
+// ===== payment actions =====
+
+const paymentActions = {
+  "edit-payment": async ({ target }) => {
+    const payment = state.payments.find((item) => item.id === target.dataset.id);
+    if (!payment) return;
+    state.currentPaymentId = payment.id;
+    state.profileTab = "payments";
+    if (!state.route.startsWith(`patients/${payment.patient_id}`)) {
+      navigate(`patients/${payment.patient_id}`);
+    } else {
+      render();
+    }
+  },
+  "cancel-payment-edit": async () => {
+    state.currentPaymentId = "";
+    render();
+  },
+  "delete-payment": async ({ target }) => {
+    if (!window.confirm("האם את בטוחה שאת רוצה למחוק את התשלום?")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+      await runAuditedAction(
+        { actionType: "delete", entityType: "payment", entityId: target.dataset.id, summary: "מחיקת תשלום", undoable: false },
+        () => deletePaymentRecord(target.dataset.id)
+      );
+      state.message = "התשלום נמחק מהמערכת.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "מחיקת התשלום נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "edit-charge": async ({ target }) => {
+    const charge = state.sessionCharges.find((item) => item.id === target.dataset.id);
+    if (!charge) return;
+    const blockError = chargePaymentBlockError(charge);
+    if (blockError) {
+      state.error = blockError;
+      state.message = "";
+      render();
+      return;
+    }
+    state.currentChargeId = charge.id;
+    state.error = "";
+    state.message = "";
+    render();
+  },
+  "cancel-charge-edit": async () => {
+    state.currentChargeId = "";
+    render();
+  },
+  "save-charge-amount": async ({ target }) => {
+    const amountText = document.querySelector("[data-charge-amount-input]")?.value || "";
+    if (!window.confirm("האם לעדכן את סכום חיוב הטיפול? המחיר הקבוע בכרטיס המטופל לא ישתנה.")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+      await runAuditedAction(
+        { actionType: "update", entityType: "session_charge", entityId: target.dataset.id, summary: "עדכון סכום חיוב טיפול" },
+        () => updateSessionChargeAmount(target.dataset.id, amountText)
+      );
+      state.currentChargeId = "";
+      state.message = "סכום החיוב עודכן.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "עדכון החיוב נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "cancel-charge": async ({ target }) => {
+    if (!window.confirm("האם לבטל את חיוב הטיפול? החוב יוסר מהיתרות, ותיעוד המפגש יישאר במערכת ללא שינוי.")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני ביטול חיוב.");
+      await runAuditedAction(
+        { actionType: "delete", entityType: "session_charge", entityId: target.dataset.id, summary: "ביטול חיוב טיפול", undoable: false },
+        () => cancelSessionCharge(target.dataset.id)
+      );
+      state.message = "חיוב הטיפול בוטל והוסר מהיתרות.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "ביטול החיוב נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "delete-payment-receipt": async ({ target }) => {
+    if (!window.confirm("האם את בטוחה שאת רוצה למחוק את קובץ הקבלה?")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+      await runAuditedAction(
+        { actionType: "delete_receipt", entityType: "payment", entityId: target.dataset.id, summary: "מחיקת קובץ קבלה", undoable: false },
+        () => deletePaymentReceipt(target.dataset.id)
+      );
+      state.message = "קובץ הקבלה נמחק ועודכן ברשומת התשלום.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "מחיקת הקבלה נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "set-payment-status": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+      await runAuditedAction(
+        { actionType: "status", entityType: "payment", entityId: target.dataset.id, summary: "עדכון סטטוס תשלום" },
+        () => setPaymentStatus(target.dataset.id, target.dataset.status || "unpaid")
+      );
+      state.message = "סטטוס התשלום עודכן.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "עדכון התשלום נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "set-receipt-status": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+      await runAuditedAction(
+        { actionType: "status", entityType: "payment", entityId: target.dataset.id, summary: "עדכון סטטוס קבלה" },
+        () => setReceiptStatus(target.dataset.id, target.dataset.status || "issued")
+      );
+      state.message = "סטטוס הקבלה עודכן.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "עדכון הקבלה נכשל.";
+      state.message = "";
+      render();
+    }
+  }
+};
+
+// ===== business actions =====
+
+const businessActions = {
+  "export-table": async ({ target }) => {
+    try {
+      const count = exportTableCsv(target.dataset.table || "");
+      state.message = `נוצר קובץ ייצוא עם ${count} רשומות.`;
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "הייצוא נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "edit-business-record": async ({ target }) => {
+    const record = state.businessRecords.find((item) => item.id === target.dataset.id);
+    if (record) {
+      state.currentBusinessRecordId = record.id;
+      const period = BusinessCore.periodForDate(record.document_date);
+      if (period) state.businessView = { ...state.businessView, year: period.year, period: period.key };
+      render();
+    }
+  },
+  "cancel-business-edit": async () => {
+    state.currentBusinessRecordId = "";
+    render();
+  },
+  "delete-business-record": async ({ target }) => {
+    if (!window.confirm("האם את בטוחה שאת רוצה למחוק את הרשומה? קובץ המסמך יועבר לאשפה.")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+      await runAuditedAction(
+        { actionType: "delete", entityType: "business_record", entityId: target.dataset.id, summary: "מחיקת רשומת עסק", undoable: false },
+        () => deleteBusinessRecordEntry(target.dataset.id)
+      );
+      if (state.currentBusinessRecordId === target.dataset.id) state.currentBusinessRecordId = "";
+      state.message = "הרשומה נמחקה וקובץ המסמך הועבר לאשפה.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "מחיקת הרשומה נכשלה.";
+      state.message = "";
+      render();
+    }
+  }
+};
+
+// ===== task actions =====
+
+const taskActions = {
+  "edit-task": async ({ target }) => {
+    const task = state.tasks.find((item) => item.id === target.dataset.id);
+    if (!task) return;
+    state.currentTaskId = task.id;
+    state.profileTab = state.route === "tasks" ? state.profileTab : "tasks";
+    if (state.route === "tasks") {
+      render();
+    } else if (!state.route.startsWith(`patients/${task.patient_id}`)) {
+      navigate(`patients/${task.patient_id}`);
+    } else {
+      render();
+    }
+  },
+  "cancel-task-edit": async () => {
+    state.currentTaskId = "";
+    render();
+  },
+  "delete-task": async ({ target }) => {
+    if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המשימה?")) return;
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+      await runAuditedAction(
+        { actionType: "delete", entityType: "task", entityId: target.dataset.id, summary: "מחיקת משימה" },
+        () => deleteTaskRecord(target.dataset.id)
+      );
+      state.message = "המשימה נמחקה.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "מחיקת המשימה נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "complete-task": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+      await runAuditedAction(
+        { actionType: "complete", entityType: "task", entityId: target.dataset.id, summary: "סימון משימה כבוצעה" },
+        () => completeTask(target.dataset.id)
+      );
+      state.message = "המשימה סומנה כבוצעה.";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
+      render();
+    }
+  }
+};
+
+// ===== calendar actions =====
+
+// "calendar-prev" and "calendar-next" share one handler.
+const shiftCalendarRange = async ({ action }) => {
+  const direction = action === "calendar-prev" ? -1 : 1;
+  if (state.calendarView === "week" || state.calendarView === "day") {
+    state.selectedCalendarDate =
+      WorkflowCore.shiftCalendarDate(state.selectedCalendarDate, state.calendarView, direction) || state.selectedCalendarDate;
+    state.calendarMonth = state.selectedCalendarDate.slice(0, 7);
+  } else {
+    state.calendarMonth = shiftMonth(state.calendarMonth, direction);
+  }
+  render();
+};
+
+const calendarActions = {
+  "calendar-view": async ({ target }) => {
+    setCalendarView(target.dataset.view || "");
+    render();
+  },
+  "calendar-prev": shiftCalendarRange,
+  "calendar-next": shiftCalendarRange,
+  "calendar-slot": async ({ target }) => {
+    // No patient-less session flow exists: remember the slot and send the user to pick a patient.
+    state.pendingSessionSlot = { date: target.dataset.date || "", time: target.dataset.time || "" };
+    state.message = `נבחר מועד ${formatDate(target.dataset.date || "")} בשעה ${target.dataset.time || ""}. פתחו כרטיס מטופל ואת לשונית "תיעוד מפגש" כדי לקבוע את המפגש.`;
+    navigate("patients");
+  },
+  "calendar-today": async () => {
+    const today = isoDate(new Date());
+    state.calendarMonth = today.slice(0, 7);
+    state.selectedCalendarDate = today;
+    render();
+  },
+  "select-calendar-date": async ({ target }) => {
+    state.selectedCalendarDate = target.dataset.date || state.selectedCalendarDate;
+    state.calendarMonth = state.selectedCalendarDate.slice(0, 7);
+    render();
+  }
+};
+
+// ===== settings actions =====
+
+const settingsActions = {
+  "retry-sync": async () => {
+    state.syncQueue.forEach((item) => {
+      item.nextAttemptAt = Date.now();
+    });
+    persistSyncQueue();
+    await processSyncQueue(true);
+    state.message = state.syncQueue.length
+      ? "חלק מהפעולות עדיין ממתינות; המערכת תמשיך לנסות אוטומטית."
+      : "כל הפעולות הסתנכרנו.";
+    render();
+  },
+  "connect-google": async () => {
+    await connectGoogle();
+  },
+  "force-connect-google": async () => {
+    await connectGoogle(true);
+  },
+  "disconnect-google": async () => {
+    disconnectGoogle();
+  },
+  "reset-google-settings": async () => {
+    if (!window.confirm("לאפס את הגדרות Google המקומיות לערכים שמוגדרים בקובץ config.js?")) return;
+    resetConfigToDefaults();
+    state.message = "הגדרות Google המקומיות אופסו לברירת המחדל.";
+    state.error = "";
+    render();
+  },
+  "refresh": async () => {
+    await loadData().catch((error) => {
+      state.error = error.message;
+    });
+    render();
+  },
+  "undo-last-action": async ({ target }) => {
+    if (!window.confirm("לבטל את הפעולה ולשחזר את הנתונים הקודמים?")) return;
+    try {
+      await undoAuditAction(target.dataset.id || state.lastUndoActionId);
+      state.message = "הפעולה בוטלה והנתונים הקודמים שוחזרו.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "ביטול הפעולה נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "check-storage": async () => {
+    try {
+      const folderName = await checkStorageConnection();
+      state.message = `החיבור תקין. תיקיית אחסון ראשית: ${folderName}`;
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "בדיקת החיבור נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "check-data-health": async () => {
+    try {
+      const report = await runDataHealthCheck();
+      state.message = report.ok ? "מבנה הנתונים תקין." : "נמצאו בעיות במבנה הנתונים. אפשר ללחוץ תיקון מבנה.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "בדיקת תקינות הנתונים נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "check-sharing-security": async () => {
+    try {
+      const report = await runSharingSecurityAudit();
+      state.message = report.ok
+        ? "משאבי הקליניקה אינם משותפים לציבור."
+        : "נמצאה גישה ציבורית. יש ללחוץ הסרת גישה ציבורית.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "בדיקת אבטחת השיתוף נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "repair-sharing-security": async () => {
+    try {
+      const removed = await repairSharingSecurity();
+      state.message = removed
+        ? `הוסרו ${removed} הרשאות שיתוף ציבוריות.`
+        : "לא נמצאו הרשאות שיתוף ציבוריות.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "תיקון אבטחת השיתוף נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "repair-data-health": async () => {
+    if (!window.confirm("תיקון מבנה יעדכן את שורת הכותרות ויצור גיליונות חסרים. להמשיך?")) return;
+    try {
+      const report = await runDataHealthCheck({ repair: true });
+      state.message = report.ok ? "מבנה הנתונים תוקן ונבדק." : "נשארו נקודות שדורשות בדיקה ידנית.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "תיקון מבנה הנתונים נכשל.";
+      state.message = "";
+      render();
+    }
+  },
+  "compact-sheets": async () => {
+    if (!window.confirm("דחיסת הגיליונות תסיר שורות ריקות מכל הגיליונות, ופעולות קודמות לא יהיו ניתנות לביטול. להמשיך?")) return;
+    try {
+      if (!canUseStorage()) throw new Error("צריך להתחבר לחשבון מורשה לפני דחיסה.");
+      const report = await compactAllSheets();
+      if (report.total) {
+        await appendAuditEntry(
+          { actionType: "compact", entityType: "system", summary: `דחיסת גיליונות: הוסרו ${report.total} שורות ריקות`, undoable: false },
+          []
+        ).catch(() => {});
+      }
+      state.message = report.total
+        ? `הדחיסה הושלמה: הוסרו ${report.total} שורות ריקות.`
+        : "לא נמצאו שורות ריקות לדחיסה.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "דחיסת הגיליונות נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "download-backup": async () => {
+    downloadBackup();
+    state.message = "גיבוי מלא ירד למחשב.";
+    state.error = "";
+    render();
+  },
+  "save-backup-drive": async () => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירת גיבוי.");
+      const result = await saveBackupToDrive();
+      state.message = `הגיבוי נשמר באחסון: ${result.name || backupFileName()}.`;
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "שמירת הגיבוי נכשלה.";
+      state.message = "";
+      render();
+    }
+  },
+  "restore-backup": async () => {
+    const fileInput = document.getElementById("restoreBackupFile");
+    const selectedFile = fileInput?.files?.[0];
+    if (!selectedFile) {
+      state.error = "צריך לבחור קובץ גיבוי לשחזור.";
+      state.message = "";
+      render();
+      return;
+    }
+    if (!window.confirm("שחזור מגיבוי יחליף את הנתונים הקיימים בטבלאות. להמשיך?")) return;
+
+    try {
+      const counts = await restoreBackupFile(selectedFile);
+      state.message = `השחזור הושלם: ${counts.patients || 0} מטופלים, ${counts.sessions || 0} מפגשים, ${counts.payments || 0} תשלומים, ${counts.tasks || 0} משימות.`;
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "שחזור הגיבוי נכשל.";
+      state.message = "";
+      render();
+    }
+  }
+};
+
+// ===== file actions =====
+
+const fileActions = {
+  "cancel-upload": async () => {
+    uploadCancelled = true;
+    activeUploadRequest?.abort();
+  },
+  "create-drive-folder": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+      await runAuditedAction(
+        { actionType: "create_folder", entityType: "patient", entityId: target.dataset.id, summary: "יצירת תיקיית מטופל", undoable: false },
+        () => ensurePatientDriveFolder(target.dataset.id)
+      );
+      state.message = "תיקיית המטופל נוצרה ונשמרה במערכת.";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "יצירת התיקייה נכשלה.";
+      render();
+    }
+  },
+  "sync-drive-files": async ({ target }) => {
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+      const count = await runAuditedAction(
+        { actionType: "sync", entityType: "file", entityId: target.dataset.id, summary: "סנכרון קבצים מ-Drive", undoable: false },
+        () => syncPatientDriveFiles(target.dataset.id)
+      );
+      state.message = count
+        ? `${count} קבצים חדשים נרשמו מתוך תיקיית המטופל.`
+        : "לא נמצאו קבצים חדשים לייבוא מהתיקייה.";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "ייבוא הקבצים נכשל.";
+      render();
+    }
+  },
+  "edit-file": async ({ target }) => {
+    const file = state.files.find((item) => item.id === target.dataset.id);
+    if (!file) return;
+    state.currentFileId = file.id;
+    state.profileTab = state.route === "files" ? state.profileTab : "files";
+    if (state.route === "files") {
+      render();
+    } else if (!state.route.startsWith(`patients/${file.patient_id}`)) {
+      navigate(`patients/${file.patient_id}`);
+    } else {
+      render();
+    }
+  },
+  "cancel-file-edit": async () => {
+    state.currentFileId = "";
+    render();
+  },
+  "delete-file": async ({ target }) => {
+    if (!window.confirm("האם את בטוחה שאת רוצה למחוק?")) return;
+
+    try {
+      if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
+      await runAuditedAction(
+        { actionType: "delete", entityType: "file", entityId: target.dataset.id, summary: "מחיקת קובץ", undoable: false },
+        () => deleteFileRecord(target.dataset.id)
+      );
+      state.message = "הקובץ נמחק מכרטיס המטופל ומהתיקייה בדרייב.";
+      state.error = "";
+      render();
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "מחיקת הקובץ נכשלה.";
+      state.message = "";
+      render();
+    }
+  }
+};
+
+const clickActions = {
+  ...navigationActions,
+  ...patientActions,
+  ...sessionActions,
+  ...paymentActions,
+  ...businessActions,
+  ...taskActions,
+  ...calendarActions,
+  ...settingsActions,
+  ...fileActions
+};
+
+// ===== form submit actions: one handler per data-form value =====
+// Each handler receives { event, form } and runs inside the busy-form guard of bindEvents.
+
+const submitActions = {
+  "settings": async ({ form }) => {
+    const settingsData = Object.fromEntries(new FormData(form).entries());
+    if (
+      PaymentsCore.normalizeNoShowPolicy(settingsData.noShowPolicyDefault) === "fixed" &&
+      PaymentsCore.parseAmountToAgorot(settingsData.noShowFeeDefault) === null
+    ) {
+      throw new Error("יש להזין סכום קבוע תקין לברירת המחדל של מדיניות הביטול.");
+    }
+    saveConfig(settingsData);
+    await saveRemoteSettings();
+    state.message = "ההגדרות נשמרו.";
+  },
+  "business-record": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    const isEdit = Boolean(form.dataset.id);
+    await runAuditedAction(
+      {
+        actionType: isEdit ? "update" : "create",
+        entityType: "business_record",
+        entityId: form.dataset.id || "",
+        summary: isEdit ? "עדכון רשומת עסק" : "יצירת רשומת עסק",
+        undoable: false
+      },
+      () => saveBusinessRecord(form)
+    );
+    state.message = isEdit ? "רשומת העסק עודכנה." : "המסמך הועלה והרשומה נשמרה.";
+  },
+  "patient": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    // A new patient whose name already exists is confirmed before anything else happens.
+    const duplicate = form.dataset.id
+      ? null
+      : WorkflowCore.findDuplicatePatient(new FormData(form).get("child_name") || "", state.patients);
+    let duplicateChoice = "";
+    if (duplicate) {
+      try {
+        duplicateChoice = await confirmDuplicatePatient(duplicate);
+      } finally {
+        closeAppModal();
+      }
+    }
+    // The whole proposed series is resolved before the first write, so abandoning writes nothing.
+    let schedulePlan = null;
+    if (duplicate && duplicateChoice === "open") {
+      closePatientDrawer();
+      navigate(`patients/${duplicate.id}`);
+      state.error = "";
+      state.message = `נפתח הכרטיס הקיים של ${duplicate.child_name}.`;
+    } else if (duplicate && duplicateChoice !== "save") {
+      state.error = "";
+      state.message = "השמירה בוטלה ולא בוצע שום שינוי.";
+    } else {
+      try {
+        schedulePlan = await prepareRecurringSchedulePlan(
+          Object.fromEntries(new FormData(form).entries()),
+          form.dataset.id || ""
+        );
+      } finally {
+        closeAppModal();
+      }
+    }
+    if (!schedulePlan) {
+      // Nothing to save: the duplicate dialog ended the flow.
+    } else if (schedulePlan.abandoned) {
+      state.error = "";
+      state.message = "השמירה בוטלה ולא בוצע שום שינוי.";
+    } else {
+      const patient = await runAuditedAction(
+        { actionType: form.dataset.id ? "update" : "create", entityType: "patient", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון פרטי מטופל" : "יצירת מטופל", undoable: Boolean(form.dataset.id) },
+        () => savePatient(form, schedulePlan, { allowDuplicate: Boolean(duplicate) })
+      );
+      state.currentPatientId = "";
+      if (form.dataset.id) {
+        state.message = patient.folderCreated
+          ? "פרטי המטופל עודכנו ונוצרה לו תיקייה."
+          : "פרטי המטופל עודכנו במערכת.";
+      } else {
+        state.message = "המטופל נשמר במערכת ונוצרה לו תיקייה.";
+      }
+      if (schedulePlan.createdSessions) state.message += " המפגשים הקבועים מסתנכרנים ליומן ברקע.";
+    }
+  },
+  "contact": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    const isEdit = Boolean(form.dataset.id);
+    await runAuditedAction(
+      { actionType: isEdit ? "update" : "create", entityType: "contact", entityId: form.dataset.id || "", summary: isEdit ? "עדכון איש קשר" : "הוספת איש קשר" },
+      () => saveContact(form)
+    );
+    state.message = isEdit ? "פרטי איש הקשר עודכנו." : "איש הקשר נוסף לכרטיס המטופל.";
+  },
+  "goal": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    const isEdit = Boolean(form.dataset.id);
+    await runAuditedAction(
+      { actionType: isEdit ? "update" : "create", entityType: "goal", entityId: form.dataset.id || "", summary: isEdit ? "עדכון מטרת טיפול" : "יצירת מטרת טיפול" },
+      () => saveGoal(form)
+    );
+    state.message = isEdit ? "מטרת הטיפול עודכנה." : "מטרת הטיפול נשמרה.";
+  },
+  "questionnaire-template": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    await saveQuestionnaireTemplate(form);
+    state.message = "תבנית השאלון נשמרה.";
+  },
+  "questionnaire-assignment": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת שאלון.");
+    await runAuditedAction(
+      { actionType: "create", entityType: "questionnaire", summary: "יצירת שאלון לנמען", undoable: false },
+      () => createQuestionnaireAssignment(form)
+    );
+    state.message = "השאלון נוצר. אפשר לשלוח אותו ב-WhatsApp או במייל.";
+  },
+  "clinical-report": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני הפקת דוח.");
+    await runAuditedAction(
+      { actionType: "create", entityType: "clinical_report", summary: "הפקת דוח טיפולי", undoable: false },
+      () => createClinicalReport(form)
+    );
+    state.message = "הדוח הופק ונשמר כ-Google Doc וכ-PDF בתיק המטופל.";
+  },
+  "session": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    await runAuditedAction(
+      { actionType: form.dataset.id ? "update" : "create", entityType: "session", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון מפגש" : "יצירת מפגש", undoable: false },
+      () => saveSession(form)
+    );
+    const syncMessages = [lastCalendarSyncError, lastDocumentSyncError].filter(Boolean);
+    state.message = syncMessages.length
+      ? `המפגש נשמר במערכת. ${syncMessages.join(" ")}${noShowChargeNote()}`
+      : `המפגש נשמר במערכת, סונכרן ליומן ונוצר לו מסמך תיעוד.${noShowChargeNote()}`;
+  },
+  "payment": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    await runAuditedAction(
+      { actionType: form.dataset.id ? "update" : "create", entityType: "payment", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון תשלום" : "יצירת תשלום", undoable: !form.elements.receipt_upload?.files?.[0] },
+      () => savePayment(form)
+    );
+    state.message = "התשלום נשמר במערכת.";
+  },
+  "task": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    await runAuditedAction(
+      { actionType: form.dataset.id ? "update" : "create", entityType: "task", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון משימה ותזכורת" : "יצירת משימה ותזכורת" },
+      () => saveTask(form)
+    );
+    state.message = "המשימה נשמרה במערכת.";
+  },
+  "schedule-exception": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    await runAuditedAction(
+      { actionType: "create", entityType: "schedule_exception", summary: "יצירת חריג יומן" },
+      () => saveScheduleException(form)
+    );
+    state.message = "חריג היומן נשמר.";
+  },
+  "file": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    const isEdit = Boolean(form.dataset.id);
+    await runAuditedAction(
+      { actionType: isEdit ? "update" : "create", entityType: "file", entityId: form.dataset.id || "", summary: isEdit ? "עדכון קובץ" : "העלאת קובץ", undoable: false },
+      () => saveFile(form)
+    );
+    state.message = isEdit ? "פרטי הקובץ עודכנו." : "הקובץ הועלה ונרשם בכרטיס המטופל.";
+  },
+  "template-copy": async ({ form }) => {
+    if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
+    await runAuditedAction(
+      { actionType: "create", entityType: "file", summary: "יצירת מסמך מתבנית", undoable: false },
+      () => createFileFromTemplate(form)
+    );
+    state.message = "המסמך נוצר מתבנית, נשמר בתיקיית המטופל ונרשם בקבצים.";
+  }
+};
+
 function bindEvents() {
   document.addEventListener("keydown", handleDrawerKeyboard);
   document.addEventListener("keydown", handlePickerKeyboard);
   document.addEventListener("keydown", handleRowMenuKeyboard);
+  document.addEventListener("keydown", handleGlobalSearchKeyboard);
 
   document.addEventListener("click", async (event) => {
     if (event.target.closest(".picker-popover")) return;
+    if (!event.target.closest("[data-global-search]")) hideGlobalSearchResults();
 
     const dateInput = event.target.closest("[data-date-input]");
     if (dateInput) {
@@ -9041,856 +10557,19 @@ function bindEvents() {
     const busyKey = beginBusyAction(target);
     if (!busyKey) return;
 
+    const handler = clickActions[action];
     try {
-    if (action === "toggle-row-menu") {
-      const rowId = target.dataset.id || "";
-      state.openRowMenu = state.openRowMenu === rowId ? "" : rowId;
-      render();
-      focusRowMenuToggle(rowId);
-    }
-    if (action === "set-goal-outcome") {
-      // Selecting an outcome only changes the open form; it is persisted with the session itself.
-      const group = target.closest("[data-goal-outcome-group]");
-      const form = target.closest("form");
-      const outcome = target.dataset.outcome || "";
-      if (group && form && isGoalOutcome(outcome)) {
-        for (const button of group.querySelectorAll('[data-action="set-goal-outcome"]')) {
-          button.setAttribute("aria-pressed", button.dataset.outcome === outcome ? "true" : "false");
-        }
-        const hidden = form.elements[`goal_outcome_${target.dataset.goalId}`];
-        if (hidden) hidden.value = outcome;
-        // Only "המטרה הושגה" derives a numeric value; the other outcomes leave progress alone.
-        if (outcome === "achieved") {
-          const progressField = form.elements[`goal_progress_${target.dataset.goalId}`];
-          if (progressField) progressField.value = "100";
-        }
-      }
-    }
-    if (action === "set-payments-view") {
-      state.paymentsView = target.dataset.view === "receipts-pending" ? "receipts-pending" : "all";
-      state.error = "";
-      render();
-    }
-    if (action === "settings-category") {
-      state.settingsCategory = target.dataset.category || "preferences";
-      state.error = "";
-      render();
-      document.querySelector(`[data-action="settings-category"][data-category="${state.settingsCategory}"]`)?.focus();
-    }
-    if (action === "toggle-form") {
-      const formKey = target.dataset.formKey;
-      if (formKey && formKey in state.openForms) {
-        state.openForms[formKey] = !state.openForms[formKey];
-        state.error = "";
-        render();
-      }
-    }
-    if (action === "cancel-upload") {
-      uploadCancelled = true;
-      activeUploadRequest?.abort();
-    }
-    if (action === "retry-sync") {
-      state.syncQueue.forEach((item) => {
-        item.nextAttemptAt = Date.now();
-      });
-      persistSyncQueue();
-      await processSyncQueue(true);
-      state.message = state.syncQueue.length
-        ? "חלק מהפעולות עדיין ממתינות; המערכת תמשיך לנסות אוטומטית."
-        : "כל הפעולות הסתנכרנו.";
-      render();
-    }
-    if (action === "connect-google") await connectGoogle();
-    if (action === "force-connect-google") await connectGoogle(true);
-    if (action === "disconnect-google") disconnectGoogle();
-    if (action === "reset-google-settings") {
-      if (!window.confirm("לאפס את הגדרות Google המקומיות לערכים שמוגדרים בקובץ config.js?")) return;
-      resetConfigToDefaults();
-      state.message = "הגדרות Google המקומיות אופסו לברירת המחדל.";
-      state.error = "";
-      render();
-    }
-    if (action === "refresh") {
-      await loadData().catch((error) => {
-        state.error = error.message;
-      });
-      render();
-    }
-    if (action === "undo-last-action") {
-      if (!window.confirm("לבטל את הפעולה ולשחזר את הנתונים הקודמים?")) return;
-      try {
-        await undoAuditAction(target.dataset.id || state.lastUndoActionId);
-        state.message = "הפעולה בוטלה והנתונים הקודמים שוחזרו.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "ביטול הפעולה נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "check-storage") {
-      try {
-        const folderName = await checkStorageConnection();
-        state.message = `החיבור תקין. תיקיית אחסון ראשית: ${folderName}`;
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "בדיקת החיבור נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "check-data-health") {
-      try {
-        const report = await runDataHealthCheck();
-        state.message = report.ok ? "מבנה הנתונים תקין." : "נמצאו בעיות במבנה הנתונים. אפשר ללחוץ תיקון מבנה.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "בדיקת תקינות הנתונים נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "check-sharing-security") {
-      try {
-        const report = await runSharingSecurityAudit();
-        state.message = report.ok
-          ? "משאבי הקליניקה אינם משותפים לציבור."
-          : "נמצאה גישה ציבורית. יש ללחוץ הסרת גישה ציבורית.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "בדיקת אבטחת השיתוף נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "repair-sharing-security") {
-      try {
-        const removed = await repairSharingSecurity();
-        state.message = removed
-          ? `הוסרו ${removed} הרשאות שיתוף ציבוריות.`
-          : "לא נמצאו הרשאות שיתוף ציבוריות.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "תיקון אבטחת השיתוף נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "repair-data-health") {
-      if (!window.confirm("תיקון מבנה יעדכן את שורת הכותרות ויצור גיליונות חסרים. להמשיך?")) return;
-      try {
-        const report = await runDataHealthCheck({ repair: true });
-        state.message = report.ok ? "מבנה הנתונים תוקן ונבדק." : "נשארו נקודות שדורשות בדיקה ידנית.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "תיקון מבנה הנתונים נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "download-backup") {
-      downloadBackup();
-      state.message = "גיבוי מלא ירד למחשב.";
-      state.error = "";
-      render();
-    }
-    if (action === "save-backup-drive") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירת גיבוי.");
-        const result = await saveBackupToDrive();
-        state.message = `הגיבוי נשמר באחסון: ${result.name || backupFileName()}.`;
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "שמירת הגיבוי נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "restore-backup") {
-      const fileInput = document.getElementById("restoreBackupFile");
-      const selectedFile = fileInput?.files?.[0];
-      if (!selectedFile) {
-        state.error = "צריך לבחור קובץ גיבוי לשחזור.";
-        state.message = "";
-        render();
-        return;
-      }
-      if (!window.confirm("שחזור מגיבוי יחליף את הנתונים הקיימים בטבלאות. להמשיך?")) return;
-
-      try {
-        const counts = await restoreBackupFile(selectedFile);
-        state.message = `השחזור הושלם: ${counts.patients || 0} מטופלים, ${counts.sessions || 0} מפגשים, ${counts.payments || 0} תשלומים, ${counts.tasks || 0} משימות.`;
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "שחזור הגיבוי נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "export-table") {
-      try {
-        const count = exportTableCsv(target.dataset.table || "");
-        state.message = `נוצר קובץ ייצוא עם ${count} רשומות.`;
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "הייצוא נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "open-patient-drawer") {
-      openPatientDrawer(target);
-    }
-    if (action === "close-drawer") {
-      closePatientDrawer();
-    }
-    if (action === "open-profile") {
-      state.openRowMenu = "";
-      state.profileTab = "overview";
-      state.currentSessionId = "";
-      state.currentPaymentId = "";
-      state.currentTaskId = "";
-      state.currentFileId = "";
-      state.currentContactId = "";
-      state.currentGoalId = "";
-      navigate(`patients/${target.dataset.id}`);
-    }
-    if (action === "profile-tab") {
-      state.profileTab = target.dataset.tab || "overview";
-      if (state.profileTab !== "documentation") state.currentSessionId = "";
-      if (state.profileTab !== "payments") state.currentPaymentId = "";
-      if (state.profileTab !== "tasks") state.currentTaskId = "";
-      if (state.profileTab !== "files") state.currentFileId = "";
-      if (state.profileTab !== "contacts") state.currentContactId = "";
-      if (state.profileTab !== "goals") state.currentGoalId = "";
-      render();
-    }
-    if (action === "edit-goal") {
-      state.currentGoalId = target.dataset.id || "";
-      state.profileTab = "goals";
-      render();
-    }
-    if (action === "cancel-goal-edit") {
-      state.currentGoalId = "";
-      render();
-    }
-    if (action === "send-questionnaire-whatsapp" || action === "send-questionnaire-email") {
-      try {
-        const assignment = state.questionnaireAssignments.find((item) => item.id === target.dataset.id);
-        const contact = assignment && state.contacts.find((item) => item.id === assignment.contact_id);
-        if (!assignment || !contact) throw new Error("השאלון או איש הקשר לא נמצאו.");
-        const message = questionnaireMessage(assignment);
-        const destination = action === "send-questionnaire-whatsapp"
-          ? `https://wa.me/${String(contact.phone || "").replace(/\D/g, "")}?text=${encodeURIComponent(message)}`
-          : `mailto:${encodeURIComponent(contact.email || "")}?subject=${encodeURIComponent("שאלון לקראת המשך העבודה")}&body=${encodeURIComponent(message)}`;
-        window.open(destination, "_blank", "noopener");
-        await markQuestionnaireSent(assignment);
-        state.message = "נפתח חלון השליחה עם קישור השאלון.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "פתיחת השליחה נכשלה.";
-        render();
-      }
-    }
-    if (action === "sync-questionnaires") {
-      try {
-        const imported = await syncQuestionnaires(target.dataset.patientId || "");
-        state.message = imported ? `נקלטו ${imported} תשובות חדשות.` : "לא נמצאו תשובות חדשות.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "רענון השאלונים נכשל.";
-        render();
-      }
-    }
-    if (action === "edit-session") {
-      state.currentSessionId = target.dataset.id || "";
-      state.profileTab = "documentation";
-      render();
-    }
-    if (action === "cancel-session-edit") {
-      state.currentSessionId = "";
-      render();
-    }
-    if (action === "edit-payment") {
-      const payment = state.payments.find((item) => item.id === target.dataset.id);
-      if (!payment) return;
-      state.currentPaymentId = payment.id;
-      state.profileTab = "payments";
-      if (!state.route.startsWith(`patients/${payment.patient_id}`)) {
-        navigate(`patients/${payment.patient_id}`);
-      } else {
-        render();
-      }
-    }
-    if (action === "cancel-payment-edit") {
-      state.currentPaymentId = "";
-      render();
-    }
-    if (action === "edit-business-record") {
-      const record = state.businessRecords.find((item) => item.id === target.dataset.id);
-      if (record) {
-        state.currentBusinessRecordId = record.id;
-        const period = BusinessCore.periodForDate(record.document_date);
-        if (period) state.businessView = { ...state.businessView, year: period.year, period: period.key };
-        render();
-      }
-    }
-    if (action === "cancel-business-edit") {
-      state.currentBusinessRecordId = "";
-      render();
-    }
-    if (action === "delete-business-record") {
-      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את הרשומה? קובץ המסמך יועבר לאשפה.")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await runAuditedAction(
-          { actionType: "delete", entityType: "business_record", entityId: target.dataset.id, summary: "מחיקת רשומת עסק", undoable: false },
-          () => deleteBusinessRecordEntry(target.dataset.id)
-        );
-        if (state.currentBusinessRecordId === target.dataset.id) state.currentBusinessRecordId = "";
-        state.message = "הרשומה נמחקה וקובץ המסמך הועבר לאשפה.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "מחיקת הרשומה נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "delete-payment") {
-      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את התשלום?")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await runAuditedAction(
-          { actionType: "delete", entityType: "payment", entityId: target.dataset.id, summary: "מחיקת תשלום", undoable: false },
-          () => deletePaymentRecord(target.dataset.id)
-        );
-        state.message = "התשלום נמחק מהמערכת.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "מחיקת התשלום נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "edit-charge") {
-      const charge = state.sessionCharges.find((item) => item.id === target.dataset.id);
-      if (!charge) return;
-      const blockError = chargePaymentBlockError(charge);
-      if (blockError) {
-        state.error = blockError;
-        state.message = "";
-        render();
-        return;
-      }
-      state.currentChargeId = charge.id;
-      state.error = "";
-      state.message = "";
-      render();
-    }
-    if (action === "cancel-charge-edit") {
-      state.currentChargeId = "";
-      render();
-    }
-    if (action === "save-charge-amount") {
-      const amountText = document.querySelector("[data-charge-amount-input]")?.value || "";
-      if (!window.confirm("האם לעדכן את סכום חיוב הטיפול? המחיר הקבוע בכרטיס המטופל לא ישתנה.")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: "update", entityType: "session_charge", entityId: target.dataset.id, summary: "עדכון סכום חיוב טיפול" },
-          () => updateSessionChargeAmount(target.dataset.id, amountText)
-        );
-        state.currentChargeId = "";
-        state.message = "סכום החיוב עודכן.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "עדכון החיוב נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "cancel-charge") {
-      if (!window.confirm("האם לבטל את חיוב הטיפול? החוב יוסר מהיתרות, ותיעוד המפגש יישאר במערכת ללא שינוי.")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני ביטול חיוב.");
-        await runAuditedAction(
-          { actionType: "delete", entityType: "session_charge", entityId: target.dataset.id, summary: "ביטול חיוב טיפול", undoable: false },
-          () => cancelSessionCharge(target.dataset.id)
-        );
-        state.message = "חיוב הטיפול בוטל והוסר מהיתרות.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "ביטול החיוב נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "delete-payment-receipt") {
-      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את קובץ הקבלה?")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await runAuditedAction(
-          { actionType: "delete_receipt", entityType: "payment", entityId: target.dataset.id, summary: "מחיקת קובץ קבלה", undoable: false },
-          () => deletePaymentReceipt(target.dataset.id)
-        );
-        state.message = "קובץ הקבלה נמחק ועודכן ברשומת התשלום.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "מחיקת הקבלה נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "set-payment-status") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: "status", entityType: "payment", entityId: target.dataset.id, summary: "עדכון סטטוס תשלום" },
-          () => setPaymentStatus(target.dataset.id, target.dataset.status || "unpaid")
-        );
-        state.message = "סטטוס התשלום עודכן.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "עדכון התשלום נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "set-receipt-status") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: "status", entityType: "payment", entityId: target.dataset.id, summary: "עדכון סטטוס קבלה" },
-          () => setReceiptStatus(target.dataset.id, target.dataset.status || "issued")
-        );
-        state.message = "סטטוס הקבלה עודכן.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "עדכון הקבלה נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "edit-task") {
-      const task = state.tasks.find((item) => item.id === target.dataset.id);
-      if (!task) return;
-      state.currentTaskId = task.id;
-      state.profileTab = state.route === "tasks" ? state.profileTab : "tasks";
-      if (state.route === "tasks") {
-        render();
-      } else if (!state.route.startsWith(`patients/${task.patient_id}`)) {
-        navigate(`patients/${task.patient_id}`);
-      } else {
-        render();
-      }
-    }
-    if (action === "cancel-task-edit") {
-      state.currentTaskId = "";
-      render();
-    }
-    if (action === "edit-contact") {
-      const contact = state.contacts.find((item) => item.id === target.dataset.id);
-      if (!contact) return;
-      state.currentContactId = contact.id;
-      state.profileTab = "contacts";
-      if (!state.route.startsWith(`patients/${contact.patient_id}`)) {
-        navigate(`patients/${contact.patient_id}`);
-      } else {
-        render();
-      }
-    }
-    if (action === "cancel-contact-edit") {
-      state.currentContactId = "";
-      render();
-    }
-    if (action === "delete-contact") {
-      if (!window.confirm("למחוק את איש הקשר?")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await runAuditedAction(
-          { actionType: "delete", entityType: "contact", entityId: target.dataset.id, summary: "מחיקת איש קשר" },
-          () => deleteContactRecord(target.dataset.id)
-        );
-        state.message = "איש הקשר נמחק.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "מחיקת איש הקשר נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "delete-task") {
-      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המשימה?")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await runAuditedAction(
-          { actionType: "delete", entityType: "task", entityId: target.dataset.id, summary: "מחיקת משימה" },
-          () => deleteTaskRecord(target.dataset.id)
-        );
-        state.message = "המשימה נמחקה.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "מחיקת המשימה נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "delete-schedule-exception") {
-      if (!window.confirm("למחוק את חריג היומן?")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await runAuditedAction(
-          { actionType: "delete", entityType: "schedule_exception", entityId: target.dataset.id, summary: "מחיקת חריג יומן" },
-          () => deleteScheduleException(target.dataset.id)
-        );
-        state.message = "חריג היומן נמחק.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "מחיקת חריג היומן נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "delete-session") {
-      if (!window.confirm("האם את בטוחה שאת רוצה למחוק את המפגש?")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        lastCalendarSyncError = "";
-        await runAuditedAction(
-          { actionType: "delete", entityType: "session", entityId: target.dataset.id, summary: "מחיקת מפגש", undoable: false },
-          () => deleteSessionRecord(target.dataset.id)
-        );
-        state.message = lastCalendarSyncError
-          ? `המפגש נמחק מהמערכת. ${lastCalendarSyncError}`
-          : "המפגש נמחק מהמערכת ומהיומן.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "מחיקת המפגש נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "toggle-patient-archive") {
-      const shouldArchive = target.dataset.archive !== "restore";
-      if (!shouldArchive) {
-        if (!window.confirm("להחזיר את המטופל מרשימת הארכיון?")) return;
-        try {
-          if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-          await runAuditedAction(
-            { actionType: "restore", entityType: "patient", entityId: target.dataset.id, summary: "החזרת מטופל לפעילות" },
-            () => togglePatientArchive(target.dataset.id, false)
-          );
-          state.message = "המטופל הוחזר לפעילות.";
-          render();
-        } catch (error) {
-          state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
-          render();
-        }
-        return;
-      }
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const answer = await showAppModal({
-          title: "סיום טיפול והעברה לארכיון",
-          message: archiveImpactMessage(archiveImpactSummary(target.dataset.id)),
-          actions: [
-            { value: "archive", label: "סיום טיפול וארכוב", variant: "blue" },
-            { value: "abandon", label: "ביטול", variant: "secondary" }
-          ]
-        });
-        if (answer !== "archive") return;
-        const impact = await runAuditedAction(
-          { actionType: "archive", entityType: "patient", entityId: target.dataset.id, summary: "סיום טיפול והעברת מטופל לארכיון", undoable: false },
-          () => archivePatientWorkflow(target.dataset.id)
-        );
-        state.message = archiveDoneMessage(impact);
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
-        render();
-      } finally {
-        closeAppModal();
-      }
-    }
-    if (action === "calendar-prev") {
-      state.calendarMonth = shiftMonth(state.calendarMonth, -1);
-      render();
-    }
-    if (action === "calendar-next") {
-      state.calendarMonth = shiftMonth(state.calendarMonth, 1);
-      render();
-    }
-    if (action === "calendar-today") {
-      const today = isoDate(new Date());
-      state.calendarMonth = today.slice(0, 7);
-      state.selectedCalendarDate = today;
-      render();
-    }
-    if (action === "select-calendar-date") {
-      state.selectedCalendarDate = target.dataset.date || state.selectedCalendarDate;
-      state.calendarMonth = state.selectedCalendarDate.slice(0, 7);
-      render();
-    }
-    if (action === "materialize-recurring") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירת מפגש.");
-        await runAuditedAction(
-          { actionType: "create", entityType: "session", entityId: target.dataset.patientId, summary: "יצירת מפגש קבוע", undoable: false },
-          () => materializeRecurringSession(target.dataset.patientId, target.dataset.date)
-        );
-        const syncMessages = [lastCalendarSyncError, lastDocumentSyncError].filter(Boolean);
-        state.message = syncMessages.length
-          ? `המפגש הקבוע נשמר במערכת. ${syncMessages.join(" ")}`
-          : "המפגש הקבוע נשמר כמפגש רגיל, סונכרן ליומן ונוצר לו מסמך תיעוד.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "שמירת המפגש הקבוע נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "cancel-recurring") {
-      if (!window.confirm("לבטל את המפגש הקבוע רק בתאריך הזה?")) return;
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני ביטול מפגש.");
-        await runAuditedAction(
-          { actionType: "cancel", entityType: "schedule_exception", entityId: target.dataset.patientId, summary: "ביטול מפגש קבוע בתאריך", undoable: true },
-          () => cancelRecurringSession(target.dataset.patientId, target.dataset.date)
-        );
-        state.message = "המפגש הקבוע בוטל לתאריך הזה בלבד.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "ביטול המפגש הקבוע נכשל.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "reschedule-occurrence") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שינוי מועד.");
-        lastCalendarSyncError = "";
-        const sessionId = target.dataset.sessionId || "";
-        const dateValue = target.dataset.date || "";
-        const timeValue = target.dataset.time || "";
-        const replacement = await askReplacementOccurrence(dateValue, timeValue, { allowSameDate: true });
-        if (replacement === "abandon") return;
-        await runAuditedAction(
-          {
-            actionType: "update",
-            entityType: "session",
-            entityId: sessionId || target.dataset.patientId,
-            summary: "שינוי מועד מפגש",
-            undoable: false
-          },
-          () =>
-            sessionId
-              ? rescheduleSessionRecord(sessionId, replacement.date, replacement.time)
-              : rescheduleRecurringOccurrence(target.dataset.patientId, dateValue, replacement.date, replacement.time)
-        );
-        state.selectedCalendarDate = replacement.date;
-        state.calendarMonth = replacement.date.slice(0, 7);
-        state.message = lastCalendarSyncError
-          ? `מועד המפגש עודכן. ${lastCalendarSyncError}`
-          : "מועד המפגש עודכן וסונכרן ליומן.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "שינוי המועד נכשל.";
-        state.message = "";
-        render();
-      } finally {
-        closeAppModal();
-      }
-    }
-    if (action === "resolve-holiday-decision") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני קבלת החלטה.");
-        const outcome = await runAuditedAction(
-          {
-            actionType: "update",
-            entityType: "schedule_exception",
-            entityId: target.dataset.patientId,
-            summary: "החלטה על מפגש בתאריך חג",
-            undoable: false
-          },
-          () => resolveHolidayDecisionFlow(target.dataset.patientId, target.dataset.date)
-        );
-        if (outcome === "cancelled") state.message = "המפגש בוטל לתאריך הזה.";
-        else if (outcome === "kept") state.message = "המפגש נשמר במועד המקורי.";
-        else if (outcome === "moved") state.message = "מועד המפגש עודכן ונשמר.";
-        else state.message = "";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "קבלת ההחלטה נכשלה.";
-        state.message = "";
-        render();
-      } finally {
-        closeAppModal();
-      }
-    }
-    if (action === "reports-prev") {
-      state.reportMonth = shiftMonth(state.reportMonth, -1);
-      render();
-    }
-    if (action === "reports-next") {
-      state.reportMonth = shiftMonth(state.reportMonth, 1);
-      render();
-    }
-    if (action === "reports-current") {
-      state.reportMonth = isoDate(new Date()).slice(0, 7);
-      render();
-    }
-    if (action === "start-recording") {
-      try {
-        await startRecording(target.dataset.id);
-        state.message = "ההקלטה התחילה.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "התחלת ההקלטה נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "stop-recording") {
-      try {
-        stopRecording();
-        state.message = "שומר את ההקלטה...";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "עצירת ההקלטה נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "create-drive-folder") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: "create_folder", entityType: "patient", entityId: target.dataset.id, summary: "יצירת תיקיית מטופל", undoable: false },
-          () => ensurePatientDriveFolder(target.dataset.id)
-        );
-        state.message = "תיקיית המטופל נוצרה ונשמרה במערכת.";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "יצירת התיקייה נכשלה.";
-        render();
-      }
-    }
-    if (action === "sync-drive-files") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const count = await runAuditedAction(
-          { actionType: "sync", entityType: "file", entityId: target.dataset.id, summary: "סנכרון קבצים מ-Drive", undoable: false },
-          () => syncPatientDriveFiles(target.dataset.id)
-        );
-        state.message = count
-          ? `${count} קבצים חדשים נרשמו מתוך תיקיית המטופל.`
-          : "לא נמצאו קבצים חדשים לייבוא מהתיקייה.";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "ייבוא הקבצים נכשל.";
-        render();
-      }
-    }
-    if (action === "edit-file") {
-      const file = state.files.find((item) => item.id === target.dataset.id);
-      if (!file) return;
-      state.currentFileId = file.id;
-      state.profileTab = state.route === "files" ? state.profileTab : "files";
-      if (state.route === "files") {
-        render();
-      } else if (!state.route.startsWith(`patients/${file.patient_id}`)) {
-        navigate(`patients/${file.patient_id}`);
-      } else {
-        render();
-      }
-    }
-    if (action === "cancel-file-edit") {
-      state.currentFileId = "";
-      render();
-    }
-    if (action === "create-transcript-draft") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת מסמך.");
-        const draft = await runAuditedAction(
-          { actionType: "create", entityType: "file", entityId: target.dataset.id, summary: "יצירת טיוטת תמלול", undoable: false },
-          () => createRecordingTranscriptDraft(target.dataset.id)
-        );
-        state.message = `טיוטת התמלול נוצרה ונשמרה בקבצים: ${draft.name || "מסמך תמלול"}.`;
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "יצירת טיוטת התמלול נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "delete-file") {
-      if (!window.confirm("האם את בטוחה שאת רוצה למחוק?")) return;
-
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני מחיקה.");
-        await runAuditedAction(
-          { actionType: "delete", entityType: "file", entityId: target.dataset.id, summary: "מחיקת קובץ", undoable: false },
-          () => deleteFileRecord(target.dataset.id)
-        );
-        state.message = "הקובץ נמחק מכרטיס המטופל ומהתיקייה בדרייב.";
-        state.error = "";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "מחיקת הקובץ נכשלה.";
-        state.message = "";
-        render();
-      }
-    }
-    if (action === "complete-task") {
-      try {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: "complete", entityType: "task", entityId: target.dataset.id, summary: "סימון משימה כבוצעה" },
-          () => completeTask(target.dataset.id)
-        );
-        state.message = "המשימה סומנה כבוצעה.";
-        render();
-      } catch (error) {
-        state.error = error instanceof Error ? error.message : "הפעולה נכשלה.";
-        render();
-      }
-    }
+      if (handler) await handler({ event, target, action });
     } finally {
       endBusyAction(target, busyKey);
     }
   });
 
   document.addEventListener("input", (event) => {
+    if (event.target.closest("[data-global-search-input]")) {
+      scheduleGlobalSearch();
+      return;
+    }
     const fileFilter = event.target.closest("[data-file-filter]");
     if (fileFilter) {
       state.fileFilter[fileFilter.dataset.fileFilter] = fileFilter.value;
@@ -9920,6 +10599,12 @@ function bindEvents() {
   });
 
   document.addEventListener("change", (event) => {
+    const policySelect = event.target.closest("[data-no-show-policy]");
+    if (policySelect) {
+      const feeField = policySelect.closest("[data-no-show-policy-scope]")?.querySelector("[data-no-show-fee-field]");
+      if (feeField) feeField.hidden = policySelect.value !== "fixed";
+      return;
+    }
     const uploadInput = event.target.closest('.upload-control input[type="file"]');
     if (uploadInput) {
       const display = uploadInput
@@ -10029,161 +10714,8 @@ function bindEvents() {
     setSaveState("saving");
 
     try {
-      if (form.dataset.form === "settings") {
-        saveConfig(Object.fromEntries(new FormData(form).entries()));
-        await saveRemoteSettings();
-        state.message = "ההגדרות נשמרו.";
-      }
-
-      if (form.dataset.form === "business-record") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const isEdit = Boolean(form.dataset.id);
-        await runAuditedAction(
-          {
-            actionType: isEdit ? "update" : "create",
-            entityType: "business_record",
-            entityId: form.dataset.id || "",
-            summary: isEdit ? "עדכון רשומת עסק" : "יצירת רשומת עסק",
-            undoable: false
-          },
-          () => saveBusinessRecord(form)
-        );
-        state.message = isEdit ? "רשומת העסק עודכנה." : "המסמך הועלה והרשומה נשמרה.";
-      }
-
-      if (form.dataset.form === "patient") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        // The whole proposed series is resolved before the first write, so abandoning writes nothing.
-        let schedulePlan = null;
-        try {
-          schedulePlan = await prepareRecurringSchedulePlan(
-            Object.fromEntries(new FormData(form).entries()),
-            form.dataset.id || ""
-          );
-        } finally {
-          closeAppModal();
-        }
-        if (schedulePlan.abandoned) {
-          state.error = "";
-          state.message = "השמירה בוטלה ולא בוצע שום שינוי.";
-        } else {
-          const patient = await runAuditedAction(
-            { actionType: form.dataset.id ? "update" : "create", entityType: "patient", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון פרטי מטופל" : "יצירת מטופל", undoable: Boolean(form.dataset.id) },
-            () => savePatient(form, schedulePlan)
-          );
-          state.currentPatientId = "";
-          if (form.dataset.id) {
-            state.message = patient.folderCreated
-              ? "פרטי המטופל עודכנו ונוצרה לו תיקייה."
-              : "פרטי המטופל עודכנו במערכת.";
-          } else {
-            state.message = "המטופל נשמר במערכת ונוצרה לו תיקייה.";
-          }
-        }
-      }
-
-      if (form.dataset.form === "contact") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const isEdit = Boolean(form.dataset.id);
-        await runAuditedAction(
-          { actionType: isEdit ? "update" : "create", entityType: "contact", entityId: form.dataset.id || "", summary: isEdit ? "עדכון איש קשר" : "הוספת איש קשר" },
-          () => saveContact(form)
-        );
-        state.message = isEdit ? "פרטי איש הקשר עודכנו." : "איש הקשר נוסף לכרטיס המטופל.";
-      }
-
-      if (form.dataset.form === "goal") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const isEdit = Boolean(form.dataset.id);
-        await runAuditedAction(
-          { actionType: isEdit ? "update" : "create", entityType: "goal", entityId: form.dataset.id || "", summary: isEdit ? "עדכון מטרת טיפול" : "יצירת מטרת טיפול" },
-          () => saveGoal(form)
-        );
-        state.message = isEdit ? "מטרת הטיפול עודכנה." : "מטרת הטיפול נשמרה.";
-      }
-
-      if (form.dataset.form === "questionnaire-template") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await saveQuestionnaireTemplate(form);
-        state.message = "תבנית השאלון נשמרה.";
-      }
-
-      if (form.dataset.form === "questionnaire-assignment") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני יצירת שאלון.");
-        await runAuditedAction(
-          { actionType: "create", entityType: "questionnaire", summary: "יצירת שאלון לנמען", undoable: false },
-          () => createQuestionnaireAssignment(form)
-        );
-        state.message = "השאלון נוצר. אפשר לשלוח אותו ב-WhatsApp או במייל.";
-      }
-
-      if (form.dataset.form === "clinical-report") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני הפקת דוח.");
-        await runAuditedAction(
-          { actionType: "create", entityType: "clinical_report", summary: "הפקת דוח טיפולי", undoable: false },
-          () => createClinicalReport(form)
-        );
-        state.message = "הדוח הופק ונשמר כ-Google Doc וכ-PDF בתיק המטופל.";
-      }
-
-      if (form.dataset.form === "session") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: form.dataset.id ? "update" : "create", entityType: "session", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון מפגש" : "יצירת מפגש", undoable: false },
-          () => saveSession(form)
-        );
-        const syncMessages = [lastCalendarSyncError, lastDocumentSyncError].filter(Boolean);
-        state.message = syncMessages.length
-          ? `המפגש נשמר במערכת. ${syncMessages.join(" ")}`
-          : "המפגש נשמר במערכת, סונכרן ליומן ונוצר לו מסמך תיעוד.";
-      }
-
-      if (form.dataset.form === "payment") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: form.dataset.id ? "update" : "create", entityType: "payment", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון תשלום" : "יצירת תשלום", undoable: !form.elements.receipt_upload?.files?.[0] },
-          () => savePayment(form)
-        );
-        state.message = "התשלום נשמר במערכת.";
-      }
-
-      if (form.dataset.form === "task") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: form.dataset.id ? "update" : "create", entityType: "task", entityId: form.dataset.id || "", summary: form.dataset.id ? "עדכון משימה ותזכורת" : "יצירת משימה ותזכורת" },
-          () => saveTask(form)
-        );
-        state.message = "המשימה נשמרה במערכת.";
-      }
-
-      if (form.dataset.form === "schedule-exception") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: "create", entityType: "schedule_exception", summary: "יצירת חריג יומן" },
-          () => saveScheduleException(form)
-        );
-        state.message = "חריג היומן נשמר.";
-      }
-
-      if (form.dataset.form === "file") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        const isEdit = Boolean(form.dataset.id);
-        await runAuditedAction(
-          { actionType: isEdit ? "update" : "create", entityType: "file", entityId: form.dataset.id || "", summary: isEdit ? "עדכון קובץ" : "העלאת קובץ", undoable: false },
-          () => saveFile(form)
-        );
-        state.message = isEdit ? "פרטי הקובץ עודכנו." : "הקובץ הועלה ונרשם בכרטיס המטופל.";
-      }
-
-      if (form.dataset.form === "template-copy") {
-        if (!state.accessToken) throw new Error("צריך להתחבר לאחסון לפני שמירה.");
-        await runAuditedAction(
-          { actionType: "create", entityType: "file", summary: "יצירת מסמך מתבנית", undoable: false },
-          () => createFileFromTemplate(form)
-        );
-        state.message = "המסמך נוצר מתבנית, נשמר בתיקיית המטופל ונרשם בקבצים.";
-      }
-
+      const submitHandler = submitActions[form.dataset.form];
+      if (submitHandler) await submitHandler({ event, form });
       closeDisclosureForForm(form.dataset.form);
       setSaveState(state.syncQueue.length ? "pending" : "saved");
       render();
@@ -10215,8 +10747,15 @@ function render() {
   const isSettings = route === "settings";
   document.getElementById("app").innerHTML =
     !isSettings && !canUseStorage() ? accessGatePage() : (pages[route] || dashboardPage)();
+  syncUploadProgressBar();
   scheduleMessageDismiss();
-  if (route === "calendar") ensureIsraelHolidaysForMonth(state.calendarMonth).catch(() => {});
+  if (route === "calendar") {
+    applyCalendarSlotStyles();
+    ensureIsraelHolidaysForMonth(state.calendarMonth).catch(() => {});
+  }
+  if (route !== "calendar" && route !== "patients") state.pendingSessionSlot = null;
+  if (globalSearchState.open && route !== globalSearchState.route) closeGlobalSearch();
+  globalSearchState.route = route;
   if (route === "patients" && idPart && state.profileTab === "questionnaires" && !state.questionnaireSyncStarted[idPart]) {
     state.questionnaireSyncStarted[idPart] = true;
     syncQuestionnaires(idPart).then((imported) => {
@@ -10258,6 +10797,155 @@ function focusRowMenuToggle(rowId) {
       toggle.focus();
       return;
     }
+  }
+}
+
+// ---- Global search ----------------------------------------------------------------------
+// Typing never re-renders the app: only the result list is rebuilt, 150ms after the last key.
+const GLOBAL_SEARCH_DEBOUNCE_MS = 150;
+const globalSearchState = { query: "", open: false, activeIndex: -1, results: [], route: "" };
+let globalSearchTimer = null;
+let globalSearchIndexCache = { patients: null, contacts: null, index: null };
+
+function globalSearchIndex() {
+  if (globalSearchIndexCache.patients !== state.patients || globalSearchIndexCache.contacts !== state.contacts) {
+    globalSearchIndexCache = {
+      patients: state.patients,
+      contacts: state.contacts,
+      index: WorkflowCore.searchIndex(state.patients, state.contacts)
+    };
+  }
+  return globalSearchIndexCache.index;
+}
+
+function globalSearchMarkup() {
+  return `
+    <div class="global-search${globalSearchState.open ? " is-open" : ""}" data-global-search>
+      <button class="global-search-toggle" data-action="toggle-global-search" type="button" aria-label="חיפוש" aria-expanded="${globalSearchState.open ? "true" : "false"}" aria-controls="globalSearchField">
+        <span class="side-glyph">${icon("search")}</span>
+        <span>חיפוש</span>
+      </button>
+      <div class="global-search-field" id="globalSearchField">
+        <span class="global-search-glyph" aria-hidden="true">${icon("search")}</span>
+        <input class="global-search-input" data-global-search-input type="search" role="combobox" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="globalSearchResults" aria-label="חיפוש כללי" placeholder="חיפוש: שם ילד, טלפון הורה, בית ספר…" value="${html(globalSearchState.query)}" />
+        <div class="global-search-results" id="globalSearchResults" role="listbox" aria-label="תוצאות חיפוש" hidden></div>
+      </div>
+    </div>`;
+}
+
+function scheduleGlobalSearch() {
+  if (globalSearchTimer) window.clearTimeout(globalSearchTimer);
+  globalSearchTimer = window.setTimeout(() => {
+    globalSearchTimer = null;
+    renderGlobalSearchResults();
+  }, GLOBAL_SEARCH_DEBOUNCE_MS);
+}
+
+function renderGlobalSearchResults() {
+  const input = document.querySelector("[data-global-search-input]");
+  const list = document.getElementById("globalSearchResults");
+  if (!input || !list) return;
+  globalSearchState.query = input.value;
+  const ready = WorkflowCore.normalizeSearchText(input.value).length >= 2;
+  const results = ready ? WorkflowCore.globalSearch(globalSearchIndex(), input.value, 10) : [];
+  globalSearchState.results = results;
+  globalSearchState.activeIndex = -1;
+  if (!ready) {
+    hideGlobalSearchResults();
+    return;
+  }
+  list.innerHTML = results.length
+    ? results
+        .map(
+          (result, index) => `
+            <button class="global-search-result" id="globalSearchResult-${index}" role="option" aria-selected="false" data-action="open-search-result" data-id="${html(result.patientId)}" data-index="${index}" type="button">
+              <strong>${html(result.name)}</strong>
+              <span>${html(result.fieldLabel)}: ${html(result.value)}</span>
+            </button>`
+        )
+        .join("")
+    : `<div class="global-search-empty" role="option" aria-selected="false">לא נמצאו תוצאות</div>`;
+  list.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  input.removeAttribute("aria-activedescendant");
+}
+
+function hideGlobalSearchResults() {
+  const input = document.querySelector("[data-global-search-input]");
+  const list = document.getElementById("globalSearchResults");
+  if (list) {
+    list.hidden = true;
+    list.innerHTML = "";
+  }
+  input?.setAttribute("aria-expanded", "false");
+  input?.removeAttribute("aria-activedescendant");
+  globalSearchState.results = [];
+  globalSearchState.activeIndex = -1;
+}
+
+function setGlobalSearchActive(index) {
+  const options = [...document.querySelectorAll("#globalSearchResults [data-index]")];
+  if (!options.length) return;
+  const next = ((index % options.length) + options.length) % options.length;
+  globalSearchState.activeIndex = next;
+  options.forEach((option, position) => {
+    option.classList.toggle("is-active", position === next);
+    option.setAttribute("aria-selected", position === next ? "true" : "false");
+  });
+  document.querySelector("[data-global-search-input]")?.setAttribute("aria-activedescendant", options[next].id);
+  options[next].scrollIntoView?.({ block: "nearest" });
+}
+
+function toggleGlobalSearch(force) {
+  const container = document.querySelector("[data-global-search]");
+  if (!container) return;
+  const open = typeof force === "boolean" ? force : !globalSearchState.open;
+  globalSearchState.open = open;
+  container.classList.toggle("is-open", open);
+  container.querySelector("[data-action='toggle-global-search']")?.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    container.querySelector("[data-global-search-input]")?.focus();
+  } else {
+    hideGlobalSearchResults();
+  }
+}
+
+function closeGlobalSearch() {
+  if (globalSearchTimer) window.clearTimeout(globalSearchTimer);
+  globalSearchTimer = null;
+  globalSearchState.query = "";
+  const input = document.querySelector("[data-global-search-input]");
+  if (input) input.value = "";
+  hideGlobalSearchResults();
+  if (globalSearchState.open) toggleGlobalSearch(false);
+}
+
+function handleGlobalSearchKeyboard(event) {
+  const input = event.target.closest?.("[data-global-search-input]");
+  if (!input) return;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (!globalSearchState.results.length) return;
+    event.preventDefault();
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    const start = globalSearchState.activeIndex < 0 && step < 0 ? 0 : globalSearchState.activeIndex;
+    setGlobalSearchActive(start + step);
+    return;
+  }
+  if (event.key === "Enter") {
+    if (!globalSearchState.results.length) return;
+    event.preventDefault();
+    const index = globalSearchState.activeIndex >= 0 ? globalSearchState.activeIndex : 0;
+    const result = globalSearchState.results[index];
+    if (!result) return;
+    closeGlobalSearch();
+    navigate(`patients/${result.patientId}`);
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    const wasOpen = !document.getElementById("globalSearchResults")?.hidden || globalSearchState.open;
+    closeGlobalSearch();
+    if (wasOpen) input.blur();
   }
 }
 

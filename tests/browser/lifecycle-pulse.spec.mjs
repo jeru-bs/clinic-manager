@@ -374,7 +374,7 @@ test("outstanding balances agree across dashboard, profile, payments and reports
   });
 
   await openApp(page, "/");
-  const panel = page.locator("article.panel", { hasText: "תשלומים פתוחים" });
+  const panel = page.locator("[data-today-debts]");
   await expect(panel).toContainText("נועם");
   await expect(panel).toContainText("300.00");
 

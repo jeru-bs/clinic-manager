@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
+import { batchGetJson, sheetPropertiesJson } from "./helpers/ui-mocks.mjs";
+import { clickRowAction } from "./helpers/row-menu.mjs";
 
 const SHEET_HEADERS = {
-  patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at", "fixed_start_date", "fixed_end_date"],
+  patients: ["id", "child_name", "address", "school_name", "treatment_type", "fixed_price", "fixed_day", "fixed_time", "treatment_goals", "sensitive_notes", "general_notes", "status", "default_payment_method", "payment_status", "receipt_status", "drive_folder_id", "drive_folder_path", "created_at", "updated_at", "fixed_start_date", "fixed_end_date", "no_show_policy", "no_show_fee"],
   sessions: ["id", "patient_id", "session_date", "start_time", "end_time", "location", "session_type", "summary", "sensitive_notes", "calendar_event_id", "created_at", "updated_at", "document_file_id", "next_plan", "status"],
   payments: ["id", "patient_id", "session_id", "amount", "payment_method", "payment_status", "receipt_status", "paid_at", "receipt_file_id", "notes", "created_at", "updated_at"],
   tasks: ["id", "patient_id", "title", "description", "status", "due_date", "source", "created_at", "updated_at", "reminder_at", "task_key"],
@@ -86,8 +88,17 @@ async function setupIncomeMocks(page, { seed = {}, queuedItems = null, failBusin
   await page.route("https://sheets.googleapis.com/**", async (route) => {
     const request = route.request();
     const decoded = decodeURIComponent(request.url());
-    if (decoded.includes("fields=sheets.properties.title")) {
-      return route.fulfill({ json: { sheets: Object.keys(SHEET_HEADERS).map((title) => ({ properties: { title } })) } });
+    if (decoded.includes("fields=sheets.properties")) {
+      return route.fulfill({ json: sheetPropertiesJson(Object.keys(SHEET_HEADERS)) });
+    }
+    if (decoded.includes("/values:batchGet")) {
+      return route.fulfill({
+        json: batchGetJson(request, (range) => {
+          const [sheet, cells] = range.split("!");
+          if (cells === "1:1") return [SHEET_HEADERS[sheet]];
+          return store[sheet] || [];
+        })
+      });
     }
     const headerEntry = Object.entries(SHEET_HEADERS).find(([sheet]) => decoded.includes(`${sheet}!1:1`));
     if (headerEntry) return route.fulfill({ json: { values: [headerEntry[1]] } });
@@ -435,7 +446,7 @@ test("deleting the payment deletes the linked income row and trashes the busines
   page.on("dialog", (dialog) => dialog.accept());
 
   await openPaymentsTab(page);
-  await page.locator('button[data-action="delete-payment"][data-id="pay1"]').click();
+  await clickRowAction(page, 'button[data-action="delete-payment"][data-id="pay1"]');
   await expect(page.getByText("התשלום נמחק מהמערכת.")).toBeVisible();
 
   expect(captured.trashes).toContain("biz-copy-1");
@@ -450,7 +461,7 @@ test("deleting only the patient-card receipt keeps the income row and the busine
   page.on("dialog", (dialog) => dialog.accept());
 
   await openPaymentsTab(page);
-  await page.locator('button[data-action="delete-payment-receipt"][data-id="pay1"]').click();
+  await clickRowAction(page, 'button[data-action="delete-payment-receipt"][data-id="pay1"]');
   await expect(page.getByText("קובץ הקבלה נמחק ועודכן ברשומת התשלום.")).toBeVisible();
 
   expect(captured.trashes).toContain("receipt-drive-1");
@@ -464,7 +475,8 @@ test("deleting only the patient-card receipt keeps the income row and the busine
 test("a failed income append trashes the copy, keeps the payment, and re-save syncs cleanly", async ({ page }) => {
   const { captured } = await setupIncomeMocks(page, {
     seed: { patients: [patientRow("p1", "נועם")] },
-    failBusinessAppendTimes: 1
+    // Transient failures are retried automatically, so every attempt must fail for the error path.
+    failBusinessAppendTimes: 4
   });
 
   await openPaymentsTab(page);
@@ -480,7 +492,8 @@ test("a failed income append trashes the copy, keeps the payment, and re-save sy
   await paymentForm.getByRole("button", { name: "שמירת תשלום" }).click();
 
   // Clear Hebrew error, the payment is kept, and the orphan copy is trashed.
-  await expect(page.getByText("התשלום נשמר, אך סנכרון רשומת ההכנסה בניהול העסק נכשל", { exact: false })).toBeVisible();
+  // The retry policy spends a few seconds before giving up.
+  await expect(page.getByText("התשלום נשמר, אך סנכרון רשומת ההכנסה בניהול העסק נכשל", { exact: false })).toBeVisible({ timeout: 15000 });
   expect(appendsFor(captured, "payments")).toHaveLength(1);
   expect(clearsFor(captured, "payments")).toHaveLength(0);
   expect(appendsFor(captured, "business_records")).toHaveLength(0);
@@ -494,7 +507,7 @@ test("a failed income append trashes the copy, keeps the payment, and re-save sy
 
   // Re-saving the payment retries the sync and creates exactly one income row.
   const paymentId = appendsFor(captured, "payments")[0].row[0];
-  await page.locator(`button[data-action="edit-payment"][data-id="${paymentId}"]`).click();
+  await clickRowAction(page, `button[data-action="edit-payment"][data-id="${paymentId}"]`);
   await page.locator(`form[data-form="payment"][data-id="${paymentId}"]`).getByRole("button", { name: "עדכון תשלום" }).click();
   await expect(page.getByText("התשלום נשמר במערכת.")).toBeVisible();
   const businessAppends = appendsFor(captured, "business_records");

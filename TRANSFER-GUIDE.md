@@ -8,9 +8,8 @@
 
 1. מתקינים Git וגרסת Node.js עדכנית מסוג LTS.
 2. מעתיקים את `project-source` למיקום העבודה הרצוי.
-3. מעתיקים את `private-config/.env.local` לשורש הפרויקט רק אם נדרשת גם הגרסה המקומית הישנה. אין להעלות קובץ זה ל-GitHub.
-4. פותחים חלון PowerShell בתיקיית הפרויקט ומריצים `npm.cmd install`.
-5. מריצים `npm.cmd run release:check` ומוודאים שכל הבדיקות עוברות.
+3. פותחים חלון PowerShell בתיקיית הפרויקט ומריצים `npm.cmd install`.
+4. מריצים `npm.cmd run release:check` ומוודאים שכל הבדיקות עוברות.
 
 ## התחברות למערכת הפעילה
 

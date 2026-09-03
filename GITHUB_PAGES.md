@@ -31,7 +31,7 @@ Before publishing, run from the repository root:
 npm.cmd run release:check
 ```
 
-The production entry point is `docs/index.html`. The release must not include `.env.local`, access tokens, questionnaire responses, clinical reports, backup files, or patient data.
+The production entry point is `docs/index.html`. The release must not include local secrets, access tokens, questionnaire responses, clinical reports, backup files, or patient data.
 
 ## GitHub setting
 

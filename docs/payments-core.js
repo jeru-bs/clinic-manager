@@ -88,7 +88,45 @@
     return { error: "", allocations };
   }
 
+  // ---- Late-cancellation / no-show fees ------------------------------------------------
+  // "" on the patient means "use the clinic default"; an explicit "none" always wins.
+  const NO_SHOW_POLICIES = ["none", "full", "half", "fixed"];
+  const NO_SHOW_STATUSES = ["no_show", "cancelled_late"];
+
+  function normalizeNoShowPolicy(value) {
+    const text = String(value ?? "").trim();
+    return NO_SHOW_POLICIES.includes(text) ? text : "";
+  }
+
+  function resolveNoShowPolicy(patient, settings) {
+    const own = normalizeNoShowPolicy(patient?.no_show_policy);
+    if (own) return { policy: own, fee: patient?.no_show_fee ?? "", source: "patient" };
+    const shared = normalizeNoShowPolicy(settings?.noShowPolicyDefault);
+    if (shared) return { policy: shared, fee: settings?.noShowFeeDefault ?? "", source: "settings" };
+    return { policy: "none", fee: "", source: "default" };
+  }
+
+  // Agorot to charge for a no-show or late cancellation, or null when nothing is charged.
+  // "half" rounds to whole shekels so the sheet never carries invented agorot.
+  function noShowChargeAmount(session, patient, settings) {
+    const status = String(session?.status ?? "").trim();
+    if (!NO_SHOW_STATUSES.includes(status)) return null;
+    const resolved = resolveNoShowPolicy(patient, settings);
+    if (resolved.policy === "none") return null;
+    if (resolved.policy === "fixed") return parseAmountToAgorot(resolved.fee);
+    const price = parseAmountToAgorot(patient?.fixed_price);
+    if (price === null) return null;
+    if (resolved.policy === "full") return price;
+    const half = Math.round(price / 200) * 100;
+    return half > 0 ? half : null;
+  }
+
   const api = {
+    NO_SHOW_POLICIES,
+    NO_SHOW_STATUSES,
+    normalizeNoShowPolicy,
+    resolveNoShowPolicy,
+    noShowChargeAmount,
     parseAmountToAgorot,
     agorotToAmountText,
     sortChargesOldestFirst,

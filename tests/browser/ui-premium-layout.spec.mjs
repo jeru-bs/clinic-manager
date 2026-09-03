@@ -114,7 +114,7 @@ test("clicking anywhere in a patient row opens the patient record", async ({ pag
   // A plain cell, not an action button.
   await page
     .locator("tbody tr.row-link", { hasText: "נועם" })
-    .locator('td[data-label="מוסד"]')
+    .locator('td[data-label="אימייל / מוסד"]')
     .click();
   await expect(page).toHaveURL(/#\/patients\/p1$/);
   await expect(page.locator(".profile-tab-body")).toBeVisible();

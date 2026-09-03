@@ -113,4 +113,41 @@ assert.deepEqual(
   [["d1", 10000], ["d2", 5000]]
 );
 
+
+// ---- No-show / late-cancellation fees ---------------------------------------------------
+assert.deepEqual(plain(core.NO_SHOW_POLICIES), ["none", "full", "half", "fixed"]);
+assert.deepEqual(plain(core.NO_SHOW_STATUSES), ["no_show", "cancelled_late"]);
+assert.equal(core.normalizeNoShowPolicy(" half "), "half");
+assert.equal(core.normalizeNoShowPolicy("bogus"), "", "unknown policies fall back to inherit");
+assert.equal(core.normalizeNoShowPolicy(undefined), "");
+
+const fullPatient = { fixed_price: "300", no_show_policy: "full", no_show_fee: "" };
+const halfPatient = { fixed_price: "175", no_show_policy: "half", no_show_fee: "" };
+const fixedPatient = { fixed_price: "300", no_show_policy: "fixed", no_show_fee: "120" };
+const nonePatient = { fixed_price: "300", no_show_policy: "none", no_show_fee: "" };
+const inheritPatient = { fixed_price: "300", no_show_policy: "", no_show_fee: "" };
+const noShow = { status: "no_show" };
+const late = { status: "cancelled_late" };
+
+assert.equal(core.noShowChargeAmount(noShow, fullPatient, {}), 30000, "full policy charges the session price");
+assert.equal(core.noShowChargeAmount(late, fullPatient, {}), 30000, "late cancellation is charged like a no-show");
+assert.equal(core.noShowChargeAmount(noShow, halfPatient, {}), 8800, "half of 175 rounds to whole shekels (88)");
+assert.equal(core.noShowChargeAmount(noShow, { fixed_price: "0.50", no_show_policy: "half" }, {}), null, "a half that rounds to zero charges nothing");
+assert.equal(core.noShowChargeAmount(noShow, fixedPatient, {}), 12000, "fixed policy charges the patient fee");
+assert.equal(core.noShowChargeAmount(noShow, { no_show_policy: "fixed", no_show_fee: "abc" }, {}), null, "an invalid fixed fee charges nothing");
+assert.equal(core.noShowChargeAmount(noShow, nonePatient, { noShowPolicyDefault: "full" }), null, "explicit none overrides the clinic default");
+assert.equal(core.noShowChargeAmount(noShow, inheritPatient, {}), null, "no policy anywhere means no charge");
+assert.equal(core.noShowChargeAmount(noShow, inheritPatient, { noShowPolicyDefault: "full" }), 30000, "an empty patient policy inherits the clinic default");
+assert.equal(core.noShowChargeAmount(noShow, inheritPatient, { noShowPolicyDefault: "fixed", noShowFeeDefault: "80" }), 8000, "the clinic default fee applies to inheriting patients");
+assert.equal(core.noShowChargeAmount(noShow, fullPatient, { noShowPolicyDefault: "none" }), 30000, "a patient policy overrides the clinic default");
+assert.equal(core.noShowChargeAmount(noShow, { no_show_policy: "full" }, {}), null, "full policy without a fixed price charges nothing");
+assert.equal(core.noShowChargeAmount({ status: "cancelled" }, fullPatient, {}), null, "a plain cancellation is never charged");
+assert.equal(core.noShowChargeAmount({ status: "completed" }, fullPatient, {}), null);
+assert.equal(core.noShowChargeAmount({ status: "scheduled" }, fullPatient, {}), null);
+assert.equal(core.noShowChargeAmount(null, fullPatient, {}), null);
+assert.deepEqual(plain(core.resolveNoShowPolicy(inheritPatient, { noShowPolicyDefault: "half" })), { policy: "half", fee: "", source: "settings" });
+assert.deepEqual(plain(core.resolveNoShowPolicy(fixedPatient, {})), { policy: "fixed", fee: "120", source: "patient" });
+assert.deepEqual(plain(core.resolveNoShowPolicy({}, {})), { policy: "none", fee: "", source: "default" });
+console.log("payments-core no-show fee tests passed");
+
 console.log("payments-core tests passed");

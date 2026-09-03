@@ -1,25 +1,22 @@
 {
   "name": "clinic-manager",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "scripts": {
     "demo": "node scripts/serve-docs.mjs",
     "demo:server": "node scripts/local-server.mjs",
     "check:static": "node scripts/check-project.mjs",
     "check:security": "node scripts/check-browser-security.mjs",
-    "test:workflows": "node scripts/test-workflows.mjs && node scripts/test-business.mjs && node scripts/test-payments.mjs",
+    "check:actions": "node scripts/check-actions.mjs",
+    "test:workflows": "node scripts/test-workflows.mjs && node scripts/test-business.mjs && node scripts/test-payments.mjs && node scripts/test-format.mjs && node scripts/test-schedule.mjs",
     "test:browser": "playwright test",
-    "release:check": "npm run check:static && npm run check:security && npm run test:workflows && npm run lint && npm run test:browser",
-    "lint": "eslint .",
-    "hash-password": "node scripts/hash-password.mjs",
-    "reset-password": "node scripts/reset-password.mjs"
+    "release:check": "npm run check:static && npm run check:security && npm run check:actions && npm run test:workflows && npm run lint && npm run test:browser",
+    "lint": "eslint ."
   },
   "devDependencies": {
     "@eslint/js": "9.29.0",
     "@playwright/test": "^1.61.1",
-    "@types/node": "22.15.34",
     "eslint": "9.29.0",
-    "globals": "17.11.0",
-    "typescript": "5.8.3"
+    "globals": "17.11.0"
   }
 }

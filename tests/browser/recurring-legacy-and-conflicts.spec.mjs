@@ -11,7 +11,7 @@ const LEGACY_PATIENT_HEADER = [
   "default_payment_method", "payment_status", "receipt_status", "drive_folder_id",
   "drive_folder_path", "created_at", "updated_at"
 ];
-const EXTENDED_PATIENT_HEADER = [...LEGACY_PATIENT_HEADER, "fixed_start_date", "fixed_end_date"];
+const EXTENDED_PATIENT_HEADER = [...LEGACY_PATIENT_HEADER, "fixed_start_date", "fixed_end_date", "no_show_policy", "no_show_fee"];
 
 function patientRow(id, name, { day = "", time = "", start = "", end = "" } = {}) {
   return [
@@ -152,7 +152,7 @@ test("the legacy patients header is extended safely and idempotently", async ({ 
   await expect(page.locator(".day-agenda-row").first()).toContainText("נועם");
 
   // The grid is widened first, then exactly the two trailing columns are added to the header.
-  expect(captured.gridAppends).toEqual([{ sheet: "patients", length: 2 }]);
+  expect(captured.gridAppends).toEqual([{ sheet: "patients", length: 4 }]);
   expect(captured.headerPuts).toHaveLength(1);
   expect(captured.headerPuts[0].sheet).toBe("patients");
   expect(captured.headerPuts[0].row).toEqual(EXTENDED_PATIENT_HEADER);
@@ -259,7 +259,8 @@ test("Hanukkah and a minor fast also offer keeping the treatment in place", asyn
     .sort();
   expect(sessionDates).toEqual(["2026-09-07", "2026-09-14", "2026-09-21"]);
   expect(captured.appends.filter((entry) => entry.sheet === "schedule_exceptions")).toHaveLength(0);
-  expect(calendarDates.slice().sort()).toEqual(["2026-09-07", "2026-09-14", "2026-09-21"]);
+  expect(captured.appendCalls.filter((entry) => entry.sheet === "sessions")).toEqual([{ sheet: "sessions", rows: 3 }]);
+  await expect.poll(() => calendarDates.slice().sort()).toEqual(["2026-09-07", "2026-09-14", "2026-09-21"]);
 
   // The decision is persisted, so an unchanged resave neither asks again nor duplicates anything.
   await openPatientDrawer(page, "p1");

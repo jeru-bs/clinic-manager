@@ -225,7 +225,9 @@ test("a bounded series creates inclusive occurrences once and stays idempotent o
     "2026-09-14",
     "2026-09-21"
   ]);
-  expect(calendarDates.slice().sort()).toEqual(["2026-09-07", "2026-09-14", "2026-09-21"]);
+  // The series is written with a single sessions append; calendar events follow in the background.
+  expect(captured.appendCalls.filter((entry) => entry.sheet === "sessions")).toEqual([{ sheet: "sessions", rows: 3 }]);
+  await expect.poll(() => calendarDates.slice().sort()).toEqual(["2026-09-07", "2026-09-14", "2026-09-21"]);
 
   const patientPut = captured.puts.find((entry) => entry.sheet === "patients");
   expect(patientPut.row[19]).toBe("2026-09-07");
@@ -283,7 +285,7 @@ test("holiday conflicts are resolved one by one and only the final set is writte
   expect(exceptions.every((entry) => entry.row[2] === "cancel")).toBe(true);
 
   // Google Calendar receives the resolved occurrences only.
-  expect(calendarDates.slice().sort()).toEqual(["2026-09-07", "2026-09-23"]);
+  await expect.poll(() => calendarDates.slice().sort()).toEqual(["2026-09-07", "2026-09-23"]);
 });
 
 test("abandoning the conflict flow performs zero writes", async ({ page }) => {

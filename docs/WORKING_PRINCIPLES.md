@@ -13,12 +13,15 @@ This file is the compact operating contract for future work on this project. Rea
 
 - The active browser app is `docs/`.
 - `docs/app.js` is currently the main UI, Google integration, storage, and workflow layer.
-- `src/` is a Next.js app surface and should not be treated as the live product unless a task explicitly moves work there.
+- There is no other app surface: the former Next.js `src/` implementation and its password scripts were removed.
 - `scripts/serve-docs.mjs` serves the active app locally with `npm.cmd run demo`.
+- `googleClientId` comes only from `docs/config.js`; localStorage, the shared Drive settings file and the Settings form may override only the keys in `WorkflowCore.OVERRIDABLE_CONFIG_KEYS`.
+- The CSP allows no inline styles or remote images: generated markup must not carry `style=` attributes (set CSS custom properties through `element.style` after render), and URLs from the sheet or Drive reach an `href` only through `safeHref()`.
+- JSON backups never include `audit_log`, and a restore never replaces the live audit log.
 - The static browser app stores Google access tokens in `sessionStorage` only; remembered consent is used for automatic reconnection on later visits.
 - An empty Google-account allowlist denies access. Authorized accounts must be configured explicitly.
 - Static hosting cannot protect data with server-side sessions; Google resource permissions remain the hard security boundary until the active surface moves behind a private server.
-- Every authorized data load audits the configured clinic Sheet and Drive folders and removes `anyone` permissions before business data is displayed.
+- Every authorized data load audits the configured clinic Sheet and Drive folders plus any publicly shared file under them, removes `anyone` permissions before business data is displayed, and reports domain or non-allowlisted user shares as warnings in Settings.
 
 ## SSOT
 
@@ -65,5 +68,5 @@ Before editing:
 Before finishing:
 
 - Run the narrowest useful checks: usually `npm.cmd run check:static` and `npm.cmd run lint`.
-- Verify secrets stay out of Git: `.env.local`, `.next/`, `node_modules/`, `work/`, and local build artifacts remain ignored.
+- Verify secrets stay out of Git: `node_modules/`, `work/`, backup files, and local build artifacts remain ignored.
 - Commit only the files needed for the change.

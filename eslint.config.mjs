@@ -1,20 +1,15 @@
 import js from "@eslint/js";
 import globals from "globals";
 
-// Lint covers the active static app (docs/), its scripts and tests. The legacy
-// Next.js implementation in src/ is an inactive reference and is not linted:
-// its lint presets required the removed Next.js toolchain.
+// Lint covers the static app (docs/), its scripts and tests.
 const eslintConfig = [
   {
     ignores: [
-      ".next/**",
       "node_modules/**",
       "out/**",
       "build/**",
       "work/**",
-      "outputs/**",
-      "tsconfig.tsbuildinfo",
-      "src/**"
+      "outputs/**"
     ]
   },
   js.configs.recommended,
