@@ -3,7 +3,8 @@
 // data-form value must have a submit handler.
 import { readFileSync } from "node:fs";
 
-const source = readFileSync(new URL("../docs/app.js", import.meta.url), "utf8");
+// Normalise line endings so the checks behave the same on LF and CRLF checkouts.
+const source = readFileSync(new URL("../docs/app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const failures = [];
 
 function handlerKeys(mapName) {
